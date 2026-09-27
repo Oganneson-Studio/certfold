@@ -1,7 +1,6 @@
 package service
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"io/fs"
@@ -67,10 +66,7 @@ func buildServiceConfig(cfg Config) *ksvc.Config {
 			"Wants=network-online.target",
 		}
 		sc.Option = ksvc.KeyValue{
-			"Restart":       "on-failure",
-			"RestartSec":    "5",
-			"StandardOutput": "journal",
-			"StandardError":  "journal",
+			"Restart": "on-failure",
 		}
 	case "darwin":
 		sc.Option = ksvc.KeyValue{
@@ -191,35 +187,6 @@ func (n *noopDaemon) Stop(_ ksvc.Service) error  { return nil }
 // NoopDaemon returns a Daemon that does nothing, suitable for control-only
 // operations where no real serve logic is needed.
 func NoopDaemon() Daemon { return &noopDaemon{} }
-
-// contextDaemon wraps a function that runs until ctx is cancelled.
-type contextDaemon struct {
-	run func(ctx context.Context) error
-	ctx context.Context
-	cancel context.CancelFunc
-	done   chan error
-}
-
-func (d *contextDaemon) Start(_ ksvc.Service) error {
-	d.done = make(chan error, 1)
-	go func() {
-		d.done <- d.run(d.ctx)
-	}()
-	return nil
-}
-
-func (d *contextDaemon) Stop(_ ksvc.Service) error {
-	d.cancel()
-	<-d.done
-	return nil
-}
-
-// NewContextDaemon wraps a function as a Daemon. The function should block
-// until ctx is cancelled, then return promptly.
-func NewContextDaemon(run func(ctx context.Context) error) Daemon {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &contextDaemon{run: run, ctx: ctx, cancel: cancel}
-}
 
 // UnpackClients copies sigilc binaries from fsys into dataDir/binaries/.
 // Returns (n, nil) where n is the number of binaries written.

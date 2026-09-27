@@ -1,4 +1,4 @@
-package commands
+package config
 
 import (
 	"bytes"
@@ -8,26 +8,28 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/securefile"
 )
 
 var serverConfigEditMu sync.Mutex
 
-// addCertificateSpec edits the raw YAML tree instead of marshaling a loaded
-// ServerConfig. LoadServer expands ${ENV}; marshaling that value would persist
-// secrets and destroy the placeholders in server.yaml.
-func addCertificateSpec(path string, spec config.CertificateSpec) (config.CertificateSpec, error) {
+// AddCertificateSpec appends spec to the server.yaml at path, filling the CA
+// from acme.default_ca when it is empty, and returns the stored spec.
+//
+// It edits the raw YAML tree instead of marshaling a loaded ServerConfig.
+// LoadServer expands ${ENV}; marshaling that value would persist secrets and
+// destroy the placeholders in server.yaml.
+func AddCertificateSpec(path string, spec CertificateSpec) (CertificateSpec, error) {
 	serverConfigEditMu.Lock()
 	defer serverConfigEditMu.Unlock()
 
 	cfg, doc, err := loadServerConfigDocument(path)
 	if err != nil {
-		return config.CertificateSpec{}, err
+		return CertificateSpec{}, err
 	}
 	for _, existing := range cfg.Certificates {
 		if existing.Name == spec.Name {
-			return config.CertificateSpec{}, fmt.Errorf("cert %q already exists", spec.Name)
+			return CertificateSpec{}, fmt.Errorf("cert %q already exists", spec.Name)
 		}
 	}
 	if spec.CA == "" {
@@ -36,21 +38,23 @@ func addCertificateSpec(path string, spec config.CertificateSpec) (config.Certif
 
 	seq, err := certificatesNode(doc, true)
 	if err != nil {
-		return config.CertificateSpec{}, err
+		return CertificateSpec{}, err
 	}
 	var item yaml.Node
 	if err := item.Encode(spec); err != nil {
-		return config.CertificateSpec{}, fmt.Errorf("encode certificate %q: %w", spec.Name, err)
+		return CertificateSpec{}, fmt.Errorf("encode certificate %q: %w", spec.Name, err)
 	}
 	seq.Content = append(seq.Content, &item)
 
 	if err := validateAndWriteServerConfig(path, doc); err != nil {
-		return config.CertificateSpec{}, err
+		return CertificateSpec{}, err
 	}
 	return spec, nil
 }
 
-func removeCertificateSpec(path, name string) error {
+// RemoveCertificateSpec deletes the certificate named name from the
+// server.yaml at path, preserving ${ENV} placeholders like AddCertificateSpec.
+func RemoveCertificateSpec(path, name string) error {
 	serverConfigEditMu.Lock()
 	defer serverConfigEditMu.Unlock()
 
@@ -80,12 +84,12 @@ func removeCertificateSpec(path, name string) error {
 	return validateAndWriteServerConfig(path, doc)
 }
 
-func loadServerConfigDocument(path string) (*config.ServerConfig, *yaml.Node, error) {
+func loadServerConfigDocument(path string) (*ServerConfig, *yaml.Node, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	cfg, err := config.ParseServer(raw)
+	cfg, err := ParseServer(raw)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -136,7 +140,7 @@ func validateAndWriteServerConfig(path string, doc *yaml.Node) error {
 	if err := enc.Close(); err != nil {
 		return fmt.Errorf("close server config encoder: %w", err)
 	}
-	if _, err := config.ParseServer(out.Bytes()); err != nil {
+	if _, err := ParseServer(out.Bytes()); err != nil {
 		return fmt.Errorf("validate updated server config: %w", err)
 	}
 	if err := securefile.WriteFile(path, out.Bytes()); err != nil {

@@ -2,29 +2,23 @@ package commands
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
-	"net/url"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/Oganneson-Studio/sigil/internal/acme"
-	"github.com/Oganneson-Studio/sigil/internal/api"
 	"github.com/Oganneson-Studio/sigil/internal/ca"
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/enroll"
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
-	"github.com/Oganneson-Studio/sigil/internal/scheduler"
+	"github.com/Oganneson-Studio/sigil/internal/server"
 	internalsvc "github.com/Oganneson-Studio/sigil/internal/service"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 	tuiserver "github.com/Oganneson-Studio/sigil/internal/tui/server"
@@ -35,117 +29,10 @@ import (
 // ---------------------------------------------------------------------------
 
 func runServe(cmd *cobra.Command, _ []string) error {
-	cfgPath, _ := cmd.Root().PersistentFlags().GetString("config")
-	if cfgPath == "" {
-		cfgPath = defaultServerCfgPath()
-	}
-	cfg, err := config.LoadServer(cfgPath)
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-
-	db, err := store.Open(dbPath(cfg))
-	if err != nil {
-		return fmt.Errorf("open store: %w", err)
-	}
-	defer db.Close()
-
-	miniCA, err := ca.Bootstrap(cfg.Server.DataDir)
-	if err != nil {
-		return fmt.Errorf("init CA: %w", err)
-	}
-
-	issuer := acme.NewIssuer(db.Accounts)
-
-	enrollSvc := enroll.NewServer(db.Tokens, db.Clients, miniCA)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	// Issue (or re-use) a TLS server certificate signed by the mini-CA.
-	serverTLSCert, err := serverTLSCertificate(miniCA, cfg)
-	if err != nil {
-		return fmt.Errorf("server TLS cert: %w", err)
-	}
-
-	// Renewal scheduler.
-	pushNotifier := scheduler.NewHTTPPushNotifier(nil)
-	r := scheduler.New(issuer, db.Certs, pushNotifier, nil)
-	runtimeConfig := newServerConfigRuntime(cfgPath, cfg, r)
-	go func() { _ = r.RunDynamic(ctx, runtimeConfig.Current) }()
-	certificateControl := &ipc.CertificateControlDeps{
-		Renew: func(ctx context.Context, name string) error {
-			return r.RenewNamed(ctx, runtimeConfig.Current, name)
-		},
-	}
-	serverControl := &ipc.ServerControlDeps{Reload: runtimeConfig.Reload}
-
-	deps := api.Deps{
-		ServerCfg:     cfg,
-		CurrentServer: runtimeConfig.Current,
-		DB:            db,
-		MiniCA:        miniCA,
-		DataDir:       cfg.Server.DataDir,
-		EnrollServer:  enrollSvc,
-	}
-
-	// IPC server.
-	ipcSocket := cfg.Server.IPCSocket
-	ipcListener, err := ipc.Listen(ipcSocket)
-	if err != nil {
-		return fmt.Errorf("ipc listen: %w", err)
-	}
-	go func() {
-		_ = ipc.Serve(ctx, ipcListener, ipc.ServerDeps{
-			DB:           db,
-			Server:       serverControl,
-			Certificates: certificateControl,
-		})
-	}()
-
-	// HTTPS server with mini-CA-signed server cert.
-	httpSrv := api.New(deps, serverTLSCert)
-	go func() {
-		<-ctx.Done()
-		_ = httpSrv.Close()
-	}()
-	fmt.Printf("sigils listening on %s (TLS)\n", cfg.Server.Listen)
-	if err := httpSrv.ListenAndServeTLS("", ""); err != nil && err.Error() != "http: Server closed" {
-		return err
-	}
-	return nil
-}
-
-// serverTLSCertificate builds the hosts list from the config and issues a
-// server TLS cert signed by the mini-CA.
-func serverTLSCertificate(miniCA *ca.MiniCA, cfg *config.ServerConfig) (tls.Certificate, error) {
-	if cfg.Server.TLSCertFile != "" {
-		cert, err := tls.LoadX509KeyPair(cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile)
-		if err != nil {
-			return tls.Certificate{}, fmt.Errorf("load configured TLS certificate: %w", err)
-		}
-		return cert, nil
-	}
-
-	hosts := []string{"localhost", "127.0.0.1", "::1"}
-
-	// Extract hostname from public_url if set.
-	if cfg.Server.PublicURL != "" {
-		if u, err := url.Parse(cfg.Server.PublicURL); err == nil && u.Hostname() != "" {
-			hosts = append(hosts, u.Hostname())
-		}
-	}
-
-	// Extract hostname from listen address if it has one (e.g. "sigil.internal:8443").
-	if h, _, err := net.SplitHostPort(cfg.Server.Listen); err == nil && h != "" {
-		hosts = append(hosts, h)
-	}
-
-	certPEM, keyPEM, err := miniCA.IssueServerCert(hosts)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-	return tls.X509KeyPair(certPEM, keyPEM)
+	cfgPath := serverConfigPath(cmd)
+	return internalsvc.Run(serverSvcConfig(cmd), func(ctx context.Context) error {
+		return server.Run(ctx, cfgPath)
+	})
 }
 
 // ---------------------------------------------------------------------------

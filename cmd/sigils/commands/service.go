@@ -4,11 +4,10 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
-	"runtime"
 
 	"github.com/spf13/cobra"
 
+	"github.com/Oganneson-Studio/sigil/internal/config"
 	internalsvc "github.com/Oganneson-Studio/sigil/internal/service"
 )
 
@@ -46,18 +45,25 @@ func serverSvcConfig(cmd *cobra.Command) internalsvc.Config {
 
 func runServerServiceInstall(cmd *cobra.Command, _ []string) error {
 	cfg := serverSvcConfig(cmd)
+	withClients, _ := cmd.Flags().GetBool("with-clients")
+	// Resolve data_dir before registering the service so a configuration
+	// problem does not leave a half-finished installation.
+	var dataDir string
+	if withClients {
+		var err error
+		if dataDir, err = serviceDataDir(cfg); err != nil {
+			return err
+		}
+	}
+
 	if err := internalsvc.Install(internalsvc.NoopDaemon(), cfg); err != nil {
 		return err
 	}
 	fmt.Println("sigils service installed successfully.")
-
-	withClients, _ := cmd.Flags().GetBool("with-clients")
 	if !withClients {
 		return nil
 	}
 
-	// Determine data_dir from server.yaml if possible; fall back to a default.
-	dataDir := serverDataDir(cmd)
 	fsys := internalsvc.ClientBinariesFS()
 	sub, err := subFS(fsys, "dist")
 	if err != nil {
@@ -102,27 +108,21 @@ func runServerServiceStatus(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// serverDataDir returns the server's data_dir. It tries to load server.yaml
-// for the configured value; if unavailable it returns the platform default.
-func serverDataDir(cmd *cobra.Command) string {
-	cfgPath, _ := cmd.Root().PersistentFlags().GetString("config")
-	return defaultDataDir(cfgPath)
-}
-
-// defaultDataDir returns the platform default data directory for sigils.
-func defaultDataDir(_ string) string {
-	switch runtime.GOOS {
-	case "windows":
-		base := os.Getenv("PROGRAMDATA")
-		if base == "" {
-			base = `C:\ProgramData`
-		}
-		return filepath.Join(base, "Sigil", "data")
-	case "darwin":
-		return "/usr/local/var/sigils"
-	default:
-		return "/var/lib/sigils"
+// serviceDataDir returns server.data_dir from the configuration file the
+// installed service is started with.
+func serviceDataDir(cfg internalsvc.Config) (string, error) {
+	path := cfg.ConfigPath
+	if path == "" {
+		path = internalsvc.DefaultServerConfigPath()
 	}
+	dataDir, _, err := config.ReadServerPaths(path)
+	if err != nil {
+		return "", fmt.Errorf("read server.data_dir to unpack sigilc binaries: %w", err)
+	}
+	if dataDir == "" {
+		return "", fmt.Errorf("server.data_dir is not set in %s; it is needed to unpack sigilc binaries", path)
+	}
+	return dataDir, nil
 }
 
 // subFS returns an fs.FS rooted at dir inside fsys.

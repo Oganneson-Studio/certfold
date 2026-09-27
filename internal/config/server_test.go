@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -486,5 +488,49 @@ func TestServerTLSFilesMustBeConfiguredTogether(t *testing.T) {
   tls_key_file: "/etc/sigil/tls.key"`, 1)
 	if _, err := ParseServer([]byte(src)); err != nil {
 		t.Fatalf("valid TLS file config: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ReadServerPaths
+// ---------------------------------------------------------------------------
+
+func writeServerYAML(t *testing.T, raw string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "server.yaml")
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestReadServerPaths_DoesNotRequireCredentialVariables(t *testing.T) {
+	t.Setenv("SIGIL_TEST_IPC_SOCKET", "/run/sigil/custom.sock")
+	src := strings.Replace(validServerYAML, `data_dir: "/var/lib/sigils"`, `data_dir: "${SIGIL_TEST_UNSET_DATA_DIR:-/srv/sigils}"
+  ipc_socket: "${SIGIL_TEST_IPC_SOCKET}"`, 1)
+	src = strings.Replace(src, `api_token: "tok"`, `api_token: "${SIGIL_TEST_UNSET_API_TOKEN}"`, 1)
+	path := writeServerYAML(t, src)
+
+	dataDir, ipcSocket, err := ReadServerPaths(path)
+	if err != nil {
+		t.Fatalf("ReadServerPaths: %v", err)
+	}
+	if dataDir != "/srv/sigils" {
+		t.Errorf("data_dir: got %q", dataDir)
+	}
+	if ipcSocket != "/run/sigil/custom.sock" {
+		t.Errorf("ipc_socket: got %q", ipcSocket)
+	}
+	if _, err := LoadServer(path); err == nil || !strings.Contains(err.Error(), "SIGIL_TEST_UNSET_API_TOKEN") {
+		t.Fatalf("LoadServer should still require the credential variable, got %v", err)
+	}
+}
+
+func TestReadServerPaths_RejectsUnsetServerVariable(t *testing.T) {
+	path := writeServerYAML(t, strings.Replace(validServerYAML,
+		`data_dir: "/var/lib/sigils"`, `data_dir: "${SIGIL_TEST_UNSET_DATA_DIR}"`, 1))
+	_, _, err := ReadServerPaths(path)
+	if err == nil || !strings.Contains(err.Error(), "server.data_dir") || !strings.Contains(err.Error(), "SIGIL_TEST_UNSET_DATA_DIR") {
+		t.Fatalf("expected unset data_dir variable error, got %v", err)
 	}
 }

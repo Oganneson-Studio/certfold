@@ -2,8 +2,10 @@ package scheduler
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -369,6 +371,50 @@ func TestRenewNowForcesNotDueCertificate(t *testing.T) {
 	}
 	if rec.FullchainPEM != "---cert---" || !rec.IssuedAt.Equal(now) {
 		t.Fatalf("stored record = %+v", rec)
+	}
+}
+
+func TestRenewNamedRenewsOnlyTheExactName(t *testing.T) {
+	ctx := context.Background()
+	db := mustOpenDB(t)
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	mi := &mockIssuer{result: successResult(now.Add(90 * 24 * time.Hour))}
+	r := New(mi, db.Certs, nil, func() time.Time { return now })
+	cfg := minimalCfg("api-prod", 30, nil)
+	stage := cfg.Certificates[0]
+	stage.Name = "api-stage"
+	cfg.Certificates = append(cfg.Certificates, stage)
+	current := func() *config.ServerConfig { return cfg }
+
+	if err := r.RenewNamed(ctx, current, "api-prod"); err != nil {
+		t.Fatalf("RenewNamed: %v", err)
+	}
+	if mi.calls != 1 || mi.cfg != cfg {
+		t.Fatalf("Issue calls = %d with config %p, want 1 call with the live snapshot %p", mi.calls, mi.cfg, cfg)
+	}
+	if _, err := db.Certs.Get(ctx, "api-prod", nil); err != nil {
+		t.Fatalf("renewed certificate was not stored: %v", err)
+	}
+	if _, err := db.Certs.Get(ctx, "api-stage", nil); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("unrequested certificate was stored, err = %v", err)
+	}
+
+	err := r.RenewNamed(ctx, current, "API-PROD")
+	if err == nil || !strings.Contains(err.Error(), `cert "API-PROD" not found`) {
+		t.Fatalf("case-mismatched name error = %v", err)
+	}
+	if mi.calls != 1 {
+		t.Fatalf("unknown name triggered issuance; calls = %d", mi.calls)
+	}
+}
+
+func TestRenewNamedPropagatesIssuerFailure(t *testing.T) {
+	want := errors.New("acme failed")
+	r := New(&mockIssuer{err: want}, mustOpenDB(t).Certs, nil, nil)
+	cfg := minimalCfg("api-prod", 30, nil)
+	err := r.RenewNamed(context.Background(), func() *config.ServerConfig { return cfg }, "api-prod")
+	if !errors.Is(err, want) {
+		t.Fatalf("error = %v, want %v", err, want)
 	}
 }
 

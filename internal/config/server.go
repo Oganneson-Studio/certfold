@@ -123,6 +123,36 @@ func ParseServer(raw []byte) (*ServerConfig, error) {
 	return &cfg, nil
 }
 
+// ReadServerPaths reads server.data_dir and server.ipc_socket from the
+// server.yaml at path so CLI commands can locate the daemon. Unlike LoadServer
+// it expands ${VAR} only in these two values and does not validate the file,
+// so the DNS credentials other sections reference need not be set in the
+// caller's environment. Empty results mean the field is not set.
+func ReadServerPaths(path string) (dataDir, ipcSocket string, err error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", fmt.Errorf("read %s: %w", path, err)
+	}
+	var doc struct {
+		Server struct {
+			DataDir   string `yaml:"data_dir"`
+			IPCSocket string `yaml:"ipc_socket"`
+		} `yaml:"server"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return "", "", fmt.Errorf("parse %s: %w", path, err)
+	}
+	expandedDataDir, err := expandEnv([]byte(doc.Server.DataDir), nil)
+	if err != nil {
+		return "", "", fmt.Errorf("server.data_dir: %w", err)
+	}
+	expandedIPCSocket, err := expandEnv([]byte(doc.Server.IPCSocket), nil)
+	if err != nil {
+		return "", "", fmt.Errorf("server.ipc_socket: %w", err)
+	}
+	return string(expandedDataDir), string(expandedIPCSocket), nil
+}
+
 func (c *ServerConfig) applyDefaults() {
 	if c.Server.Listen == "" {
 		c.Server.Listen = DefaultListen

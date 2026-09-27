@@ -44,19 +44,6 @@ type clientDetails struct {
 	PushConfigured bool       `json:"push_configured"`
 }
 
-type immediateRenewer interface {
-	RenewNow(context.Context, *config.ServerConfig, config.CertificateSpec) error
-}
-
-func renewConfiguredCertificate(ctx context.Context, cfg *config.ServerConfig, renewer immediateRenewer, name string) error {
-	for _, spec := range cfg.Certificates {
-		if spec.Name == name {
-			return renewer.RenewNow(ctx, cfg, spec)
-		}
-	}
-	return fmt.Errorf("cert %q not found", name)
-}
-
 func runCertAdd(cmd *cobra.Command, args []string) error {
 	domains, _ := cmd.Flags().GetStringSlice("domains")
 	dnsProvider, _ := cmd.Flags().GetString("dns")
@@ -82,7 +69,7 @@ func runCertAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	cfgPath := serverConfigPath(cmd)
-	if _, err := addCertificateSpec(cfgPath, spec); err != nil {
+	if _, err := config.AddCertificateSpec(cfgPath, spec); err != nil {
 		return err
 	}
 	reloaded, err := reloadServerAfterConfigChange(cmd, cfgPath)
@@ -110,7 +97,7 @@ func runCertAdd(cmd *cobra.Command, args []string) error {
 func runCertRemove(cmd *cobra.Command, args []string) error {
 	name := args[0]
 	cfgPath := serverConfigPath(cmd)
-	if err := removeCertificateSpec(cfgPath, name); err != nil {
+	if err := config.RemoveCertificateSpec(cfgPath, name); err != nil {
 		return err
 	}
 	reloaded, err := reloadServerAfterConfigChange(cmd, cfgPath)
@@ -279,8 +266,8 @@ func serverIPCSocket(cmd *cobra.Command) string {
 	if path, _ := cmd.Root().PersistentFlags().GetString("ipc"); path != "" {
 		return path
 	}
-	if cfg, err := config.LoadServer(serverConfigPath(cmd)); err == nil && cfg.Server.IPCSocket != "" {
-		return cfg.Server.IPCSocket
+	if _, socket, err := config.ReadServerPaths(serverConfigPath(cmd)); err == nil && socket != "" {
+		return socket
 	}
 	return ipc.DefaultServerSocket()
 }

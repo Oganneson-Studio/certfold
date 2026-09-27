@@ -1,4 +1,4 @@
-package commands
+package config
 
 import (
 	"bytes"
@@ -6,11 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/Oganneson-Studio/sigil/internal/config"
 )
 
-func writeManagementTestConfig(t *testing.T, certificates string) string {
+func writeEditTestConfig(t *testing.T, certificates string) string {
 	t.Helper()
 	t.Setenv("SIGIL_TEST_ACCESS_KEY", "expanded-access-key")
 	t.Setenv("SIGIL_TEST_SECRET_KEY", "expanded-secret-key")
@@ -39,8 +37,8 @@ certificates:
 }
 
 func TestAddCertificateSpecPreservesPlaceholdersAndUsesDefaultCA(t *testing.T) {
-	path := writeManagementTestConfig(t, "  []\n")
-	spec, err := addCertificateSpec(path, config.CertificateSpec{
+	path := writeEditTestConfig(t, "  []\n")
+	spec, err := AddCertificateSpec(path, CertificateSpec{
 		Name:            "api-prod",
 		Domains:         []string{"api.example.com"},
 		DNSProvider:     "route",
@@ -49,7 +47,7 @@ func TestAddCertificateSpecPreservesPlaceholdersAndUsesDefaultCA(t *testing.T) {
 		Subscribers:     []string{"web-1"},
 	})
 	if err != nil {
-		t.Fatalf("addCertificateSpec: %v", err)
+		t.Fatalf("AddCertificateSpec: %v", err)
 	}
 	if spec.CA != "le" {
 		t.Fatalf("CA = %q, want default le", spec.CA)
@@ -71,7 +69,7 @@ func TestAddCertificateSpecPreservesPlaceholdersAndUsesDefaultCA(t *testing.T) {
 		}
 	}
 
-	cfg, err := config.LoadServer(path)
+	cfg, err := LoadServer(path)
 	if err != nil {
 		t.Fatalf("load updated config: %v", err)
 	}
@@ -81,7 +79,7 @@ func TestAddCertificateSpecPreservesPlaceholdersAndUsesDefaultCA(t *testing.T) {
 }
 
 func TestAddCertificateSpecFailureLeavesFileUnchanged(t *testing.T) {
-	path := writeManagementTestConfig(t, `  - name: api-prod
+	path := writeEditTestConfig(t, `  - name: api-prod
     domains: [api.example.com]
     ca: le
     dns_provider: route
@@ -93,7 +91,7 @@ func TestAddCertificateSpecFailureLeavesFileUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = addCertificateSpec(path, config.CertificateSpec{
+	_, err = AddCertificateSpec(path, CertificateSpec{
 		Name:            "api-prod",
 		Domains:         []string{"other.example.com"},
 		DNSProvider:     "route",
@@ -108,7 +106,7 @@ func TestAddCertificateSpecFailureLeavesFileUnchanged(t *testing.T) {
 		t.Fatal("duplicate add modified server.yaml")
 	}
 
-	_, err = addCertificateSpec(path, config.CertificateSpec{
+	_, err = AddCertificateSpec(path, CertificateSpec{
 		Name:            "bad-provider",
 		Domains:         []string{"bad.example.com"},
 		DNSProvider:     "missing",
@@ -125,7 +123,7 @@ func TestAddCertificateSpecFailureLeavesFileUnchanged(t *testing.T) {
 }
 
 func TestRemoveCertificateSpecIsExactAndFailureLeavesFileUnchanged(t *testing.T) {
-	path := writeManagementTestConfig(t, `  - name: api-prod
+	path := writeEditTestConfig(t, `  - name: api-prod
     domains: [api.example.com]
     ca: le
     dns_provider: route
@@ -138,10 +136,10 @@ func TestRemoveCertificateSpecIsExactAndFailureLeavesFileUnchanged(t *testing.T)
     key_type: ec256
     renew_days_before: 30
 `)
-	if err := removeCertificateSpec(path, "api-prod"); err != nil {
-		t.Fatalf("removeCertificateSpec: %v", err)
+	if err := RemoveCertificateSpec(path, "api-prod"); err != nil {
+		t.Fatalf("RemoveCertificateSpec: %v", err)
 	}
-	cfg, err := config.LoadServer(path)
+	cfg, err := LoadServer(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +148,7 @@ func TestRemoveCertificateSpecIsExactAndFailureLeavesFileUnchanged(t *testing.T)
 	}
 
 	before, _ := os.ReadFile(path)
-	err = removeCertificateSpec(path, "API-STAGE")
+	err = RemoveCertificateSpec(path, "API-STAGE")
 	if err == nil || !strings.Contains(err.Error(), `cert "API-STAGE" not found`) {
 		t.Fatalf("missing remove error = %v", err)
 	}

@@ -111,10 +111,10 @@ func TestUnpackClients_EmptyFS(t *testing.T) {
 func TestUnpackClients_WithBinaries(t *testing.T) {
 	content := []byte("fake-binary-content")
 	fsys := fstest.MapFS{
-		"sigilc-linux-amd64":      &fstest.MapFile{Data: content},
-		"sigilc-darwin-arm64":     &fstest.MapFile{Data: content},
+		"sigilc-linux-amd64":       &fstest.MapFile{Data: content},
+		"sigilc-darwin-arm64":      &fstest.MapFile{Data: content},
 		"sigilc-windows-amd64.exe": &fstest.MapFile{Data: content},
-		"README":                  &fstest.MapFile{Data: []byte("skip me")},
+		"README":                   &fstest.MapFile{Data: []byte("skip me")},
 	}
 	dir := t.TempDir()
 	var buf bytes.Buffer

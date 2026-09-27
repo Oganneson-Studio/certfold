@@ -27,8 +27,8 @@ func TestEnsureEnrollmentConfig_CreatesInitialConfig(t *testing.T) {
 	if cfg.Client.Name != "web-1" || cfg.Client.ServerURL != "https://sigil.example.com" {
 		t.Fatalf("generated config = %+v", cfg.Client)
 	}
-	if cfg.Client.DataDir == "" {
-		t.Fatal("generated config has no data directory")
+	if cfg.Client.DataDir != config.DefaultClientDataDir() {
+		t.Fatalf("generated data_dir = %q, want client default %q", cfg.Client.DataDir, config.DefaultClientDataDir())
 	}
 	if runtime.GOOS != "windows" {
 		info, err := os.Stat(path)

@@ -8,12 +8,6 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/version"
 )
 
-func notImplemented(name string) func(*cobra.Command, []string) error {
-	return func(_ *cobra.Command, _ []string) error {
-		return fmt.Errorf("%s: not implemented yet", name)
-	}
-}
-
 func newServeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "serve",

@@ -14,11 +14,32 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 )
 
-type recordingImmediateRenewer struct {
-	cfg   *config.ServerConfig
-	spec  config.CertificateSpec
-	calls int
-	err   error
+func writeManagementTestConfig(t *testing.T, certificates string) string {
+	t.Helper()
+	t.Setenv("SIGIL_TEST_ACCESS_KEY", "expanded-access-key")
+	t.Setenv("SIGIL_TEST_SECRET_KEY", "expanded-secret-key")
+	path := filepath.Join(t.TempDir(), "server.yaml")
+	raw := `# preserve this operator comment
+server:
+  listen: ":8443"
+  data_dir: "C:/sigil-test"
+acme:
+  email: "admin@example.com"
+  default_ca: "le"
+  cas:
+    le:
+      directory: "https://acme.example.com/directory"
+dns_providers:
+  route:
+    type: route53
+    access_key: ${SIGIL_TEST_ACCESS_KEY}
+    secret_key: ${SIGIL_TEST_SECRET_KEY}
+certificates:
+` + certificates
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 type fakeServerReloader struct {
@@ -36,42 +57,6 @@ func stubServerReloader(t *testing.T, client serverReloader, dialErr error) {
 	previous := dialServerReloader
 	dialServerReloader = func(string) (serverReloader, error) { return client, dialErr }
 	t.Cleanup(func() { dialServerReloader = previous })
-}
-
-func (r *recordingImmediateRenewer) RenewNow(_ context.Context, cfg *config.ServerConfig, spec config.CertificateSpec) error {
-	r.calls++
-	r.cfg = cfg
-	r.spec = spec
-	return r.err
-}
-
-func TestRenewConfiguredCertificateUsesLiveSpec(t *testing.T) {
-	cfg := &config.ServerConfig{Certificates: []config.CertificateSpec{{
-		Name: "api-prod", Domains: []string{"api.example.com"}, CA: "le",
-	}}}
-	r := &recordingImmediateRenewer{}
-	if err := renewConfiguredCertificate(context.Background(), cfg, r, "api-prod"); err != nil {
-		t.Fatal(err)
-	}
-	if r.calls != 1 || r.cfg != cfg || r.spec.Name != "api-prod" {
-		t.Fatalf("renewer calls = %d, spec = %+v", r.calls, r.spec)
-	}
-
-	if err := renewConfiguredCertificate(context.Background(), cfg, r, "API-PROD"); err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("missing cert error = %v", err)
-	}
-	if r.calls != 1 {
-		t.Fatalf("missing cert triggered renewal; calls = %d", r.calls)
-	}
-}
-
-func TestRenewConfiguredCertificatePropagatesIssuerFailure(t *testing.T) {
-	want := errors.New("acme failed")
-	r := &recordingImmediateRenewer{err: want}
-	cfg := &config.ServerConfig{Certificates: []config.CertificateSpec{{Name: "api-prod"}}}
-	if err := renewConfiguredCertificate(context.Background(), cfg, r, "api-prod"); !errors.Is(err, want) {
-		t.Fatalf("error = %v, want %v", err, want)
-	}
 }
 
 func TestManagementJSONViewsDoNotExposePrivateMaterial(t *testing.T) {
@@ -114,6 +99,15 @@ func TestServerIPCSocketResolution(t *testing.T) {
 	}
 	if got := serverIPCSocket(cmd); got != configured {
 		t.Fatalf("socket = %q, want configured %q", got, configured)
+	}
+
+	// Locating the daemon must not require the DNS credentials it expands.
+	unset := bytes.ReplaceAll(raw, []byte("${SIGIL_TEST_"), []byte("${SIGIL_TEST_UNSET_"))
+	if err := os.WriteFile(path, unset, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := serverIPCSocket(cmd); got != configured {
+		t.Fatalf("socket with unset credential variables = %q, want configured %q", got, configured)
 	}
 
 	explicit := filepath.Join(t.TempDir(), "explicit.sock")

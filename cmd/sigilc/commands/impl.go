@@ -6,23 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/signal"
-	"path/filepath"
-	"runtime"
-	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/Oganneson-Studio/sigil/internal/client"
+	"github.com/Oganneson-Studio/sigil/internal/agent"
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/enroll"
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 	"github.com/Oganneson-Studio/sigil/internal/securefile"
 	internalsvc "github.com/Oganneson-Studio/sigil/internal/service"
 	tuiclient "github.com/Oganneson-Studio/sigil/internal/tui/client"
-	"github.com/Oganneson-Studio/sigil/internal/version"
 )
 
 // ---------------------------------------------------------------------------
@@ -34,55 +29,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if cfgPath == "" {
 		cfgPath = defaultClientCfgPath()
 	}
-	cfg, err := config.LoadClient(cfgPath)
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	c, err := client.New(cfg, client.WithIdentitySaver(func(caCert, clientCert, clientKey string) error {
-		return enroll.SaveIdentity(cfgPath, caCert, clientCert, clientKey)
-	}))
-	if err != nil {
-		return fmt.Errorf("init client: %w", err)
-	}
-
-	// IPC server.
-	ipcSocket := cfg.Client.IPCSocket
-	if ipcSocket == "" {
-		ipcSocket = ipc.DefaultClientSocket()
-	}
-	ipcListener, err := ipc.Listen(ipcSocket)
-	if err != nil {
-		return fmt.Errorf("ipc listen: %w", err)
-	}
-	control := &ipc.ClientControlDeps{
-		State: func(context.Context) (ipc.ClientState, error) {
-			status := c.Status()
-			return ipc.ClientState{
-				Name:       status.Name,
-				ServerURL:  status.ServerURL,
-				Online:     status.Online,
-				LastPullAt: status.LastPullAt,
-				LastError:  status.LastError,
-				Certs:      status.Certs,
-			}, nil
-		},
-		Fetch: c.Fetch,
-		Reload: func(context.Context) error {
-			updated, err := config.LoadClient(cfgPath)
-			if err != nil {
-				return fmt.Errorf("load config: %w", err)
-			}
-			return c.Reload(updated)
-		},
-	}
-	go func() { _ = ipc.Serve(ctx, ipcListener, ipc.ServerDeps{Client: control}) }()
-
-	fmt.Printf("sigilc %s starting (server: %s)\n", version.Version, cfg.Client.ServerURL)
-	return c.Run(ctx)
+	return internalsvc.Run(clientSvcConfig(cmd), func(ctx context.Context) error {
+		return agent.Run(ctx, cfgPath)
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -279,7 +228,7 @@ func ensureEnrollmentConfig(cfgPath, tokenName, serverURL string) (string, error
 		Client: config.ClientSection{
 			Name:      tokenName,
 			ServerURL: serverURL,
-			DataDir:   defaultClientDataDir(),
+			DataDir:   config.DefaultClientDataDir(),
 		},
 	}
 	raw, err := yaml.Marshal(initial)
@@ -290,19 +239,4 @@ func ensureEnrollmentConfig(cfgPath, tokenName, serverURL string) (string, error
 		return "", fmt.Errorf("write initial config: %w", err)
 	}
 	return tokenName, nil
-}
-
-func defaultClientDataDir() string {
-	switch runtime.GOOS {
-	case "windows":
-		base := os.Getenv("PROGRAMDATA")
-		if base == "" {
-			base = `C:\ProgramData`
-		}
-		return filepath.Join(base, "Sigil", "data")
-	case "darwin":
-		return "/usr/local/var/sigilc"
-	default:
-		return "/var/lib/sigilc"
-	}
 }

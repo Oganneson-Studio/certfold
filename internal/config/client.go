@@ -99,6 +99,9 @@ func (c *ClientConfig) applyDefaults() {
 	if c.Client.IdentityRenewBefore == 0 {
 		c.Client.IdentityRenewBefore = DefaultIdentityRenewBefore
 	}
+	if c.Client.DataDir == "" {
+		c.Client.DataDir = DefaultClientDataDir()
+	}
 }
 
 // Validate reports structural problems.

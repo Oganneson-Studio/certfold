@@ -121,6 +121,26 @@ func TestParseClient_DefaultIdentityRenewBefore(t *testing.T) {
 	}
 }
 
+func TestParseClient_DataDir(t *testing.T) {
+	cfg, err := ParseClient([]byte(validClientYAML))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Client.DataDir != DefaultClientDataDir() {
+		t.Errorf("default data_dir: got %q, want %q", cfg.Client.DataDir, DefaultClientDataDir())
+	}
+
+	src := strings.Replace(validClientYAML, `pull_interval: "1h"`, `pull_interval: "1h"
+  data_dir: "/srv/sigilc"`, 1)
+	cfg, err = ParseClient([]byte(src))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Client.DataDir != "/srv/sigilc" {
+		t.Errorf("explicit data_dir: got %q", cfg.Client.DataDir)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Env interpolation
 // ---------------------------------------------------------------------------
