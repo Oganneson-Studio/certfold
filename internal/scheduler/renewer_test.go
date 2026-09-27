@@ -872,6 +872,9 @@ func TestReloadedSpecDiscardsInFlightResult(t *testing.T) {
 	if err := r.PublishConfig(context.Background(), func() { current.Store(newCfg) }); err != nil {
 		t.Fatal(err)
 	}
+	// The tick the reload wakes skips the certificate while it is issued, so
+	// only discarding the stale result can start the next issuance.
+	iss.none(t)
 	stale.succeed()
 
 	fresh := iss.next(t)
@@ -983,6 +986,9 @@ func TestOldGenerationFailureDoesNotBackOff(t *testing.T) {
 	if err := r.PublishConfig(context.Background(), func() { current.Store(newCfg) }); err != nil {
 		t.Fatal(err)
 	}
+	// The tick the reload wakes skips the certificate while it is issued, so
+	// only the failure can start the retry.
+	iss.none(t)
 	stale.fail(errors.New("dns credentials rejected"))
 
 	retry := iss.next(t)
