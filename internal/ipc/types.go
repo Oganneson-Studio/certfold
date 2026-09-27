@@ -6,7 +6,8 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
-// This file defines every request and response body of the IPC API. The
+// This file defines the request and response bodies of the IPC API; only the
+// E2E seeding route POST /ipc/v1/certs takes a store.CertRecord instead. The
 // read models are explicit DTOs: they never carry certificate private keys,
 // push tokens or enrollment-token secret hashes.
 
