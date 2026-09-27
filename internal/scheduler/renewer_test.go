@@ -997,6 +997,26 @@ func TestOldGenerationFailureDoesNotBackOff(t *testing.T) {
 	}
 }
 
+// A failure that ends an attempt whose ctx was cancelled, at shutdown or when
+// the IPC caller goes away, says nothing about the configuration and stores
+// no backoff, whatever the error.
+func TestCancelledFailureDoesNotBackOff(t *testing.T) {
+	db := mustOpenDB(t)
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
+	r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	ctx, cancel := context.WithCancel(context.Background())
+
+	renewed := renewAsync(ctx, r, static(minimalCfg("api-prod", 30, nil)), "api-prod")
+	call := iss.next(t)
+	cancel()
+	call.fail(errors.New("dns timeout"))
+	if err := receive(t, renewed, "RenewNamed"); err == nil {
+		t.Fatal("RenewNamed reported success for a failed issuance")
+	}
+	assertNoStatus(t, db, "api-prod")
+}
+
 // ⑫ Publishing a configuration clears every backoff but keeps the last
 // error, and wakes the scheduler.
 func TestPublishConfigClearsBackoffAndWakes(t *testing.T) {
