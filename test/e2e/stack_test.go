@@ -129,10 +129,14 @@ func newE2EStack(rt containerRuntime) (*e2eStack, error) {
 		serverImage: "sigil-e2e-sigils:" + suffix,
 		clientImage: "sigil-e2e-sigilc:" + suffix,
 	}
-	if s.miniCA, err = s.newDeployment("minica", "sigils", "web-1", suffix); err != nil {
+	ports, err := availablePorts(2)
+	if err != nil {
 		return fail(err)
 	}
-	if s.publicTLS, err = s.newDeployment("public", "sigils-public", "web-public", suffix); err != nil {
+	if s.miniCA, err = s.newDeployment("minica", "sigils", "web-1", suffix, ports[0]); err != nil {
+		return fail(err)
+	}
+	if s.publicTLS, err = s.newDeployment("public", "sigils-public", "web-public", suffix, ports[1]); err != nil {
 		return fail(err)
 	}
 	if err := s.writeFixtures(); err != nil {
@@ -141,11 +145,7 @@ func newE2EStack(rt containerRuntime) (*e2eStack, error) {
 	return s, nil
 }
 
-func (s *e2eStack) newDeployment(dir, alias, clientName, suffix string) (*deployment, error) {
-	port, err := availablePort()
-	if err != nil {
-		return nil, err
-	}
+func (s *e2eStack) newDeployment(dir, alias, clientName, suffix string, port int) (*deployment, error) {
 	d := &deployment{
 		dir:             dir,
 		hostDir:         filepath.Join(s.tempDir, dir),
@@ -440,13 +440,19 @@ func privateKeyPEM(key *ecdsa.PrivateKey) ([]byte, error) {
 	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
 }
 
-func availablePort() (int, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
+// availablePorts returns n free loopback ports. Every listener stays open until
+// all ports are chosen, so the same port is never returned twice.
+func availablePorts(n int) ([]int, error) {
+	ports := make([]int, 0, n)
+	for range n {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, err
+		}
+		defer listener.Close()
+		ports = append(ports, listener.Addr().(*net.TCPAddr).Port)
 	}
-	defer listener.Close()
-	return listener.Addr().(*net.TCPAddr).Port, nil
+	return ports, nil
 }
 
 func bindMount(source, destination string, readOnly bool) string {
