@@ -47,7 +47,7 @@ func runReload(cmd *cobra.Command, _ []string) error {
 	if err := c.ReloadClient(context.Background()); err != nil {
 		return err
 	}
-	fmt.Println("reload sent")
+	fmt.Println("configuration applied; rewriting certificate outputs in the background (see sigilc status)")
 	return nil
 }
 
@@ -101,10 +101,8 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		if asJSON {
 			fmt.Println(`{"error":"daemon not running"}`)
-		} else {
-			fmt.Fprintln(os.Stderr, "sigilc daemon is not running")
 		}
-		return nil
+		return fmt.Errorf("sigilc daemon is not running: %w", err)
 	}
 	st, err := c.GetClientState(context.Background())
 	if err != nil {

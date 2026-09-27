@@ -11,18 +11,22 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/sigil/internal/enroll"
 	"github.com/Oganneson-Studio/sigil/pkg/proto"
 )
 
@@ -83,6 +87,43 @@ func (authority *testIdentityCA) issue(t *testing.T, name string, publicKey any,
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 }
 
+// serverTLSCertificate issues a certificate for the httptest listener address.
+func (authority *testIdentityCA) serverTLSCertificate(t *testing.T, now time.Time) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(100),
+		Subject:      pkix.Name{CommonName: "sigils"},
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
+		NotBefore:    now.Add(-time.Minute),
+		NotAfter:     now.Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, authority.cert, &key.PublicKey, authority.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// withSystemRoots stands in for the operating system trust store.
+func withSystemRoots(t *testing.T, roots ...*x509.Certificate) {
+	t.Helper()
+	original := enroll.SystemCertPool
+	enroll.SystemCertPool = func() (*x509.CertPool, error) {
+		pool := x509.NewCertPool()
+		for _, root := range roots {
+			pool.AddCert(root)
+		}
+		return pool, nil
+	}
+	t.Cleanup(func() { enroll.SystemCertPool = original })
+}
+
 func privateKeyPEM(t *testing.T, key *ecdsa.PrivateKey) string {
 	t.Helper()
 	der, err := x509.MarshalPKCS8PrivateKey(key)
@@ -110,7 +151,9 @@ func buildTestCfg(t *testing.T, serverURL string) *config.ClientConfig {
 type fakeServer struct {
 	summaries  []proto.CertSummary
 	bundles    map[string]*proto.CertBundle
-	heartbeats int
+	heartbeats atomic.Int32
+	// pulls, when set, receives a value as each pull ends with its heartbeat.
+	pulls chan struct{}
 }
 
 func (f *fakeServer) handler() http.Handler {
@@ -134,10 +177,39 @@ func (f *fakeServer) handler() http.Handler {
 		_ = json.NewEncoder(w).Encode(b)
 	})
 	mux.HandleFunc("/v1/heartbeat", func(w http.ResponseWriter, r *http.Request) {
-		f.heartbeats++
+		f.heartbeats.Add(1)
+		if f.pulls != nil {
+			select {
+			case f.pulls <- struct{}{}:
+			default:
+			}
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	return mux
+}
+
+// waitForPull waits until the fake server has seen the heartbeat that ends a
+// pull, so every output of that pull has been written.
+func waitForPull(t *testing.T, pulls <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-pulls:
+	case <-time.After(10 * time.Second):
+		t.Fatal("pull did not complete")
+	}
+}
+
+// startRun runs c until the test ends.
+func startRun(t *testing.T, c *Client) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -184,8 +256,8 @@ func TestPullOnce_FetchAndWrite(t *testing.T) {
 	}
 
 	// Heartbeat should have been sent.
-	if fs.heartbeats != 1 {
-		t.Errorf("expected 1 heartbeat, got %d", fs.heartbeats)
+	if got := fs.heartbeats.Load(); got != 1 {
+		t.Errorf("expected 1 heartbeat, got %d", got)
 	}
 }
 
@@ -260,6 +332,68 @@ func TestPullOnce_ServerError_Tolerant(t *testing.T) {
 	err := c.pullOnce(context.Background())
 	if err == nil {
 		t.Error("expected error from server, got nil")
+	}
+}
+
+// TestFetchTrustsSystemRootsAndMiniCA covers a server that presents a publicly
+// trusted server.tls_cert_file: pulls must trust the system roots, as
+// enrollment does, while the mini-CA keeps authenticating the client.
+func TestFetchTrustsSystemRootsAndMiniCA(t *testing.T) {
+	now := time.Now()
+	miniCA := newTestIdentityCA(t, now)
+	publicCA := newTestIdentityCA(t, now)
+	unrelatedCA := newTestIdentityCA(t, now)
+	withSystemRoots(t, publicCA.cert)
+
+	clientKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientCert := miniCA.issue(t, "web-1", &clientKey.PublicKey, now, now.Add(90*24*time.Hour), 2)
+	clientCAs := x509.NewCertPool()
+	clientCAs.AddCert(miniCA.cert)
+
+	for _, tc := range []struct {
+		name    string
+		issuer  *testIdentityCA
+		trusted bool
+	}{
+		{name: "public CA in system roots", issuer: publicCA, trusted: true},
+		{name: "mini-CA", issuer: miniCA, trusted: true},
+		{name: "unrelated CA", issuer: unrelatedCA, trusted: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewUnstartedServer((&fakeServer{}).handler())
+			ts.TLS = &tls.Config{
+				Certificates: []tls.Certificate{tc.issuer.serverTLSCertificate(t, now)},
+				ClientAuth:   tls.RequireAndVerifyClientCert,
+				ClientCAs:    clientCAs,
+			}
+			ts.StartTLS()
+			defer ts.Close()
+
+			cfg := buildTestCfg(t, ts.URL)
+			cfg.Identity = config.IdentitySection{
+				CACert:     miniCA.certPEM,
+				ClientCert: clientCert,
+				ClientKey:  privateKeyPEM(t, clientKey),
+			}
+			c, err := New(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = c.Fetch(context.Background(), "")
+			if tc.trusted {
+				if err != nil {
+					t.Fatalf("Fetch: %v", err)
+				}
+				return
+			}
+			var unknownAuthority x509.UnknownAuthorityError
+			if !errors.As(err, &unknownAuthority) {
+				t.Fatalf("Fetch error = %v, want an unknown authority error", err)
+			}
+		})
 	}
 }
 
@@ -374,6 +508,292 @@ func TestFetchNamedCertificateForcesOnlyThatBundle(t *testing.T) {
 	}
 	if len(bundleRequests) != 1 || bundleRequests[0] != "/v1/certificates/b/bundle" {
 		t.Fatalf("bundle requests = %v, want only b", bundleRequests)
+	}
+}
+
+// newRewriteServer serves one certificate whose fingerprint never changes, so
+// only a forced rewrite writes its outputs again.
+func newRewriteServer() *fakeServer {
+	return &fakeServer{
+		summaries: []proto.CertSummary{{Name: "api-prod", Fingerprint: "sha256:AABB"}},
+		bundles: map[string]*proto.CertBundle{
+			"api-prod": {FullchainPEM: "-----BEGIN CERTIFICATE-----\nfoo\n-----END CERTIFICATE-----\n", KeyPEM: "key"},
+		},
+		pulls: make(chan struct{}, 8),
+	}
+}
+
+// newRewriteClient returns a client for newRewriteServer with one output at
+// outPath. Its state.json already records the served fingerprint, as if an
+// earlier run had written the output that has since gone missing.
+func newRewriteClient(t *testing.T, serverURL, outPath string) *Client {
+	t.Helper()
+	cfg := buildTestCfg(t, serverURL)
+	cfg.Outputs["api-prod"] = []config.OutputSpec{{Format: "pem-fullchain", Path: outPath}}
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.saveState(&state{Certs: map[string]string{"api-prod": "sha256:AABB"}}); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func TestRunRewritesOutputsOnFirstPull(t *testing.T) {
+	fs := newRewriteServer()
+	ts := httptest.NewServer(fs.handler())
+	t.Cleanup(ts.Close)
+	outPath := filepath.Join(t.TempDir(), "cert.pem")
+	c := newRewriteClient(t, ts.URL, outPath)
+
+	startRun(t, c)
+	waitForPull(t, fs.pulls)
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatalf("first pull did not rewrite the output: %v", err)
+	}
+}
+
+func TestReloadRewritesOutputsImmediately(t *testing.T) {
+	fs := newRewriteServer()
+	ts := httptest.NewServer(fs.handler())
+	t.Cleanup(ts.Close)
+	cfg := buildTestCfg(t, ts.URL)
+	dir := t.TempDir()
+	firstPath := filepath.Join(dir, "cert.pem")
+	addedPath := filepath.Join(dir, "added.pem")
+	cfg.Outputs["api-prod"] = []config.OutputSpec{{Format: "pem-fullchain", Path: firstPath}}
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startRun(t, c)
+	waitForPull(t, fs.pulls)
+
+	// An output added to client.yaml after the certificate was written.
+	updated := *cfg
+	updated.Outputs = map[string][]config.OutputSpec{"api-prod": {
+		{Format: "pem-fullchain", Path: firstPath},
+		{Format: "pem-fullchain", Path: addedPath},
+	}}
+	if err := c.Reload(&updated); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	waitForPull(t, fs.pulls)
+	if _, err := os.Stat(addedPath); err != nil {
+		t.Fatalf("reload did not write the added output: %v", err)
+	}
+
+	// Later pulls only write certificates whose fingerprints changed.
+	if err := os.Remove(addedPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Fetch(context.Background(), ""); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if _, err := os.Stat(addedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pull without a fingerprint change rewrote the output: %v", err)
+	}
+}
+
+func TestRewriteSurvivesUnreachableServer(t *testing.T) {
+	api := newRewriteServer().handler()
+	var unavailable atomic.Bool
+	unavailable.Store(true)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if unavailable.Load() {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		api.ServeHTTP(w, r)
+	}))
+	defer ts.Close()
+	outPath := filepath.Join(t.TempDir(), "cert.pem")
+	c := newRewriteClient(t, ts.URL, outPath)
+
+	if err := c.pullOnce(context.Background()); err == nil {
+		t.Fatal("expected the pull to fail while the server is unavailable")
+	}
+	unavailable.Store(false)
+	if err := c.pullOnce(context.Background()); err != nil {
+		t.Fatalf("pullOnce: %v", err)
+	}
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatalf("the failed pull dropped the pending rewrite: %v", err)
+	}
+}
+
+// TestRewriteRetriesFailedBundle covers a rewrite whose bundle request fails:
+// state.json already records the served fingerprint, so a plain diff would
+// never fetch the certificate again.
+func TestRewriteRetriesFailedBundle(t *testing.T) {
+	api := newRewriteServer().handler()
+	var bundleRequests atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/bundle") && bundleRequests.Add(1) == 1 {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		api.ServeHTTP(w, r)
+	}))
+	defer ts.Close()
+	outPath := filepath.Join(t.TempDir(), "cert.pem")
+	c := newRewriteClient(t, ts.URL, outPath)
+
+	if err := c.pullOnce(context.Background()); err == nil {
+		t.Fatal("expected the pull to fail while the bundle is unavailable")
+	}
+	if err := c.pullOnce(context.Background()); err != nil {
+		t.Fatalf("pullOnce: %v", err)
+	}
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatalf("the failed bundle was not fetched again: %v", err)
+	}
+}
+
+// TestFailedFetchKeepsOlderFingerprint covers a certificate whose fingerprint
+// changed: a plain diff retries it anyway, so state.json keeps recording the
+// material that is still on disk.
+func TestFailedFetchKeepsOlderFingerprint(t *testing.T) {
+	api := newRewriteServer().handler()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/bundle") {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		api.ServeHTTP(w, r)
+	}))
+	defer ts.Close()
+	c := newRewriteClient(t, ts.URL, filepath.Join(t.TempDir(), "cert.pem"))
+	if err := c.saveState(&state{Certs: map[string]string{"api-prod": "sha256:OLD"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.pullOnce(context.Background()); err == nil {
+		t.Fatal("expected the pull to fail while the bundle is unavailable")
+	}
+	if got := c.loadState().Certs["api-prod"]; got != "sha256:OLD" {
+		t.Fatalf("recorded fingerprint = %q, want the older sha256:OLD", got)
+	}
+}
+
+// TestRewriteRetriesFailedWrite covers a rewrite that cannot write an output
+// until the operator repairs the path.
+func TestRewriteRetriesFailedWrite(t *testing.T) {
+	ts := httptest.NewServer(newRewriteServer().handler())
+	defer ts.Close()
+	// A file where the output directory belongs fails the write.
+	blocker := filepath.Join(t.TempDir(), "certs")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outPath := filepath.Join(blocker, "cert.pem")
+	c := newRewriteClient(t, ts.URL, outPath)
+
+	if err := c.pullOnce(context.Background()); err == nil {
+		t.Fatal("expected the write below a file to fail")
+	}
+	if err := os.Remove(blocker); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.pullOnce(context.Background()); err != nil {
+		t.Fatalf("pullOnce: %v", err)
+	}
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatalf("the failed write was not retried: %v", err)
+	}
+}
+
+// TestNamedFetchKeepsPendingRewrite covers sigilc fetch --cert and push
+// notifications: fetching one certificate must leave the pending rewrite of
+// the others to the next full pull.
+func TestNamedFetchKeepsPendingRewrite(t *testing.T) {
+	fs := newRewriteServer()
+	fs.summaries = append(fs.summaries, proto.CertSummary{Name: "api-stage", Fingerprint: "sha256:CCDD"})
+	fs.bundles["api-stage"] = fs.bundles["api-prod"]
+	ts := httptest.NewServer(fs.handler())
+	defer ts.Close()
+	cfg := buildTestCfg(t, ts.URL)
+	stagePath := filepath.Join(t.TempDir(), "stage.pem")
+	cfg.Outputs["api-stage"] = []config.OutputSpec{{Format: "pem-fullchain", Path: stagePath}}
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.saveState(&state{Certs: map[string]string{"api-prod": "sha256:AABB", "api-stage": "sha256:CCDD"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.Fetch(context.Background(), "api-prod"); err != nil {
+		t.Fatalf("named Fetch: %v", err)
+	}
+	if err := c.Fetch(context.Background(), ""); err != nil {
+		t.Fatalf("full Fetch: %v", err)
+	}
+	if _, err := os.Stat(stagePath); err != nil {
+		t.Fatalf("the named fetch consumed the pending rewrite: %v", err)
+	}
+}
+
+// TestRunWaitsForInFlightPull covers a pull started by IPC or push that is
+// still running when the daemon stops.
+func TestRunWaitsForInFlightPull(t *testing.T) {
+	var blockNext atomic.Bool
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	pulls := make(chan struct{}, 4)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/certificates", func(w http.ResponseWriter, _ *http.Request) {
+		if blockNext.CompareAndSwap(true, false) {
+			close(blocked)
+			<-release
+		}
+		_ = json.NewEncoder(w).Encode([]proto.CertSummary{})
+	})
+	mux.HandleFunc("/v1/heartbeat", func(w http.ResponseWriter, _ *http.Request) {
+		pulls <- struct{}{}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+	// Close waits for the blocked handler, so release it on every exit path.
+	defer unblock()
+
+	c, err := New(buildTestCfg(t, ts.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+	waitForPull(t, pulls)
+
+	blockNext.Store(true)
+	fetched := make(chan error, 1)
+	go func() { fetched <- c.Fetch(context.Background(), "") }()
+	select {
+	case <-blocked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Fetch did not reach the blocked list request")
+	}
+	cancel()
+	select {
+	case <-done:
+		t.Fatal("Run returned while a pull was still running")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	unblock()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return after the pull finished")
+	}
+	if err := <-fetched; err != nil {
+		t.Fatalf("Fetch: %v", err)
 	}
 }
 
@@ -497,6 +917,16 @@ func TestPushHandlerRequiresBearerAndCoalescesPulls(t *testing.T) {
 		t.Fatalf("concurrent push notifications started %d pulls, want 1", got)
 	}
 	close(release)
+
+	// The pull writes state.json into the test's data directory; let it
+	// finish before the directory is removed.
+	deadline = time.Now().Add(5 * time.Second)
+	for c.pushInFlight.Load() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if c.pushInFlight.Load() {
+		t.Fatal("push-triggered pull did not finish")
+	}
 }
 
 func TestDiffCerts(t *testing.T) {

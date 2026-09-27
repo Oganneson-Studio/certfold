@@ -30,7 +30,7 @@ func Write(bundle *CertBundle, spec config.OutputSpec) error {
 	if err != nil {
 		return fmt.Errorf("encode %s: %w", spec.Format, err)
 	}
-	if err := atomicWrite(spec.Path, data, outputMode(spec)); err != nil {
+	if err := atomicWrite(spec, data); err != nil {
 		return fmt.Errorf("write %s: %w", spec.Path, err)
 	}
 	return applyOwnership(spec.Path, spec.Owner, spec.Group)
@@ -40,11 +40,19 @@ func outputMode(spec config.OutputSpec) int {
 	if spec.Mode != 0 {
 		return spec.Mode
 	}
-	switch spec.Format {
-	case "pem-key", "pem-bundle", "pkcs12":
+	if carriesKey(spec.Format) {
 		return 0o600
+	}
+	return 0o644
+}
+
+// carriesKey reports whether an output format contains the private key.
+func carriesKey(format string) bool {
+	switch format {
+	case "pem-key", "pem-bundle", "pkcs12":
+		return true
 	default:
-		return 0o644
+		return false
 	}
 }
 
@@ -99,19 +107,17 @@ func encodePKCS12(bundle *CertBundle, password string) ([]byte, error) {
 	return pkcs12.Modern.Encode(privKey, leaf, chain, password)
 }
 
-// atomicWrite writes data to path using a temp-file + rename so callers always
-// see a complete file.  mode 0 defaults to 0644.
-func atomicWrite(path string, data []byte, mode int) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+// atomicWrite writes data to spec.Path using a temp-file + rename so callers
+// always see a complete file. createTemp gives the temp file its access
+// controls before any data is written.
+func atomicWrite(spec config.OutputSpec, data []byte) error {
+	dir := filepath.Dir(spec.Path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
-	}
-	perm := os.FileMode(0o644)
-	if mode != 0 {
-		perm = os.FileMode(mode)
 	}
 
 	// Write to a sibling temp file so rename stays on the same filesystem.
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".sigil-tmp-*")
+	tmp, err := createTemp(dir, spec)
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
 	}
@@ -122,7 +128,7 @@ func atomicWrite(path string, data []byte, mode int) error {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("write temp: %w", err)
 	}
-	if err := tmp.Chmod(perm); err != nil {
+	if err := applyMode(tmp, spec); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("chmod temp: %w", err)
@@ -131,7 +137,7 @@ func atomicWrite(path string, data []byte, mode int) error {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("close temp: %w", err)
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := os.Rename(tmpName, spec.Path); err != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("rename: %w", err)
 	}

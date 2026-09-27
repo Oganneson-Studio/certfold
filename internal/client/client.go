@@ -44,8 +44,18 @@ type Client struct {
 	cfg   *config.ClientConfig
 	http  *http.Client
 
-	pullMu   sync.Mutex
-	reloadCh chan struct{}
+	pullMu sync.Mutex
+	// rewriteAll makes the next full pull rewrite the outputs of every
+	// subscribed certificate, whatever the fingerprints in state.json say:
+	// outputs may have been added to client.yaml or removed from disk since
+	// they were last written. New and Reload set it; a full pull clears it
+	// once it has listed the subscribed certificates. If that pull fails for a
+	// certificate whose recorded fingerprint equals the served one, its entry
+	// is dropped from state.json so the next pull retries it; an older
+	// fingerprint stays, since a diff retries the certificate anyway.
+	// Guarded by pullMu.
+	rewriteAll bool
+	reloadCh   chan struct{}
 
 	statusMu sync.RWMutex
 	status   RuntimeStatus
@@ -88,9 +98,10 @@ func New(cfg *config.ClientConfig, options ...Option) (*Client, error) {
 		return nil, err
 	}
 	c := &Client{
-		cfg:      cfg,
-		http:     httpClient,
-		reloadCh: make(chan struct{}, 1),
+		cfg:        cfg,
+		http:       httpClient,
+		rewriteAll: true,
+		reloadCh:   make(chan struct{}, 1),
 		status: RuntimeStatus{
 			Name:      cfg.Client.Name,
 			ServerURL: cfg.Client.ServerURL,
@@ -113,7 +124,7 @@ func (c *Client) Run(ctx context.Context) error {
 		return fmt.Errorf("client.push_listen: %w", err)
 	}
 
-	// First pull immediately.
+	// First pull immediately. New set rewriteAll, so it rewrites every output.
 	_ = c.pullOnce(ctx)
 
 	// Push receiver (optional).
@@ -121,10 +132,16 @@ func (c *Client) Run(ctx context.Context) error {
 		go c.startPushReceiver(ctx, pushListen)
 	}
 
-	return c.pullLoop(ctx)
+	err := c.pullLoop(ctx)
+	// A push or IPC pull runs outside the loop and may still be writing
+	// outputs or state.json. Take pullMu once so Run returns after it ends.
+	c.pullMu.Lock()
+	c.pullMu.Unlock()
+	return err
 }
 
-// pullLoop ticks every pull_interval ±10 % and calls pullOnce.
+// pullLoop ticks every pull_interval ±10 % and calls pullOnce. A successful
+// Reload triggers an immediate pull and restarts the interval.
 func (c *Client) pullLoop(ctx context.Context) error {
 	for {
 		interval := jitter(c.pullInterval(), jitterPct)
@@ -135,6 +152,7 @@ func (c *Client) pullLoop(ctx context.Context) error {
 			return ctx.Err()
 		case <-c.reloadCh:
 			timer.Stop()
+			_ = c.pullOnce(ctx)
 		case <-timer.C:
 			_ = c.pullOnce(ctx)
 		}
@@ -143,8 +161,9 @@ func (c *Client) pullLoop(ctx context.Context) error {
 
 // pullOnce executes one full pull cycle:
 //  1. GET /v1/certificates
-//  2. Diff against local state
-//  3. Fetch changed bundles + write outputs
+//  2. Diff against local state, or select every certificate while
+//     rewriteAll is set
+//  3. Fetch selected bundles + write outputs
 //  4. Persist updated state
 //  5. POST /v1/heartbeat
 func (c *Client) pullOnce(ctx context.Context) error {
@@ -152,7 +171,9 @@ func (c *Client) pullOnce(ctx context.Context) error {
 }
 
 // Fetch performs an immediate pull. When name is non-empty, that certificate
-// is fetched even when its fingerprint has not changed.
+// is fetched even when its fingerprint has not changed. An empty name fetches
+// the certificates whose fingerprints changed, or every subscribed
+// certificate after startup or a reload.
 func (c *Client) Fetch(ctx context.Context, name string) error {
 	c.pullMu.Lock()
 	defer c.pullMu.Unlock()
@@ -293,17 +314,27 @@ func (c *Client) fetchLocked(ctx context.Context, name string) error {
 		if len(changed) == 0 {
 			return fmt.Errorf("certificate %q is not subscribed", name)
 		}
+	} else if c.rewriteAll {
+		changed = summaries
+		c.rewriteAll = false
 	}
 
 	var errs []error
 	for _, s := range changed {
 		bundle, err := c.getBundle(ctx, s.Name)
+		if err == nil {
+			if err = c.writeOutputs(s.Name, bundle); err != nil {
+				err = fmt.Errorf("write %s: %w", s.Name, err)
+			}
+		}
 		if err != nil {
 			errs = append(errs, err)
-			continue
-		}
-		if err := c.writeOutputs(s.Name, bundle); err != nil {
-			errs = append(errs, fmt.Errorf("write %s: %w", s.Name, err))
+			// A diff skips a certificate whose fingerprint state.json already
+			// records, so a forced or named pull that failed for it would not
+			// be retried. Forget the fingerprint so the next pull retries it.
+			if st.Certs[s.Name] == s.Fingerprint {
+				delete(st.Certs, s.Name)
+			}
 			continue
 		}
 		st.Certs[s.Name] = s.Fingerprint
@@ -526,7 +557,9 @@ func (c *Client) Status() RuntimeStatus {
 
 // Reload applies a newly parsed client configuration. Changing the IPC or
 // push listener requires a service restart because those listeners are owned
-// by Run and the command process respectively.
+// by Run and the command process respectively. Once applied, Run pulls
+// immediately and rewrites the outputs of every subscribed certificate, so
+// outputs added to client.yaml are written without waiting for a renewal.
 func (c *Client) Reload(cfg *config.ClientConfig) error {
 	httpClient, err := buildHTTPClient(cfg)
 	if err != nil {
@@ -547,6 +580,7 @@ func (c *Client) Reload(cfg *config.ClientConfig) error {
 	c.cfg = cfg
 	c.http = httpClient
 	c.cfgMu.Unlock()
+	c.rewriteAll = true
 
 	c.statusMu.Lock()
 	c.status.Name = cfg.Client.Name
@@ -624,7 +658,9 @@ func splitBundle(b *proto.CertBundle) *output.CertBundle {
 	}
 }
 
-// buildHTTPClient constructs an mTLS HTTP client from cfg.Identity.
+// buildHTTPClient constructs an mTLS HTTP client from cfg.Identity. The server
+// is authenticated with the same roots as during enrollment, so a server that
+// presents a publicly trusted server.tls_cert_file stays reachable.
 func buildHTTPClient(cfg *config.ClientConfig) (*http.Client, error) {
 	id := cfg.Identity
 	if id.ClientCert == "" && id.ClientKey == "" {
@@ -635,9 +671,9 @@ func buildHTTPClient(cfg *config.ClientConfig) (*http.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load client cert: %w", err)
 	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM([]byte(id.CACert)) {
-		return nil, fmt.Errorf("parse CA cert")
+	pool, err := enroll.ServerRoots(id.CACert)
+	if err != nil {
+		return nil, err
 	}
 	tlsCfg := &tls.Config{
 		Certificates: []tls.Certificate{tlsCert},

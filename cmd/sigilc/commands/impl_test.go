@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
@@ -81,6 +83,26 @@ func TestClientIPCSocketExplicitFlagWins(t *testing.T) {
 	}
 	if got := clientIPCSocket(cmd); got != explicit {
 		t.Fatalf("socket = %q, want explicit path %q", got, explicit)
+	}
+}
+
+// missingIPCSocket returns an IPC endpoint no daemon listens on.
+func missingIPCSocket(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf(`\\.\pipe\sigil-client-missing-%d`, time.Now().UnixNano())
+	}
+	return filepath.Join(t.TempDir(), "missing.sock")
+}
+
+func TestStatusFailsWhenDaemonIsNotRunning(t *testing.T) {
+	socket := missingIPCSocket(t)
+	for _, args := range [][]string{{"status"}, {"status", "--json"}} {
+		cmd := NewRootCmd()
+		cmd.SetArgs(append([]string{"--ipc", socket}, args...))
+		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "daemon is not running") {
+			t.Fatalf("sigilc %v returned %v, want a daemon-not-running error", args, err)
+		}
 	}
 }
 
