@@ -261,6 +261,8 @@ func (c *ServerConfig) Validate() error {
 		base := fmt.Sprintf("clients[%d]", i)
 		if cl.Name == "" {
 			v.Add(base+".name", "must be set")
+		} else if err := ValidateClientName(cl.Name); err != nil {
+			v.Add(base+".name", "%v", err)
 		} else if clientNames[cl.Name] {
 			v.Add(base+".name", "duplicate client name %q", cl.Name)
 		} else {
@@ -282,11 +284,12 @@ func (c *ServerConfig) Validate() error {
 
 	// Subscribers reference clients that *might* not be enrolled yet — that's
 	// allowed (you typically write subscribers first, then enroll). We only
-	// validate that subscriber names are syntactically reasonable.
+	// validate that subscriber names are valid client names; the API matches
+	// them against certificate CNs exactly.
 	for i, cert := range c.Certificates {
 		for j, sub := range cert.Subscribers {
-			if sub == "" {
-				v.Add(fmt.Sprintf("certificates[%d].subscribers[%d]", i, j), "must not be empty")
+			if err := ValidateClientName(sub); err != nil {
+				v.Add(fmt.Sprintf("certificates[%d].subscribers[%d]", i, j), "%v", err)
 			}
 		}
 	}

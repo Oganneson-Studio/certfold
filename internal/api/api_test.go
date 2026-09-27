@@ -630,6 +630,43 @@ func TestListCertificates_FilterBySubscriber(t *testing.T) {
 	}
 }
 
+func TestSubscriptionMatchIsExact(t *testing.T) {
+	deps := buildDeps(t)
+	_ = deps.DB.Certs.Upsert(context.Background(), &store.CertRecord{
+		Name:            "api-prod",
+		CA:              "letsencrypt",
+		Domains:         []string{"api.example.com"},
+		SpecFingerprint: config.CertificateSpecFingerprint(deps.ServerCfg, deps.ServerCfg.Certificates[0]),
+		FullchainPEM:    "chain",
+		KeyPEM:          "private-key-for-web-1",
+		UpdatedAt:       time.Now(),
+	}, nil)
+
+	// A client enrolled under another spelling of the subscriber "web-1" is a
+	// different client and must not receive its certificates.
+	clientCert := makeEnrolledClientCert(t, deps, "WEB-1")
+	handler := NewInsecure(deps).Handler
+
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, simulateMTLS(httptest.NewRequest(http.MethodGet, "/v1/certificates", nil), clientCert))
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d", listRec.Code)
+	}
+	var certs []proto.CertSummary
+	if err := json.NewDecoder(listRec.Body).Decode(&certs); err != nil {
+		t.Fatal(err)
+	}
+	if len(certs) != 0 {
+		t.Fatalf("WEB-1 sees certificates subscribed by web-1: %+v", certs)
+	}
+
+	bundleRec := httptest.NewRecorder()
+	handler.ServeHTTP(bundleRec, simulateMTLS(httptest.NewRequest(http.MethodGet, "/v1/certificates/api-prod/bundle", nil), clientCert))
+	if bundleRec.Code != http.StatusNotFound || strings.Contains(bundleRec.Body.String(), "private-key-for-web-1") {
+		t.Fatalf("bundle status = %d, body = %s", bundleRec.Code, bundleRec.Body.String())
+	}
+}
+
 func TestListCertificatesReflectsRuntimeSubscriptionReload(t *testing.T) {
 	deps := buildDeps(t)
 	var current atomic.Pointer[config.ServerConfig]

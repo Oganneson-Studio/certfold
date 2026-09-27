@@ -169,6 +169,28 @@ func TestParseServer_ValidationErrors(t *testing.T) {
 	}
 }
 
+func TestParseServer_ClientNamesMustBeLowercaseDNSLabels(t *testing.T) {
+	src := strings.Replace(validServerYAML, "subscribers: [web-1, web-2]", "subscribers: [web-1, Web-2]", 1)
+	_, err := ParseServer([]byte(src))
+	if err == nil || !strings.Contains(err.Error(), `certificates[0].subscribers[1]: invalid client name "Web-2"`) {
+		t.Fatalf("expected subscriber name error, got %v", err)
+	}
+
+	withClient := validServerYAML + `
+clients:
+  - name: web_1
+`
+	_, err = ParseServer([]byte(withClient))
+	if err == nil || !strings.Contains(err.Error(), `clients[0].name: invalid client name "web_1"`) {
+		t.Fatalf("expected client name error, got %v", err)
+	}
+
+	e2eNames := strings.Replace(validServerYAML, "subscribers: [web-1, web-2]", "subscribers: [web-1, expiry-test, revoke-test]", 1)
+	if _, err := ParseServer([]byte(e2eNames)); err != nil {
+		t.Fatalf("E2E client names rejected: %v", err)
+	}
+}
+
 func TestParseServer_UnknownFieldRejected(t *testing.T) {
 	bad := validServerYAML + "\nfoo_bar: 1\n"
 	_, err := ParseServer([]byte(bad))

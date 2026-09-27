@@ -371,13 +371,13 @@ func (h *handlers) renewIdentity(w http.ResponseWriter, r *http.Request) {
 // helpers
 // ---------------------------------------------------------------------------
 
+// subscribedSpecs returns the specs clientName subscribes to. Subscribers are
+// validated client names (config.ValidateClientName), so the match is exact.
 func subscribedSpecs(cfg *config.ServerConfig, clientName string) map[string]config.CertificateSpec {
 	out := make(map[string]config.CertificateSpec)
 	for _, spec := range cfg.Certificates {
-		for _, sub := range spec.Subscribers {
-			if strings.EqualFold(sub, clientName) {
-				out[spec.Name] = spec
-			}
+		if slices.Contains(spec.Subscribers, clientName) {
+			out[spec.Name] = spec
 		}
 	}
 	return out
