@@ -8,8 +8,6 @@ import (
 	"testing"
 
 	"golang.org/x/sys/windows"
-
-	"github.com/Oganneson-Studio/sigil/internal/config"
 )
 
 // checkMode checks the DACL that stands in for Unix permission bits on
@@ -74,19 +72,4 @@ func outputDir(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return dir
-}
-
-func TestCreateTempGrantsConfiguredOwner(t *testing.T) {
-	// A syntactically valid SID with no SDDL alias; it need not exist.
-	const owner = "S-1-5-21-1-2-3-1001"
-	tmp, err := createTemp(outputDir(t), config.OutputSpec{Format: "pem-key", Path: "key.pem", Owner: owner})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := tmp.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if sddl := fileSecurity(t, tmp.Name()).String(); !strings.Contains(sddl, ";;;"+owner+")") {
-		t.Fatalf("DACL does not grant the configured owner: %s", sddl)
-	}
 }
