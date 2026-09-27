@@ -78,7 +78,7 @@ func (n *recordingNotifier) Calls() []notifyCall {
 }
 
 // gatedIssuer hands every Issue call to the test and blocks it until the test
-// settles it. Like lego, it ignores ctx.
+// settles it. Like lego, it keeps blocking when its ctx is cancelled.
 type gatedIssuer struct {
 	calls  chan *issueCall
 	result *acme.Result
@@ -89,6 +89,7 @@ type gatedIssuer struct {
 }
 
 type issueCall struct {
+	ctx     context.Context
 	cfg     *config.ServerConfig
 	spec    config.CertificateSpec
 	outcome chan error
@@ -98,7 +99,7 @@ func newGatedIssuer(notAfter time.Time) *gatedIssuer {
 	return &gatedIssuer{calls: make(chan *issueCall), result: successResult(notAfter)}
 }
 
-func (g *gatedIssuer) Issue(_ context.Context, cfg *config.ServerConfig, spec config.CertificateSpec) (*acme.Result, error) {
+func (g *gatedIssuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec config.CertificateSpec) (*acme.Result, error) {
 	g.mu.Lock()
 	g.active++
 	g.peak = max(g.peak, g.active)
@@ -109,7 +110,7 @@ func (g *gatedIssuer) Issue(_ context.Context, cfg *config.ServerConfig, spec co
 		g.mu.Unlock()
 	}()
 
-	call := &issueCall{cfg: cfg, spec: spec, outcome: make(chan error, 1)}
+	call := &issueCall{ctx: ctx, cfg: cfg, spec: spec, outcome: make(chan error, 1)}
 	g.calls <- call
 	if err := <-call.outcome; err != nil {
 		return nil, err
@@ -806,6 +807,51 @@ func TestRunDynamicWaitsForInFlightIssuanceOnShutdown(t *testing.T) {
 	if r.Issuing(queued) {
 		t.Fatalf("queued issuance of %s still holds its lock", queued)
 	}
+}
+
+// Issue sees the caller's cancellation on both paths: the ACME account lock
+// in acme.Issuer relies on it to let waiting issuances fail fast at shutdown.
+func TestIssueSeesCallerCancellation(t *testing.T) {
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	cancelled := func(t *testing.T, call *issueCall) {
+		t.Helper()
+		select {
+		case <-call.ctx.Done():
+		case <-time.After(5 * time.Second):
+			t.Fatal("the ctx passed to Issue was not cancelled")
+		}
+	}
+
+	t.Run("tick", func(t *testing.T) {
+		db := mustOpenDB(t)
+		iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
+		r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- r.RunDynamic(ctx, static(minimalCfg("api-prod", 30, nil))) }()
+		call := iss.next(t)
+		cancel()
+		cancelled(t, call)
+		call.succeed()
+		if err := receive(t, done, "RunDynamic"); !errors.Is(err, context.Canceled) {
+			t.Fatalf("RunDynamic returned %v", err)
+		}
+	})
+
+	t.Run("RenewNamed", func(t *testing.T) {
+		db := mustOpenDB(t)
+		iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
+		r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+		ctx, cancel := context.WithCancel(context.Background())
+		renewed := renewAsync(ctx, r, static(minimalCfg("api-prod", 30, nil)), "api-prod")
+		call := iss.next(t)
+		cancel()
+		cancelled(t, call)
+		call.succeed()
+		if err := receive(t, renewed, "RenewNamed"); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
