@@ -68,7 +68,10 @@ func Run(ctx context.Context, configPath string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Renewal scheduler.
+	// Renewal scheduler. lego keeps DNS resolvers in a process-wide variable,
+	// so they are set once, before any issuance can run; changing them needs a
+	// restart.
+	acme.SetDNSResolvers(cfg.ACME.DNSResolvers)
 	pushNotifier := scheduler.NewHTTPPushNotifier(nil)
 	r := scheduler.New(acme.NewIssuer(db.Accounts), db.Certs, db.Issuance, pushNotifier, nil)
 	runtimeConfig := newServerConfigRuntime(configPath, cfg, r)
