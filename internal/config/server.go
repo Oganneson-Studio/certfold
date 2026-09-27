@@ -346,10 +346,12 @@ func validateDNSProviderFields(v *ValidationError, path string, p DNSProvider) {
 			v.Add(path, "route53 provider requires both access_key and secret_key (or neither for IAM role)")
 		}
 	case "gcloud":
-		// gcloud can use ADC (no explicit field required),
-		// but service_account_file or project should ideally be set.
-		// We only enforce that if service_account_file is set it is non-empty
-		// (it already is non-empty by the check above); nothing more to require.
+		// Without a service account file the issuer uses application default
+		// credentials for the configured project; lego does not detect the
+		// project on that path, so one of the two must be set.
+		if strField("project") == "" && strField("service_account_file") == "" {
+			v.Add(path, "gcloud provider requires project (used with application default credentials) or service_account_file")
+		}
 	}
 }
 

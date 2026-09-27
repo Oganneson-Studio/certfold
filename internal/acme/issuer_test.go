@@ -5,7 +5,9 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"math/big"
 	"os"
@@ -52,18 +54,31 @@ func TestSpecKeyType(t *testing.T) {
 
 func TestBuildDNSProvider_SupportedTypes(t *testing.T) {
 	// gcloud with only a project uses application default credentials. Point
-	// them at a fake service account key: building the provider reads the
-	// file but makes no network request.
+	// them at a service account file for an unregistered account with a real
+	// RSA key: building the provider reads the file but makes no network
+	// request.
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(rsaKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceAccount, err := json.Marshal(map[string]string{
+		"type":           "service_account",
+		"project_id":     "my-proj",
+		"private_key_id": "0",
+		"private_key":    string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})),
+		"client_email":   "sigil@my-proj.iam.gserviceaccount.com",
+		"client_id":      "0",
+		"token_uri":      "https://oauth2.googleapis.com/token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	credentials := filepath.Join(t.TempDir(), "service-account.json")
-	if err := os.WriteFile(credentials, []byte(`{
-  "type": "service_account",
-  "project_id": "my-proj",
-  "private_key_id": "0",
-  "private_key": "-----BEGIN PRIVATE KEY-----\nAA==\n-----END PRIVATE KEY-----\n",
-  "client_email": "sigil@my-proj.iam.gserviceaccount.com",
-  "client_id": "0",
-  "token_uri": "https://oauth2.googleapis.com/token"
-}`), 0o600); err != nil {
+	if err := os.WriteFile(credentials, serviceAccount, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credentials)
