@@ -6,15 +6,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
+	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
 func writeManagementTestConfig(t *testing.T, certificates string) string {
@@ -264,6 +269,164 @@ func TestCertAddTellsStoppedDaemonFromUnreachableOne(t *testing.T) {
 				t.Fatalf("persisted config = %+v, err = %v", cfg, loadErr)
 			}
 		})
+	}
+}
+
+// serveCertificates serves the certificates of cfg, backed by db, on a new
+// IPC endpoint and returns the endpoint.
+func serveCertificates(t *testing.T, db *store.DB, cfg *config.ServerConfig) string {
+	t.Helper()
+	socket := testIPCSocket(t)
+	l, err := ipc.Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() {
+		_ = ipc.Serve(ctx, l, ipc.ServerDeps{DB: db, Certificates: &ipc.CertificateControlDeps{
+			Current: func() *config.ServerConfig { return cfg },
+			Issuing: func(string) bool { return false },
+		}})
+	}()
+	if _, err := ipc.NewClient(socket); err != nil {
+		skipWithoutPipeAccess(t, err)
+		t.Fatal(err)
+	}
+	return socket
+}
+
+// runSigils runs sigils with args and returns what it printed to stdout.
+func runSigils(t *testing.T, args ...string) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout := os.Stdout
+	os.Stdout = w
+	printed := make(chan []byte)
+	go func() {
+		raw, _ := io.ReadAll(r)
+		printed <- raw
+	}()
+	root := NewRootCmd()
+	root.SetArgs(args)
+	runErr := root.Execute()
+	os.Stdout = stdout
+	_ = w.Close()
+	out := <-printed
+	_ = r.Close()
+	if runErr != nil {
+		t.Fatalf("sigils %s: %v", strings.Join(args, " "), runErr)
+	}
+	return string(out)
+}
+
+func TestCertListAndShowReportIssuanceState(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	// The store keeps whole seconds.
+	now := time.Now().UTC().Truncate(time.Second)
+	notAfter := now.Add(60 * 24 * time.Hour)
+	nextAttempt := now.Add(20 * time.Minute)
+	mail := config.CertificateSpec{Name: "mail", CA: "le", Domains: []string{"mail.example.com"}, KeyType: "ec256"}
+	api := config.CertificateSpec{Name: "api-prod", CA: "le", Domains: []string{"api.example.com"}, KeyType: "ec256"}
+	cfg := &config.ServerConfig{
+		ACME: config.ACMESection{CAs: map[string]config.CAEntry{
+			"le": {Directory: "https://acme.example.com/directory"},
+		}},
+		Certificates: []config.CertificateSpec{mail, api},
+	}
+	// api-prod holds material for the running configuration; mail has never
+	// been issued and waits out a backoff.
+	if err := db.Certs.Upsert(ctx, &store.CertRecord{
+		Name:            "api-prod",
+		CA:              "le",
+		Domains:         api.Domains,
+		SpecFingerprint: config.CertificateSpecFingerprint(cfg, api),
+		NotAfter:        notAfter,
+		Fingerprint:     "sha256:AA",
+		IssuedAt:        now,
+		UpdatedAt:       now,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Issuance.Upsert(ctx, &store.IssuanceStatus{
+		Name:          "mail",
+		Failures:      2,
+		LastError:     "acme: rate limited",
+		LastAttemptAt: now,
+		NextAttemptAt: nextAttempt,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	socket := serveCertificates(t, db, cfg)
+
+	table := runSigils(t, "--ipc", socket, "cert", "list")
+	wantRows := [][]string{
+		{"NAME", "CA", "DOMAINS", "STATE", "NOT", "AFTER"},
+		{"mail", "le", "mail.example.com", "backoff", "-"},
+		{"api-prod", "le", "api.example.com", "valid", notAfter.Format("2006-01-02")},
+	}
+	lines := strings.Split(strings.TrimSuffix(table, "\n"), "\n")
+	if len(lines) != len(wantRows) {
+		t.Fatalf("cert list printed %d lines, want %d:\n%s", len(lines), len(wantRows), table)
+	}
+	for i, want := range wantRows {
+		if got := strings.Fields(lines[i]); !slices.Equal(got, want) {
+			t.Errorf("cert list line %d = %q, want %q", i, got, want)
+		}
+	}
+
+	sameJSON := func(got, want string) {
+		t.Helper()
+		var gotValue, wantValue any
+		if err := json.Unmarshal([]byte(got), &gotValue); err != nil {
+			t.Fatalf("output is not JSON: %v\n%s", err, got)
+		}
+		if err := json.Unmarshal([]byte(want), &wantValue); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(gotValue, wantValue) {
+			t.Errorf("JSON output:\n got %s\nwant %s", got, want)
+		}
+	}
+	mailJSON := fmt.Sprintf(`{"name":"mail","ca":"le","domains":["mail.example.com"],"state":"backoff","failures":2,`+
+		`"last_error":"acme: rate limited","last_attempt_at":%q,"next_attempt_at":%q}`,
+		now.Format(time.RFC3339), nextAttempt.Format(time.RFC3339))
+	apiJSON := fmt.Sprintf(`{"name":"api-prod","ca":"le","domains":["api.example.com"],"not_after":%q,"fingerprint":"sha256:AA",`+
+		`"issued_at":%q,"updated_at":%q,"state":"valid","failures":0}`,
+		notAfter.Format(time.RFC3339), now.Format(time.RFC3339), now.Format(time.RFC3339))
+	sameJSON(runSigils(t, "--ipc", socket, "--json", "cert", "list"), "["+mailJSON+","+apiJSON+"]")
+	sameJSON(runSigils(t, "--ipc", socket, "--json", "cert", "show", "mail"), mailJSON)
+
+	wantShow := map[string]string{
+		"mail": "Name:         mail\n" +
+			"CA:           le\n" +
+			"Domains:      mail.example.com\n" +
+			"Not After:    -\n" +
+			"State:        backoff\n" +
+			"Failures:     2\n" +
+			"Last Error:   acme: rate limited\n" +
+			"Next Attempt: " + nextAttempt.Format("2006-01-02 15:04:05 MST") + "\n",
+		"api-prod": "Name:         api-prod\n" +
+			"CA:           le\n" +
+			"Domains:      api.example.com\n" +
+			"Not After:    " + notAfter.Format("2006-01-02") + "\n" +
+			"State:        valid\n" +
+			"Failures:     0\n" +
+			"Last Error:   -\n" +
+			"Next Attempt: -\n",
+	}
+	for name, want := range wantShow {
+		if got := runSigils(t, "--ipc", socket, "cert", "show", name); got != want {
+			t.Errorf("cert show %s printed:\n%s\nwant:\n%s", name, got, want)
+		}
 	}
 }
 

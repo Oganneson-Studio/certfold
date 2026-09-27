@@ -85,6 +85,22 @@ func TestModel_CertsTabView(t *testing.T) {
 	}
 }
 
+func TestModel_CertsTabShowsMissingExpiryAsDash(t *testing.T) {
+	m := newTestModel()
+	// A configured certificate that has not been issued has no expiry.
+	updated, _ := m.Update(refreshMsg{certs: []*ipc.CertificateInfo{
+		{Name: "new-cert", CA: "le", Domains: []string{"new.example.com"}, State: ipc.CertStatePending},
+	}})
+	m = updated.(Model)
+	m.tab = 1
+	if got := m.certsTable.Rows()[0][2]; got != "-" {
+		t.Errorf("Not After cell = %q, want -", got)
+	}
+	if view := m.View(); !strings.Contains(view, "new-cert") || strings.Contains(view, "0001-01-01") {
+		t.Errorf("certs tab should list new-cert without a zero date: %q", view)
+	}
+}
+
 func TestModel_ClientsTabView(t *testing.T) {
 	m := newTestModel()
 	m.tab = 2

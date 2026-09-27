@@ -163,7 +163,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) updateTableRows() {
 	var certRows []table.Row
 	for _, c := range m.certs {
-		notAfter := c.NotAfter.Format("2006-01-02")
+		notAfter := "-"
+		if !c.NotAfter.IsZero() {
+			notAfter = c.NotAfter.Format("2006-01-02")
+		}
 		domains := strings.Join(c.Domains, ",")
 		if len(domains) > 22 {
 			domains = domains[:19] + "..."

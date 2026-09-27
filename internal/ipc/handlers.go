@@ -45,12 +45,22 @@ func (h *ipcHandlers) reloadServer(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 func (h *ipcHandlers) listCerts(w http.ResponseWriter, r *http.Request) {
+	if h.deps.Certificates.Current == nil || h.deps.Certificates.Issuing == nil {
+		http.Error(w, "certificate status unavailable", http.StatusNotImplemented)
+		return
+	}
+	cfg := h.deps.Certificates.Current()
 	recs, err := h.deps.DB.Certs.List(r.Context(), nil)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, certificateInfos(recs))
+	statuses, err := h.deps.DB.Issuance.List(r.Context(), nil)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, certificateInfos(cfg, recs, statuses, h.deps.Certificates.Issuing, time.Now()))
 }
 
 func (h *ipcHandlers) upsertCert(w http.ResponseWriter, r *http.Request) {

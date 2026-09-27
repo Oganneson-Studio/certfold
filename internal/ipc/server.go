@@ -82,7 +82,6 @@ func buildIPCRouter(h *ipcHandlers) http.Handler {
 	r.Use(middleware.RequestSize(maxRequestBody))
 
 	if h.deps.DB != nil {
-		r.Get("/ipc/v1/certs", h.listCerts)
 		// Seeds the E2E stack with a certificate (JSON shape store.CertRecord)
 		// until the Pebble E2E issues real ones.
 		r.Post("/ipc/v1/certs", h.upsertCert)
@@ -97,6 +96,7 @@ func buildIPCRouter(h *ipcHandlers) http.Handler {
 		r.Post("/ipc/v1/server/reload", h.reloadServer)
 	}
 	if h.deps.Certificates != nil {
+		r.Get("/ipc/v1/certs", h.listCerts)
 		r.Post("/ipc/v1/certs/renew", h.renewCert)
 	}
 	if h.deps.Tokens != nil {
