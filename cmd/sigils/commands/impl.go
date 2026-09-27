@@ -59,18 +59,13 @@ func runReload(cmd *cobra.Command, _ []string) error {
 func dialReloadServer(cmd *cobra.Command) (serverReloader, error) {
 	path := serverIPCSocket(cmd)
 	c, err := dialServerReloader(path)
-	if err == nil {
-		return c, nil
+	if err != nil {
+		return nil, fmt.Errorf(
+			"connect to %q: %w; if server.ipc_socket changed on disk, retry with --ipc set to the running daemon's current socket",
+			path, err,
+		)
 	}
-	if !cmd.Root().PersistentFlags().Changed("ipc") && path != ipc.DefaultServerSocket() {
-		if fallback, fallbackErr := dialServerReloader(ipc.DefaultServerSocket()); fallbackErr == nil {
-			return fallback, nil
-		}
-	}
-	return nil, fmt.Errorf(
-		"connect to %q: %w; if server.ipc_socket changed on disk, retry with --ipc set to the running daemon's current socket",
-		path, err,
-	)
+	return c, nil
 }
 
 // ---------------------------------------------------------------------------

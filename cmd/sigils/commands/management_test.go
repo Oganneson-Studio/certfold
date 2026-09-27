@@ -127,6 +127,41 @@ func TestServerIPCSocketResolution(t *testing.T) {
 	}
 }
 
+func TestReloadDoesNotFallBackToDefaultSocket(t *testing.T) {
+	configured := filepath.Join(t.TempDir(), "configured.sock")
+	path := writeManagementTestConfig(t, "  []\n")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = bytes.Replace(raw, []byte("  data_dir:"), []byte("  ipc_socket: \""+strings.ReplaceAll(configured, "\\", "\\\\")+"\"\n  data_dir:"), 1)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var dialed []string
+	previous := dialServerReloader
+	dialServerReloader = func(socket string) (serverReloader, error) {
+		dialed = append(dialed, socket)
+		if socket == configured {
+			return nil, errors.New("connection refused")
+		}
+		// Some daemon still answers on the platform default socket.
+		return &fakeServerReloader{}, nil
+	}
+	t.Cleanup(func() { dialServerReloader = previous })
+
+	cmd := NewRootCmd()
+	cmd.SetArgs([]string{"--config", path, "reload"})
+	err = cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--ipc") {
+		t.Fatalf("reload error = %v, want a failure that points to --ipc", err)
+	}
+	if len(dialed) != 1 || dialed[0] != configured {
+		t.Fatalf("dialed %q, want only the configured socket %q", dialed, configured)
+	}
+}
+
 func TestCertAddReloadsRunningServer(t *testing.T) {
 	path := writeManagementTestConfig(t, "  []\n")
 	reloader := &fakeServerReloader{}
