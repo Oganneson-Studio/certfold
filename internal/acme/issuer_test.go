@@ -14,9 +14,11 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -26,11 +28,88 @@ import (
 
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/challenge"
+	"github.com/go-acme/lego/v4/challenge/dns01"
 	"github.com/go-acme/lego/v4/registration"
+	"github.com/miekg/dns"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
+
+// ---------------------------------------------------------------------------
+// SetDNSResolvers
+// ---------------------------------------------------------------------------
+
+// TestSetDNSResolvers checks against a local DNS server that lego's DNS-01
+// lookups use the resolvers SetDNSResolvers sets. It relies on a detail of
+// lego v4.35.2, so it must pass again after every lego upgrade.
+//
+// SetDNSResolvers changes lego's process-wide resolvers and nothing can
+// restore them, so the check runs in a child process.
+func TestSetDNSResolvers(t *testing.T) {
+	const childEnv = "SIGIL_TEST_SET_DNS_RESOLVERS"
+	if os.Getenv(childEnv) == "" {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestSetDNSResolvers$", "-test.v", "-test.timeout=1m")
+		cmd.Env = append(os.Environ(), childEnv+"=1")
+		out, err := cmd.CombinedOutput()
+		// Without the PASS line the child may have run no test at all.
+		if err != nil || !strings.Contains(string(out), "--- PASS: TestSetDNSResolvers") {
+			t.Fatalf("child process: %v\n%s", err, out)
+		}
+		return
+	}
+
+	const zone = "zone.sigil.test."
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	server := &dns.Server{
+		PacketConn:        conn,
+		NotifyStartedFunc: func() { close(started) },
+		// Answer the SOA query for zone and nothing else.
+		Handler: dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+			m := new(dns.Msg)
+			m.SetReply(r)
+			if q := r.Question[0]; q.Qtype == dns.TypeSOA && q.Name == zone {
+				m.Answer = append(m.Answer, &dns.SOA{
+					Hdr:     dns.RR_Header{Name: zone, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 60},
+					Ns:      "ns1." + zone,
+					Mbox:    "hostmaster." + zone,
+					Serial:  1,
+					Refresh: 60,
+					Retry:   60,
+					Expire:  60,
+					Minttl:  60,
+				})
+			} else {
+				m.Rcode = dns.RcodeNameError
+			}
+			_ = w.WriteMsg(m)
+		}),
+	}
+	served := make(chan error, 1)
+	go func() { served <- server.ActivateAndServe() }()
+	select {
+	case <-started:
+	case err := <-served:
+		t.Fatalf("DNS server: %v", err)
+	}
+	defer server.Shutdown()
+
+	SetDNSResolvers([]string{conn.LocalAddr().String()})
+	// An empty list keeps the resolvers already set.
+	SetDNSResolvers(nil)
+
+	got, err := dns01.FindZoneByFqdn("_acme-challenge.www." + zone)
+	if err != nil {
+		t.Fatalf("FindZoneByFqdn: %v", err)
+	}
+	if got != zone {
+		t.Fatalf("FindZoneByFqdn = %q, want %q", got, zone)
+	}
+}
 
 // ---------------------------------------------------------------------------
 // specKeyType mapping
