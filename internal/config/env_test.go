@@ -186,6 +186,31 @@ func TestEnvValuesAreLiteralScalars(t *testing.T) {
 	}
 }
 
+func TestReadServerPathsExpandsAliasesLikeLoadServer(t *testing.T) {
+	t.Setenv("SIGIL_TEST_HOST", "sigil.example.com")
+	// Both paths alias one anchored value. "$$$$" shows that each path gets
+	// the value expanded exactly once.
+	path := writeServerYAML(t, withServerSection(`public_url: &base "https://${SIGIL_TEST_HOST}/$$$$"
+  data_dir: *base
+  ipc_socket: *base`))
+	const want = "https://sigil.example.com/$$"
+
+	cfg, err := LoadServer(path)
+	if err != nil {
+		t.Fatalf("LoadServer: %v", err)
+	}
+	if cfg.Server.DataDir != want || cfg.Server.IPCSocket != want {
+		t.Fatalf("LoadServer data_dir = %q, ipc_socket = %q, want %q", cfg.Server.DataDir, cfg.Server.IPCSocket, want)
+	}
+	dataDir, ipcSocket, err := ReadServerPaths(path)
+	if err != nil {
+		t.Fatalf("ReadServerPaths: %v", err)
+	}
+	if dataDir != want || ipcSocket != want {
+		t.Fatalf("ReadServerPaths data_dir = %q, ipc_socket = %q, want %q", dataDir, ipcSocket, want)
+	}
+}
+
 func TestEnvValueCannotAddYAMLStructure(t *testing.T) {
 	t.Setenv("SIGIL_TEST_DOMAINS", "[a.example.com, b.example.com]")
 	src := strings.Replace(validServerYAML, `domains: ["internal.example.com"]`, `domains: ${SIGIL_TEST_DOMAINS}`, 1)

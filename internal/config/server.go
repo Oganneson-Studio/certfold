@@ -147,14 +147,19 @@ func ReadServerPaths(path string) (dataDir, ipcSocket string, err error) {
 	return dataDir, ipcSocket, nil
 }
 
-// expandedString expands the value node n at path and decodes it as a string.
-// An absent value decodes as "".
+// expandedString expands the value node n at path as LoadServer does and
+// decodes it as a string. An absent value decodes as "".
 func expandedString(n *yaml.Node, path string) (string, error) {
-	if err := expandEnvNode(n, path); err != nil {
+	for n.Kind == yaml.AliasNode {
+		n = n.Alias
+	}
+	// Expand a copy: both paths may alias the same anchored node.
+	value := *n
+	if err := expandEnvNode(&value, path); err != nil {
 		return "", err
 	}
 	var s string
-	if err := n.Decode(&s); err != nil {
+	if err := value.Decode(&s); err != nil {
 		return "", fmt.Errorf("%s: %w", path, err)
 	}
 	return s, nil
