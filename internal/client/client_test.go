@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -731,6 +732,64 @@ func TestNamedFetchKeepsPendingRewrite(t *testing.T) {
 	}
 	if _, err := os.Stat(stagePath); err != nil {
 		t.Fatalf("the named fetch consumed the pending rewrite: %v", err)
+	}
+}
+
+// TestRunWaitsForInFlightPull covers a pull started by IPC or push that is
+// still running when the daemon stops.
+func TestRunWaitsForInFlightPull(t *testing.T) {
+	var blockNext atomic.Bool
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	pulls := make(chan struct{}, 4)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/certificates", func(w http.ResponseWriter, _ *http.Request) {
+		if blockNext.CompareAndSwap(true, false) {
+			close(blocked)
+			<-release
+		}
+		_ = json.NewEncoder(w).Encode([]proto.CertSummary{})
+	})
+	mux.HandleFunc("/v1/heartbeat", func(w http.ResponseWriter, _ *http.Request) {
+		pulls <- struct{}{}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+	// Close waits for the blocked handler, so release it on every exit path.
+	defer unblock()
+
+	c, err := New(buildTestCfg(t, ts.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+	waitForPull(t, pulls)
+
+	blockNext.Store(true)
+	fetched := make(chan error, 1)
+	go func() { fetched <- c.Fetch(context.Background(), "") }()
+	<-blocked
+	cancel()
+	select {
+	case <-done:
+		t.Fatal("Run returned while a pull was still running")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	unblock()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return after the pull finished")
+	}
+	if err := <-fetched; err != nil {
+		t.Fatalf("Fetch: %v", err)
 	}
 }
 

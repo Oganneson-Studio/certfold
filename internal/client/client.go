@@ -130,7 +130,12 @@ func (c *Client) Run(ctx context.Context) error {
 		go c.startPushReceiver(ctx, pushListen)
 	}
 
-	return c.pullLoop(ctx)
+	err := c.pullLoop(ctx)
+	// A push or IPC pull runs outside the loop and may still be writing
+	// outputs or state.json. Take pullMu once so Run returns after it ends.
+	c.pullMu.Lock()
+	c.pullMu.Unlock()
+	return err
 }
 
 // pullLoop ticks every pull_interval ±10 % and calls pullOnce. A successful
