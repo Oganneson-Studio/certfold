@@ -522,21 +522,29 @@ func newRewriteServer() *fakeServer {
 	}
 }
 
-func TestRunRewritesOutputsOnFirstPull(t *testing.T) {
-	fs := newRewriteServer()
-	ts := httptest.NewServer(fs.handler())
-	t.Cleanup(ts.Close)
-	cfg := buildTestCfg(t, ts.URL)
-	outPath := filepath.Join(t.TempDir(), "cert.pem")
+// newRewriteClient returns a client for newRewriteServer with one output at
+// outPath. Its state.json already records the served fingerprint, as if an
+// earlier run had written the output that has since gone missing.
+func newRewriteClient(t *testing.T, serverURL, outPath string) *Client {
+	t.Helper()
+	cfg := buildTestCfg(t, serverURL)
 	cfg.Outputs["api-prod"] = []config.OutputSpec{{Format: "pem-fullchain", Path: outPath}}
 	c, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// An earlier run wrote this fingerprint; the output has since gone missing.
 	if err := c.saveState(&state{Certs: map[string]string{"api-prod": "sha256:AABB"}}); err != nil {
 		t.Fatal(err)
 	}
+	return c
+}
+
+func TestRunRewritesOutputsOnFirstPull(t *testing.T) {
+	fs := newRewriteServer()
+	ts := httptest.NewServer(fs.handler())
+	t.Cleanup(ts.Close)
+	outPath := filepath.Join(t.TempDir(), "cert.pem")
+	c := newRewriteClient(t, ts.URL, outPath)
 
 	startRun(t, c)
 	waitForPull(t, fs.pulls)
@@ -599,17 +607,8 @@ func TestRewriteSurvivesUnreachableServer(t *testing.T) {
 		api.ServeHTTP(w, r)
 	}))
 	defer ts.Close()
-
-	cfg := buildTestCfg(t, ts.URL)
 	outPath := filepath.Join(t.TempDir(), "cert.pem")
-	cfg.Outputs["api-prod"] = []config.OutputSpec{{Format: "pem-fullchain", Path: outPath}}
-	c, err := New(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := c.saveState(&state{Certs: map[string]string{"api-prod": "sha256:AABB"}}); err != nil {
-		t.Fatal(err)
-	}
+	c := newRewriteClient(t, ts.URL, outPath)
 
 	if err := c.pullOnce(context.Background()); err == nil {
 		t.Fatal("expected the pull to fail while the server is unavailable")
@@ -620,6 +619,118 @@ func TestRewriteSurvivesUnreachableServer(t *testing.T) {
 	}
 	if _, err := os.Stat(outPath); err != nil {
 		t.Fatalf("the failed pull dropped the pending rewrite: %v", err)
+	}
+}
+
+// TestRewriteRetriesFailedBundle covers a rewrite whose bundle request fails:
+// state.json already records the served fingerprint, so a plain diff would
+// never fetch the certificate again.
+func TestRewriteRetriesFailedBundle(t *testing.T) {
+	api := newRewriteServer().handler()
+	var bundleRequests atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/bundle") && bundleRequests.Add(1) == 1 {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		api.ServeHTTP(w, r)
+	}))
+	defer ts.Close()
+	outPath := filepath.Join(t.TempDir(), "cert.pem")
+	c := newRewriteClient(t, ts.URL, outPath)
+
+	if err := c.pullOnce(context.Background()); err == nil {
+		t.Fatal("expected the pull to fail while the bundle is unavailable")
+	}
+	if err := c.pullOnce(context.Background()); err != nil {
+		t.Fatalf("pullOnce: %v", err)
+	}
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatalf("the failed bundle was not fetched again: %v", err)
+	}
+}
+
+// TestFailedFetchKeepsOlderFingerprint covers a certificate whose fingerprint
+// changed: a plain diff retries it anyway, so state.json keeps recording the
+// material that is still on disk.
+func TestFailedFetchKeepsOlderFingerprint(t *testing.T) {
+	api := newRewriteServer().handler()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/bundle") {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		api.ServeHTTP(w, r)
+	}))
+	defer ts.Close()
+	c := newRewriteClient(t, ts.URL, filepath.Join(t.TempDir(), "cert.pem"))
+	if err := c.saveState(&state{Certs: map[string]string{"api-prod": "sha256:OLD"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.pullOnce(context.Background()); err == nil {
+		t.Fatal("expected the pull to fail while the bundle is unavailable")
+	}
+	if got := c.loadState().Certs["api-prod"]; got != "sha256:OLD" {
+		t.Fatalf("recorded fingerprint = %q, want the older sha256:OLD", got)
+	}
+}
+
+// TestRewriteRetriesFailedWrite covers a rewrite that cannot write an output
+// until the operator repairs the path.
+func TestRewriteRetriesFailedWrite(t *testing.T) {
+	ts := httptest.NewServer(newRewriteServer().handler())
+	defer ts.Close()
+	// A file where the output directory belongs fails the write.
+	blocker := filepath.Join(t.TempDir(), "certs")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outPath := filepath.Join(blocker, "cert.pem")
+	c := newRewriteClient(t, ts.URL, outPath)
+
+	if err := c.pullOnce(context.Background()); err == nil {
+		t.Fatal("expected the write below a file to fail")
+	}
+	if err := os.Remove(blocker); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.pullOnce(context.Background()); err != nil {
+		t.Fatalf("pullOnce: %v", err)
+	}
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatalf("the failed write was not retried: %v", err)
+	}
+}
+
+// TestNamedFetchKeepsPendingRewrite covers sigilc fetch --cert and push
+// notifications: fetching one certificate must leave the pending rewrite of
+// the others to the next full pull.
+func TestNamedFetchKeepsPendingRewrite(t *testing.T) {
+	fs := newRewriteServer()
+	fs.summaries = append(fs.summaries, proto.CertSummary{Name: "api-stage", Fingerprint: "sha256:CCDD"})
+	fs.bundles["api-stage"] = fs.bundles["api-prod"]
+	ts := httptest.NewServer(fs.handler())
+	defer ts.Close()
+	cfg := buildTestCfg(t, ts.URL)
+	stagePath := filepath.Join(t.TempDir(), "stage.pem")
+	cfg.Outputs["api-stage"] = []config.OutputSpec{{Format: "pem-fullchain", Path: stagePath}}
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.saveState(&state{Certs: map[string]string{"api-prod": "sha256:AABB", "api-stage": "sha256:CCDD"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.Fetch(context.Background(), "api-prod"); err != nil {
+		t.Fatalf("named Fetch: %v", err)
+	}
+	if err := c.Fetch(context.Background(), ""); err != nil {
+		t.Fatalf("full Fetch: %v", err)
+	}
+	if _, err := os.Stat(stagePath); err != nil {
+		t.Fatalf("the named fetch consumed the pending rewrite: %v", err)
 	}
 }
 

@@ -49,7 +49,9 @@ type Client struct {
 	// subscribed certificate, whatever the fingerprints in state.json say:
 	// outputs may have been added to client.yaml or removed from disk since
 	// they were last written. New and Reload set it; a full pull clears it
-	// once it has listed the subscribed certificates. Guarded by pullMu.
+	// once it has listed the subscribed certificates. A certificate that pull
+	// fails to write is dropped from state.json, so the next pull retries it.
+	// Guarded by pullMu.
 	rewriteAll bool
 	reloadCh   chan struct{}
 
@@ -313,12 +315,19 @@ func (c *Client) fetchLocked(ctx context.Context, name string) error {
 	var errs []error
 	for _, s := range changed {
 		bundle, err := c.getBundle(ctx, s.Name)
+		if err == nil {
+			if err = c.writeOutputs(s.Name, bundle); err != nil {
+				err = fmt.Errorf("write %s: %w", s.Name, err)
+			}
+		}
 		if err != nil {
 			errs = append(errs, err)
-			continue
-		}
-		if err := c.writeOutputs(s.Name, bundle); err != nil {
-			errs = append(errs, fmt.Errorf("write %s: %w", s.Name, err))
+			// A diff skips a certificate whose fingerprint state.json already
+			// records, so a forced or named pull that failed for it would not
+			// be retried. Forget the fingerprint so the next pull retries it.
+			if st.Certs[s.Name] == s.Fingerprint {
+				delete(st.Certs, s.Name)
+			}
 			continue
 		}
 		st.Certs[s.Name] = s.Fingerprint
