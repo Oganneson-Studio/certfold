@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,11 +27,29 @@ func mustOpenDB(t *testing.T) *store.DB {
 	return db
 }
 
-// newTestClient creates a client backed by httptest.Server transport (TCP).
+// newTestClient returns a client that reaches ts over TCP through the same
+// transport NewClient uses.
 func newTestClient(ts *httptest.Server) *Client {
-	return &Client{
-		http: ts.Client(),
-		base: ts.URL,
+	return newClient(func() (net.Conn, error) { return net.Dial("tcp", ts.Listener.Addr().String()) })
+}
+
+func TestClientDialsForEveryRequest(t *testing.T) {
+	db := mustOpenDB(t)
+	ts := httptest.NewServer(buildIPCRouter(&ipcHandlers{deps: ServerDeps{DB: db}}))
+	defer ts.Close()
+
+	var dials atomic.Int32
+	c := newClient(func() (net.Conn, error) {
+		dials.Add(1)
+		return net.Dial("tcp", ts.Listener.Addr().String())
+	})
+	for i := 1; i <= 3; i++ {
+		if _, err := c.ListTokens(context.Background()); err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+	}
+	if got := dials.Load(); got != 3 {
+		t.Fatalf("dials = %d, want one per request", got)
 	}
 }
 
@@ -474,51 +493,34 @@ func TestClientOnlyRouterDoesNotExposeServerState(t *testing.T) {
 	}
 }
 
-// TestServe_NetPipe exercises the full Serve path using net.Pipe.
-func TestServe_NetPipe(t *testing.T) {
+// TestServe exercises the full Serve path on a real listener.
+func TestServe(t *testing.T) {
 	db := mustOpenDB(t)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
+	defer cancel()
+	served := make(chan error, 1)
+	go func() { served <- Serve(ctx, l, ServerDeps{DB: db}) }()
 
-	// Wrap net.Pipe in a listener.
-	serverConn, clientConn := net.Pipe()
-	l := &singleConnListener{conn: serverConn}
-
-	go func() {
-		_ = Serve(ctx, l, ServerDeps{DB: db})
-	}()
-
-	// Use clientConn to make a raw HTTP request.
-	c := newClientFromConn(clientConn)
+	c := newClient(func() (net.Conn, error) { return net.Dial("tcp", l.Addr().String()) })
 	certs, err := c.ListCerts(ctx)
 	if err != nil {
-		t.Fatalf("ListCerts over pipe: %v", err)
+		t.Fatalf("ListCerts: %v", err)
 	}
 	if len(certs) != 0 {
 		t.Errorf("expected empty, got %v", certs)
 	}
-}
 
-// singleConnListener is a net.Listener that returns a single conn then blocks.
-type singleConnListener struct {
-	conn    net.Conn
-	served  bool
-	closeCh chan struct{}
-}
-
-func (l *singleConnListener) Accept() (net.Conn, error) {
-	if !l.served {
-		l.served = true
-		l.closeCh = make(chan struct{})
-		return l.conn, nil
+	cancel()
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("Serve returned %v after cancellation, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return after cancellation")
 	}
-	<-l.closeCh
-	return nil, net.ErrClosed
 }
-func (l *singleConnListener) Close() error {
-	if l.closeCh != nil {
-		close(l.closeCh)
-	}
-	return nil
-}
-func (l *singleConnListener) Addr() net.Addr { return l.conn.LocalAddr() }

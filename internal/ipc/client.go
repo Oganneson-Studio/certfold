@@ -18,21 +18,26 @@ type Client struct {
 	base string // e.g. "http://ipc"
 }
 
-// NewClient dials the IPC socket at path and returns a ready Client.
-// Pass an empty path to use the platform default.
+// NewClient returns a Client for the IPC endpoint at path. Pass an empty path
+// to use the platform default. It dials once up front, so a daemon that is
+// not running is reported here rather than by the first request.
 func NewClient(path string) (*Client, error) {
 	conn, err := Dial(path)
 	if err != nil {
 		return nil, fmt.Errorf("ipc dial: %w", err)
 	}
-	return newClientFromConn(conn), nil
+	_ = conn.Close()
+	return newClient(func() (net.Conn, error) { return Dial(path) }), nil
 }
 
-func newClientFromConn(conn net.Conn) *Client {
+// newClient returns a Client that opens a new connection with dial for every
+// request, so it never depends on a connection the daemon may have closed.
+func newClient(dial func() (net.Conn, error)) *Client {
 	transport := &http.Transport{
-		DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-			return conn, nil
-		},
+		// Dial needs no context: a Unix socket connects or fails at once, and
+		// a busy Windows pipe is retried for at most two seconds.
+		DialContext:       func(context.Context, string, string) (net.Conn, error) { return dial() },
+		DisableKeepAlives: true,
 	}
 	return &Client{
 		http: &http.Client{Transport: transport, Timeout: 5 * time.Minute},
