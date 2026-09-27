@@ -35,9 +35,10 @@ import (
 // upper limit.
 //
 // lego does not let Sigil bound everything:
-//   - the gcloud provider built from a service account file keeps lego's
-//     defaults, including GCE_PROPAGATION_TIMEOUT, and like route53 (AWS SDK)
-//     it uses an HTTP client without an overall timeout;
+//   - lego builds the gcloud provider's configuration itself, so it keeps
+//     lego's defaults (180 s propagation, 5 s polling, read from
+//     GCE_PROPAGATION_TIMEOUT and GCE_POLLING_INTERVAL), and like route53
+//     (AWS SDK) it uses an HTTP client without an overall timeout;
 //   - after a challenge is submitted, lego polls the authorization for up to
 //     100 times the CA's Retry-After (500 s when the CA sends none).
 const (
@@ -311,11 +312,9 @@ func buildDNSProvider(p config.DNSProvider) (challenge.Provider, error) {
 		if v, ok := cfg["service_account_file"].(string); ok && v != "" {
 			return gcloud.NewDNSProviderServiceAccount(v)
 		}
-		c := gcloud.NewDefaultConfig()
-		if v, ok := cfg["project"].(string); ok {
-			c.Project = v
-		}
-		return gcloud.NewDNSProviderConfig(c)
+		// Application default credentials for the configured project.
+		project, _ := cfg["project"].(string)
+		return gcloud.NewDNSProviderCredentials(project)
 
 	default:
 		return nil, fmt.Errorf("unsupported provider type %q", p.Type)

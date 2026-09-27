@@ -8,6 +8,8 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"math/big"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +51,23 @@ func TestSpecKeyType(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildDNSProvider_SupportedTypes(t *testing.T) {
+	// gcloud with only a project uses application default credentials. Point
+	// them at a fake service account key: building the provider reads the
+	// file but makes no network request.
+	credentials := filepath.Join(t.TempDir(), "service-account.json")
+	if err := os.WriteFile(credentials, []byte(`{
+  "type": "service_account",
+  "project_id": "my-proj",
+  "private_key_id": "0",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nAA==\n-----END PRIVATE KEY-----\n",
+  "client_email": "sigil@my-proj.iam.gserviceaccount.com",
+  "client_id": "0",
+  "token_uri": "https://oauth2.googleapis.com/token"
+}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credentials)
+
 	tests := []struct {
 		name     string
 		provider config.DNSProvider
@@ -76,12 +95,17 @@ func TestBuildDNSProvider_SupportedTypes(t *testing.T) {
 			},
 		},
 		{
-			// Without a service account file, gcloud falls back to env-based ADC
-			// which is unavailable in unit tests; we expect an error here.
-			name: "gcloud without service_account_file",
+			name: "gcloud with project and application default credentials",
 			provider: config.DNSProvider{
 				Type:   "gcloud",
 				Config: map[string]any{"project": "my-proj"},
+			},
+		},
+		{
+			name: "gcloud without project or service_account_file",
+			provider: config.DNSProvider{
+				Type:   "gcloud",
+				Config: map[string]any{},
 			},
 			wantErr: true,
 		},
