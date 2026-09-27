@@ -3,31 +3,31 @@
 package securefile
 
 import (
+	"os"
 	"strings"
 	"testing"
 
 	"golang.org/x/sys/windows"
 )
 
+// TestWriteFileUsesProtectedWindowsDACL writes into a directory whose files
+// Users may read: a new file, and one that an earlier version wrote with the
+// directory's ACL. The temporary file keeps the DACL that CreateTemp gave it
+// when it replaces path; nothing tightens the result afterwards.
 func TestWriteFileUsesProtectedWindowsDACL(t *testing.T) {
-	path := t.TempDir() + `\client.yaml`
-	if err := WriteFile(path, []byte("private")); err != nil {
+	dir := usersReadableDir(t)
+	old := dir + `\client.yaml`
+	if err := os.WriteFile(old, []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	descriptor, err := windows.GetNamedSecurityInfo(
-		path,
-		windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION,
-	)
-	if err != nil {
-		t.Fatal(err)
+	if sddl := fileSecurity(t, old).String(); !strings.Contains(sddl, ";;;BU)") {
+		t.Fatalf("the old file should inherit Users read access: %s", sddl)
 	}
-	sddl := descriptor.String()
-	if !strings.HasPrefix(sddl, "D:P") {
-		t.Fatalf("DACL is not protected: %s", sddl)
-	}
-	if strings.Contains(sddl, ";;;WD)") || strings.Contains(sddl, ";;;BU)") {
-		t.Fatalf("DACL grants access to broad principals: %s", sddl)
+	for _, path := range []string{dir + `\new.yaml`, old} {
+		if err := WriteFile(path, []byte("private")); err != nil {
+			t.Fatal(err)
+		}
+		checkPrivate(t, fileSecurity(t, path))
 	}
 }
 
@@ -66,6 +66,15 @@ func checkPrivate(t *testing.T, descriptor *windows.SECURITY_DESCRIPTOR) {
 			t.Fatalf("DACL grants %s: %s", broad, sddl)
 		}
 	}
+}
+
+func fileSecurity(t *testing.T, path string) *windows.SECURITY_DESCRIPTOR {
+	t.Helper()
+	descriptor, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return descriptor
 }
 
 // usersReadableDir returns a directory whose inheritable ACL lets Users read

@@ -23,8 +23,9 @@ func EnsurePrivateDirectory(path string) error {
 	return secureDirectory(path)
 }
 
-// WriteFile atomically replaces path with data and applies platform-native
-// private access controls.
+// WriteFile atomically replaces path with data. The temporary file gets
+// platform-native private access controls from CreateTemp before any data is
+// written, and keeps them when it replaces path.
 func WriteFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	_, statErr := os.Stat(dir)
@@ -41,7 +42,7 @@ func WriteFile(path string, data []byte) error {
 		}
 	}
 
-	tmp, err := os.CreateTemp(dir, ".sigil-private-*")
+	tmp, err := CreateTemp(dir, ".sigil-private-*")
 	if err != nil {
 		return fmt.Errorf("create temporary file: %w", err)
 	}
@@ -51,14 +52,6 @@ func WriteFile(path string, data []byte) error {
 		_ = os.Remove(tmpPath)
 	}
 
-	if err := tmp.Chmod(0o600); err != nil {
-		cleanup()
-		return fmt.Errorf("set temporary file mode: %w", err)
-	}
-	if err := secureFile(tmpPath); err != nil {
-		cleanup()
-		return fmt.Errorf("secure temporary file: %w", err)
-	}
 	if _, err := tmp.Write(data); err != nil {
 		cleanup()
 		return fmt.Errorf("write temporary file: %w", err)
@@ -74,9 +67,6 @@ func WriteFile(path string, data []byte) error {
 	if err := replaceFile(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("replace private file: %w", err)
-	}
-	if err := secureFile(path); err != nil {
-		return fmt.Errorf("secure private file: %w", err)
 	}
 	return nil
 }
