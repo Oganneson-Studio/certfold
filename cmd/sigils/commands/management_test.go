@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
@@ -215,10 +218,10 @@ func TestCertRemoveReloadsRunningServer(t *testing.T) {
 
 func TestCertAddSucceedsWhenDaemonIsNotRunning(t *testing.T) {
 	path := writeManagementTestConfig(t, "  []\n")
-	stubServerReloader(t, nil, errors.New("daemon is not running"))
+	// Dial for real: a stopped daemon leaves no endpoint behind.
 	cmd := NewRootCmd()
 	cmd.SetArgs([]string{
-		"--config", path, "cert", "add", "api-prod",
+		"--config", path, "--ipc", testIPCSocket(t), "cert", "add", "api-prod",
 		"--domains", "api.example.com", "--dns", "route",
 	})
 	if err := cmd.Execute(); err != nil {
@@ -227,6 +230,40 @@ func TestCertAddSucceedsWhenDaemonIsNotRunning(t *testing.T) {
 	cfg, err := config.LoadServer(path)
 	if err != nil || len(cfg.Certificates) != 1 {
 		t.Fatalf("persisted config = %+v, err = %v", cfg, err)
+	}
+}
+
+func TestCertAddTellsStoppedDaemonFromUnreachableOne(t *testing.T) {
+	tests := []struct {
+		name       string
+		dialErr    error
+		notRunning bool
+	}{
+		{name: "connection refused", dialErr: fmt.Errorf("ipc dial: %w", syscall.ECONNREFUSED), notRunning: true},
+		{name: "permission denied", dialErr: fmt.Errorf("ipc dial: %w", fs.ErrPermission)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeManagementTestConfig(t, "  []\n")
+			stubServerReloader(t, nil, tt.dialErr)
+			cmd := NewRootCmd()
+			cmd.SetArgs([]string{
+				"--config", path, "cert", "add", "api-prod",
+				"--domains", "api.example.com", "--dns", "route",
+			})
+			err := cmd.Execute()
+			if tt.notRunning {
+				if err != nil {
+					t.Fatalf("cert add with a stopped daemon: %v", err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "configuration saved") || !strings.Contains(err.Error(), "could not be notified") {
+				t.Fatalf("cert add error = %v, want a saved but not notified failure", err)
+			}
+			cfg, loadErr := config.LoadServer(path)
+			if loadErr != nil || len(cfg.Certificates) != 1 {
+				t.Fatalf("persisted config = %+v, err = %v", cfg, loadErr)
+			}
+		})
 	}
 }
 

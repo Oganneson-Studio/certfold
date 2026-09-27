@@ -2,8 +2,11 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -125,13 +128,23 @@ func runCertRemove(cmd *cobra.Command, args []string) error {
 
 func reloadServerAfterConfigChange(cmd *cobra.Command, cfgPath string) (bool, error) {
 	c, err := dialServerReloader(serverIPCSocket(cmd))
-	if err != nil {
+	if daemonNotRunning(err) {
 		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("configuration saved to %s, but the sigils daemon could not be notified: %w", cfgPath, err)
 	}
 	if err := c.ReloadServer(commandContext(cmd)); err != nil {
 		return false, fmt.Errorf("configuration saved to %s, but the running sigils daemon rejected reload: %w", cfgPath, err)
 	}
 	return true, nil
+}
+
+// daemonNotRunning reports whether a dial error shows that no daemon listens
+// on the endpoint: it does not exist, or nothing accepts connections on it.
+// Any other error, such as a denied permission, may hide a running daemon.
+func daemonNotRunning(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED)
 }
 
 func runCertRenew(cmd *cobra.Command, args []string) error {
