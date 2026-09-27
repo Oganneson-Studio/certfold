@@ -7,9 +7,12 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"database/sql"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/go-acme/lego/v4/certcrypto"
@@ -37,13 +40,20 @@ import (
 //
 // The DNS values below replace lego's per-provider defaults, which lego reads
 // from environment variables such as CLOUDFLARE_PROPAGATION_TIMEOUT without
-// any upper limit. None is lower than lego's own default.
+// any upper limit. None is lower than lego's own default. The exec provider
+// uses them too, and each run of its program is bounded by dnsHookTimeout
+// (dns_exec.go).
 //
 // lego does not let Sigil bound everything:
 //   - lego builds the gcloud provider's configuration itself, so it keeps
 //     lego's defaults (180 s propagation, 5 s polling, read from
 //     GCE_PROPAGATION_TIMEOUT and GCE_POLLING_INTERVAL), and like route53
 //     (AWS SDK) it uses an HTTP client without an overall timeout;
+//   - each DNS query of the DNS-01 lookups (CNAME following, zone and name
+//     server lookups, the propagation check) waits up to lego's fixed 10 s
+//     (20 s on Windows) per resolver, trying the resolvers in turn; the
+//     CNAME lookups run outside the propagation timeout, and that timeout is
+//     only checked between attempts;
 //   - after a challenge is submitted, lego polls the authorization for up to
 //     100 times the CA's Retry-After (500 s when the CA sends none).
 const (
@@ -81,9 +91,18 @@ type Result struct {
 	NotAfter    time.Time
 }
 
+// accountStore is the subset of store.AccountRepo used by Issuer.
+type accountStore interface {
+	Get(ctx context.Context, ca string, tx *sql.Tx) (*store.AccountRecord, error)
+	Upsert(ctx context.Context, rec *store.AccountRecord, tx *sql.Tx) error
+}
+
 // Issuer wraps lego to issue/renew certificates per CertificateSpec.
 type Issuer struct {
-	accounts *store.AccountRepo
+	accounts accountStore
+	// accountLocks maps a CA name to the *sync.Mutex that serializes the
+	// initialization of its ACME account; see accountClient.
+	accountLocks sync.Map
 }
 
 // NewIssuer creates an Issuer backed by the persistent ACME account store.
@@ -104,36 +123,9 @@ func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec confi
 		return nil, fmt.Errorf("unknown CA %q", spec.CA)
 	}
 
-	userKey, err := i.loadOrCreateAccountKey(ctx, spec.CA, caEntry.Directory, cfg.ACME.Email)
+	client, err := i.accountClient(ctx, cfg, spec, caEntry)
 	if err != nil {
-		return nil, fmt.Errorf("account key: %w", err)
-	}
-
-	u := &legoUser{
-		email: cfg.ACME.Email,
-		key:   userKey,
-	}
-
-	// Load persisted registration if present.
-	reg, err := i.loadRegistration(ctx, spec.CA, caEntry.Directory, cfg.ACME.Email)
-	if err == nil {
-		u.reg = reg
-	}
-
-	legoCfg := lego.NewConfig(u)
-	legoCfg.CADirURL = caEntry.Directory
-	legoCfg.Certificate.KeyType = specKeyType(spec.KeyType)
-
-	client, err := lego.NewClient(legoCfg)
-	if err != nil {
-		return nil, fmt.Errorf("lego client: %w", err)
-	}
-
-	// Register account if we don't have one yet.
-	if u.reg == nil {
-		if err := i.register(ctx, client, u, spec.CA, caEntry, cfg.ACME.Email); err != nil {
-			return nil, fmt.Errorf("register: %w", err)
-		}
+		return nil, err
 	}
 
 	// Configure DNS provider.
@@ -145,7 +137,10 @@ func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec confi
 	if err != nil {
 		return nil, fmt.Errorf("dns provider %q: %w", spec.DNSProvider, err)
 	}
-	if err := client.Challenge.SetDNS01Provider(provider); err != nil {
+	// Unlike the process-wide resolvers, skipping the propagation check is an
+	// option of this challenge only, so each provider can choose.
+	skipPropagation := dns01.CondOption(dnsP.SkipPropagationCheck, dns01.PropagationWait(0, true))
+	if err := client.Challenge.SetDNS01Provider(provider, skipPropagation); err != nil {
 		return nil, fmt.Errorf("set dns01 provider: %w", err)
 	}
 
@@ -172,9 +167,78 @@ func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec confi
 // Account management
 // ---------------------------------------------------------------------------
 
+// accountClient returns a lego client acting for the ACME account of spec's
+// CA, creating and registering the account first when the store has none for
+// the CA's current directory and email.
+//
+// Everything from reading the stored account to storing the registration runs
+// under the lock of spec's CA. Without it, two first issuances for one CA
+// could each create a key, and the stored record could end up pairing one key
+// with the other's registration, which the CA rejects on every later request.
+// The lock is released before the caller orders the certificate, so
+// issuances still run in parallel.
+//
+// There is one lock per CA so that a stalled CA delays only its own
+// issuances: every issuance holds its CA's lock while lego fetches the
+// directory, for up to lego's request timeouts. The lock is keyed by CA name,
+// the key of the account record in the store. A change of the CA's directory
+// or of the email replaces the key in that same record, so keying by directory
+// and email would let an issuance started before a reload and one started
+// after it write the record at once.
+func (i *Issuer) accountClient(ctx context.Context, cfg *config.ServerConfig, spec config.CertificateSpec, caEntry config.CAEntry) (*lego.Client, error) {
+	lock, _ := i.accountLocks.LoadOrStore(spec.CA, new(sync.Mutex))
+	mu := lock.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+
+	userKey, err := i.loadOrCreateAccountKey(ctx, spec.CA, caEntry.Directory, cfg.ACME.Email)
+	if err != nil {
+		return nil, fmt.Errorf("account key: %w", err)
+	}
+
+	// Load persisted registration if present.
+	reg, err := i.loadRegistration(ctx, spec.CA, caEntry.Directory, cfg.ACME.Email)
+	if err != nil {
+		return nil, fmt.Errorf("account registration: %w", err)
+	}
+
+	u := &legoUser{
+		email: cfg.ACME.Email,
+		key:   userKey,
+		reg:   reg,
+	}
+
+	legoCfg := lego.NewConfig(u)
+	legoCfg.CADirURL = caEntry.Directory
+	legoCfg.Certificate.KeyType = specKeyType(spec.KeyType)
+
+	client, err := lego.NewClient(legoCfg)
+	if err != nil {
+		return nil, fmt.Errorf("lego client: %w", err)
+	}
+
+	// Register account if we don't have one yet.
+	if u.reg == nil {
+		if err := i.register(ctx, client, u, spec.CA, caEntry, cfg.ACME.Email); err != nil {
+			return nil, fmt.Errorf("register: %w", err)
+		}
+	}
+	return client, nil
+}
+
+// loadOrCreateAccountKey returns the stored account key of ca, or creates and
+// stores a new one, replacing the whole record, when the store has no record
+// for ca or its record is for another directory or email. Any other error of
+// the store is returned without writing: taking it for a missing account
+// would throw away a working one and register another.
 func (i *Issuer) loadOrCreateAccountKey(ctx context.Context, ca, directory, email string) (*ecdsa.PrivateKey, error) {
 	rec, err := i.accounts.Get(ctx, ca, nil)
-	if err == nil && rec.Directory == directory && rec.Email == email && rec.KeyPEM != "" {
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// No account yet: create one below.
+	case err != nil:
+		return nil, err
+	case rec.Directory == directory && rec.Email == email && rec.KeyPEM != "":
 		return parseECDSAKey([]byte(rec.KeyPEM))
 	}
 	// Generate a new key.
@@ -199,14 +263,29 @@ func (i *Issuer) loadOrCreateAccountKey(ctx context.Context, ca, directory, emai
 	return key, nil
 }
 
+// loadRegistration returns the stored registration of ca's account, or nil
+// when the store has none for directory and email.
+//
+// A stored registration that does not parse counts as none. Such a record is
+// damaged and stays so, and registering the stored key again repairs it
+// without replacing the account: a CA answers a key it knows with the
+// existing account (RFC 8555, section 7.3). A store error is returned
+// instead, as in loadOrCreateAccountKey: it may be transient and says nothing
+// about the record, so it is no reason to register or write anything.
 func (i *Issuer) loadRegistration(ctx context.Context, ca, directory, email string) (*registration.Resource, error) {
 	rec, err := i.accounts.Get(ctx, ca, nil)
-	if err != nil || rec.Directory != directory || rec.Email != email || rec.RegistrationJSON == "" {
-		return nil, fmt.Errorf("no registration")
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if rec.Directory != directory || rec.Email != email || rec.RegistrationJSON == "" {
+		return nil, nil
 	}
 	var reg registration.Resource
-	if err := json.Unmarshal([]byte(rec.RegistrationJSON), &reg); err != nil {
-		return nil, err
+	if json.Unmarshal([]byte(rec.RegistrationJSON), &reg) != nil {
+		return nil, nil // damaged: register the key again, see above
 	}
 	return &reg, nil
 }
@@ -234,9 +313,12 @@ func (i *Issuer) register(ctx context.Context, client *lego.Client, u *legoUser,
 	if err != nil {
 		return err
 	}
-	rec, _ := i.accounts.Get(ctx, ca, nil)
-	if rec == nil {
-		rec = &store.AccountRecord{CA: ca, Directory: caEntry.Directory, Email: email}
+	// Upsert replaces every column, so start from the stored record, which
+	// holds the key loadOrCreateAccountKey stored under the same lock; a new
+	// record would store the registration without its key.
+	rec, err := i.accounts.Get(ctx, ca, nil)
+	if err != nil {
+		return fmt.Errorf("load account: %w", err)
 	}
 	rec.Directory = caEntry.Directory
 	rec.Email = email
@@ -328,6 +410,9 @@ func buildDNSProvider(p config.DNSProvider) (challenge.Provider, error) {
 		// Application default credentials for the configured project.
 		project, _ := cfg["project"].(string)
 		return gcloud.NewDNSProviderCredentials(project)
+
+	case "exec":
+		return &execProvider{argv: p.Command}, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported provider type %q", p.Type)

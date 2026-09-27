@@ -3,6 +3,9 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -196,6 +199,66 @@ func TestParseServer_UnknownFieldRejected(t *testing.T) {
 	_, err := ParseServer([]byte(bad))
 	if err == nil {
 		t.Fatal("expected error for unknown top-level field, got nil")
+	}
+}
+
+func TestParseServer_UnknownACMEFieldRejected(t *testing.T) {
+	bad := strings.Replace(validServerYAML, "  default_ca: letsencrypt",
+		"  default_ca: letsencrypt\n  dns_resolver: [\"1.1.1.1\"]", 1)
+	_, err := ParseServer([]byte(bad))
+	if err == nil || !strings.Contains(err.Error(), "dns_resolver") {
+		t.Fatalf("expected unknown acme field error, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// acme.dns_resolvers
+// ---------------------------------------------------------------------------
+
+func withDNSResolvers(resolvers ...string) string {
+	quoted := make([]string, len(resolvers))
+	for i, r := range resolvers {
+		quoted[i] = strconv.Quote(r)
+	}
+	return strings.Replace(validServerYAML, "  default_ca: letsencrypt",
+		"  default_ca: letsencrypt\n  dns_resolvers: ["+strings.Join(quoted, ", ")+"]", 1)
+}
+
+func TestParseServer_DNSResolvers(t *testing.T) {
+	valid := []string{
+		"1.1.1.1",
+		"1.1.1.1:53",
+		"2001:db8::1",
+		"[2001:db8::1]:5353",
+		"dns.example.com",
+		"challtestsrv:8053",
+	}
+	cfg, err := ParseServer([]byte(withDNSResolvers(valid...)))
+	if err != nil {
+		t.Fatalf("valid resolvers rejected: %v", err)
+	}
+	if !slices.Equal(cfg.ACME.DNSResolvers, valid) {
+		t.Fatalf("dns_resolvers = %q, want %q", cfg.ACME.DNSResolvers, valid)
+	}
+
+	for _, resolver := range []string{
+		"",
+		"[::1]", // lego would turn it into "[[::1]]:53"
+		"1.1.1.1:0",
+		"1.1.1.1:65536",
+		"1.1.1.1:dns",
+		"dns.example.com:",
+		"udp://1.1.1.1",
+		"1.1.1.0/24",
+		"dns .example.com",
+		" 1.1.1.1",
+	} {
+		t.Run(strconv.Quote(resolver), func(t *testing.T) {
+			_, err := ParseServer([]byte(withDNSResolvers("1.1.1.1", resolver)))
+			if err == nil || !strings.Contains(err.Error(), "acme.dns_resolvers[1]: invalid DNS resolver") {
+				t.Fatalf("expected invalid resolver error, got %v", err)
+			}
+		})
 	}
 }
 
@@ -491,6 +554,136 @@ func TestDNSProvider_Gcloud_RequiresProjectOrServiceAccountFile(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", tt.want, err)
 			}
 		})
+	}
+}
+
+// hookPath is an absolute program path on the OS running the test; the
+// YAML below single-quotes it so a Windows path needs no escaping.
+func hookPath() string {
+	if runtime.GOOS == "windows" {
+		return `C:\sigil\dns-hook.exe`
+	}
+	return "/usr/local/bin/dns-hook"
+}
+
+func TestDNSProvider_Exec(t *testing.T) {
+	tests := []struct {
+		name  string
+		block string
+		want  string // expected error substring; empty means valid
+	}{
+		{
+			name: "command with arguments",
+			block: `dns_providers:
+  p1:
+    type: exec
+    command: ['` + hookPath() + `', '--zone', 'example.com']
+`,
+		},
+		{
+			name: "missing command",
+			block: `dns_providers:
+  p1:
+    type: exec
+`,
+			want: `dns_providers.p1.command: required for provider type "exec"`,
+		},
+		{
+			name: "empty argument",
+			block: `dns_providers:
+  p1:
+    type: exec
+    command: ['` + hookPath() + `', '']
+`,
+			want: "dns_providers.p1.command[1]: must not be empty",
+		},
+		{
+			name: "relative program path",
+			block: `dns_providers:
+  p1:
+    type: exec
+    command: ['hooks/dns-hook']
+`,
+			want: "dns_providers.p1.command[0]: must be an absolute program path",
+		},
+		{
+			name: "credential key",
+			block: `dns_providers:
+  p1:
+    type: exec
+    command: ['` + hookPath() + `']
+    api_token: "tok"
+`,
+			want: `dns_providers.p1.api_token: unknown field for provider type "exec"`,
+		},
+		{
+			name: "misspelled command",
+			block: `dns_providers:
+  p1:
+    type: exec
+    comand: ['` + hookPath() + `']
+`,
+			want: `dns_providers.p1.comand: unknown field for provider type "exec"`,
+		},
+		{
+			name: "command on another type",
+			block: `dns_providers:
+  p1:
+    type: cloudflare
+    api_token: "tok"
+    command: ['` + hookPath() + `']
+`,
+			want: `dns_providers.p1.command: only valid for provider type "exec"`,
+		},
+		{
+			name: "unknown type lists exec",
+			block: `dns_providers:
+  p1:
+    type: madeup
+`,
+			want: "supported: cloudflare, aliyun, tencentcloud, route53, gcloud, exec",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := ParseServer([]byte(dnsServerYAML(tt.block)))
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				want := []string{hookPath(), "--zone", "example.com"}
+				if got := cfg.DNSProviders["p1"].Command; !slices.Equal(got, want) {
+					t.Fatalf("command = %q, want %q", got, want)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected error containing %q, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
+func TestDNSProvider_SkipPropagationCheck(t *testing.T) {
+	t.Setenv("SIGIL_TEST_SKIP_PROPAGATION", "true")
+	src := dnsServerYAML(`dns_providers:
+  p1:
+    type: exec
+    command: ['` + hookPath() + `']
+    skip_propagation_check: ${SIGIL_TEST_SKIP_PROPAGATION}
+  p2:
+    type: cloudflare
+    api_token: "tok"
+`)
+	cfg, err := ParseServer([]byte(src))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.DNSProviders["p1"].SkipPropagationCheck {
+		t.Error("skip_propagation_check from ${VAR} did not decode as true")
+	}
+	if cfg.DNSProviders["p2"].SkipPropagationCheck {
+		t.Error("skip_propagation_check should default to false")
 	}
 }
 
