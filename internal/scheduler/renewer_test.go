@@ -1372,6 +1372,8 @@ func TestRetryDelay(t *testing.T) {
 		failures int
 		want     time.Duration
 	}{
+		{-1, 5 * time.Minute},
+		{0, 5 * time.Minute},
 		{1, 5 * time.Minute},
 		{2, 10 * time.Minute},
 		{3, 20 * time.Minute},

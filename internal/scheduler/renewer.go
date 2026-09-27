@@ -421,7 +421,7 @@ func (r *Renewer) backoff(ctx context.Context, name string, now time.Time, cause
 // retryDelay is the backoff after the given number of consecutive failures:
 // baseBackoff doubled for each failure after the first, capped at maxBackoff.
 func retryDelay(failures int) time.Duration {
-	return min(baseBackoff<<min(failures-1, 9), maxBackoff) // 5min<<9 is already past the cap
+	return min(baseBackoff<<min(max(failures-1, 0), 9), maxBackoff) // 5min<<9 is already past the cap
 }
 
 // lastError prepares an issuance error for storage. It can quote responses of
