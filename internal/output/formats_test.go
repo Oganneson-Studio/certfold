@@ -176,10 +176,10 @@ func TestEncode_UnknownFormat(t *testing.T) {
 
 func TestAtomicWrite_CreatesFile(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "cert.pem")
+	path := filepath.Join(dir, "key.pem")
 	data := []byte("test data")
 
-	if err := atomicWrite(path, data, 0o600); err != nil {
+	if err := atomicWrite(config.OutputSpec{Format: "pem-key", Path: path}, data); err != nil {
 		t.Fatal(err)
 	}
 
@@ -190,19 +190,14 @@ func TestAtomicWrite_CreatesFile(t *testing.T) {
 	if string(got) != string(data) {
 		t.Fatalf("file content mismatch: got %q want %q", got, data)
 	}
-
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkMode(t, info, 0o600)
+	checkMode(t, path, 0o600)
 }
 
 func TestAtomicWrite_CreatesParentDir(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "subdir", "nested", "cert.pem")
 
-	if err := atomicWrite(path, []byte("x"), 0); err != nil {
+	if err := atomicWrite(config.OutputSpec{Format: "pem-cert", Path: path}, []byte("x")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -214,14 +209,26 @@ func TestAtomicWrite_DefaultMode(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cert.pem")
 
-	if err := atomicWrite(path, []byte("x"), 0); err != nil {
+	if err := atomicWrite(config.OutputSpec{Format: "pem-cert", Path: path}, []byte("x")); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
+	checkMode(t, path, 0o644)
+}
+
+// TestWrite_KeyOutputsArePrivate writes every format where other users may
+// read new files: formats that carry the private key must stay owner-only.
+func TestWrite_KeyOutputsArePrivate(t *testing.T) {
+	b := makeBundle(t)
+	dir := outputDir(t)
+	for _, format := range []string{"pem-cert", "pem-fullchain", "der", "pem-key", "pem-bundle", "pkcs12"} {
+		t.Run(format, func(t *testing.T) {
+			spec := config.OutputSpec{Format: format, Path: filepath.Join(dir, format), Password: "testpass"}
+			if err := Write(b, spec); err != nil {
+				t.Fatal(err)
+			}
+			checkMode(t, spec.Path, os.FileMode(outputMode(spec)))
+		})
 	}
-	checkMode(t, info, 0o644)
 }
 
 func TestOutputMode_SecureDefaults(t *testing.T) {
