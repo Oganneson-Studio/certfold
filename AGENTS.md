@@ -30,9 +30,10 @@
 ## 仓库布局
 
 ```text
-cmd/sigils/commands/       服务端 CLI 与启动逻辑
-cmd/sigilc/commands/       客户端 CLI、注册和 IPC 控制
+cmd/sigils/commands/       服务端 Cobra 命令与输出格式（装配在 internal/server）
+cmd/sigilc/commands/       客户端 Cobra 命令、注册流程（装配在 internal/agent）
 internal/acme/             lego ACME 封装
+internal/agent/            sigilc daemon 组合根：客户端运行时、身份保存、IPC 控制
 internal/api/              HTTPS API、安装脚本和 mTLS 中间件
 internal/ca/               内部 mini-CA
 internal/client/           拉取循环、push receiver、状态
@@ -41,8 +42,9 @@ internal/enroll/           一次性 token、CSR 和身份保存
 internal/ipc/              服务端与客户端本地控制 API
 internal/output/           证书格式化与原子写入
 internal/scheduler/        签发、续期和退避
+internal/server/           sigils daemon 组合根：配置运行时、API、IPC、调度与有序关停
 internal/securefile/       私钥配置的原子写入和 Windows DACL
-internal/service/          系统服务封装
+internal/service/          系统服务安装与运行（非交互时经 kardianos 服务管理器）
 internal/store/            SQLite repositories
 internal/tui/              server/client TUI
 pkg/proto/                 HTTP DTO
@@ -82,7 +84,7 @@ go test -race ./internal/client ./internal/ipc
 7. PowerShell 安装脚本只能反射 canonical base64url 字符，响应必须 `Cache-Control: no-store`，不得再次把任意查询值拼入可执行脚本。（Phase 4 按 B3 改造后本条作废。）
 8. 生产一键安装要求公网端点使用操作系统信任的 TLS 证书。通过 `server.tls_cert_file` 与 `server.tls_key_file` 配置；内部 mini-CA 默认证书不能让首次系统 `curl` 自动信任。
 9. 服务端 push 只能向不含 userinfo、query 或 fragment 的 HTTPS endpoint 发送 bearer 鉴权请求，且不得跟随重定向或在错误日志中泄漏完整 endpoint。客户端 push listener 是明文 HTTP，只能监听字面量回环 IP；远程接入必须先由本机反向代理或隧道终止 TLS。listener 必须配置至少 32 字符 bearer token，使用常量时间比较，并合并并发通知，避免并发写证书和状态文件。（Phase 3 按 B1 改造后本条作废。）
-10. 配置解析使用 `yaml.KnownFields(true)`。增加字段时必须同步 schema、验证和测试。
+10. 配置解析使用 `yaml.KnownFields(true)`。增加字段时必须同步 schema、验证和测试。`config.ReadServerPaths` 是只给 CLI 定位 IPC、给安装器找 data_dir 用的宽松读取函数，daemon 不得用它加载配置。
 11. 服务端只读 IPC 必须使用显式 DTO，不能在线路上返回证书私钥、push token 或 enrollment-token secret hash。
 12. 数据库证书记录必须绑定有效配置指纹；CA directory、domains 或 key type 变化后，旧材料不得继续分发。
 
