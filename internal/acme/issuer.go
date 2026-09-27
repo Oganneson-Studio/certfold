@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/go-acme/lego/v4/certcrypto"
@@ -91,6 +92,8 @@ type Result struct {
 // Issuer wraps lego to issue/renew certificates per CertificateSpec.
 type Issuer struct {
 	accounts *store.AccountRepo
+	// accountMu serializes ACME account initialization; see accountClient.
+	accountMu sync.Mutex
 }
 
 // NewIssuer creates an Issuer backed by the persistent ACME account store.
@@ -111,36 +114,9 @@ func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec confi
 		return nil, fmt.Errorf("unknown CA %q", spec.CA)
 	}
 
-	userKey, err := i.loadOrCreateAccountKey(ctx, spec.CA, caEntry.Directory, cfg.ACME.Email)
+	client, err := i.accountClient(ctx, cfg, spec, caEntry)
 	if err != nil {
-		return nil, fmt.Errorf("account key: %w", err)
-	}
-
-	u := &legoUser{
-		email: cfg.ACME.Email,
-		key:   userKey,
-	}
-
-	// Load persisted registration if present.
-	reg, err := i.loadRegistration(ctx, spec.CA, caEntry.Directory, cfg.ACME.Email)
-	if err == nil {
-		u.reg = reg
-	}
-
-	legoCfg := lego.NewConfig(u)
-	legoCfg.CADirURL = caEntry.Directory
-	legoCfg.Certificate.KeyType = specKeyType(spec.KeyType)
-
-	client, err := lego.NewClient(legoCfg)
-	if err != nil {
-		return nil, fmt.Errorf("lego client: %w", err)
-	}
-
-	// Register account if we don't have one yet.
-	if u.reg == nil {
-		if err := i.register(ctx, client, u, spec.CA, caEntry, cfg.ACME.Email); err != nil {
-			return nil, fmt.Errorf("register: %w", err)
-		}
+		return nil, err
 	}
 
 	// Configure DNS provider.
@@ -181,6 +157,56 @@ func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec confi
 // ---------------------------------------------------------------------------
 // Account management
 // ---------------------------------------------------------------------------
+
+// accountClient returns a lego client acting for the ACME account of spec's
+// CA, creating and registering the account first when the store has none for
+// the CA's current directory and email.
+//
+// Everything from reading the stored account to storing the registration runs
+// under accountMu. Without it, two first issuances for one CA could each
+// create a key, and the stored record could end up pairing one key with the
+// other's registration, which the CA rejects on every later request. The
+// lock is released before the caller orders the certificate, so issuances
+// still run in parallel. Every issuance holds it while lego fetches the CA's
+// directory, though, so a stalled CA also delays the other CAs' issuances,
+// up to lego's request timeouts.
+func (i *Issuer) accountClient(ctx context.Context, cfg *config.ServerConfig, spec config.CertificateSpec, caEntry config.CAEntry) (*lego.Client, error) {
+	i.accountMu.Lock()
+	defer i.accountMu.Unlock()
+
+	userKey, err := i.loadOrCreateAccountKey(ctx, spec.CA, caEntry.Directory, cfg.ACME.Email)
+	if err != nil {
+		return nil, fmt.Errorf("account key: %w", err)
+	}
+
+	u := &legoUser{
+		email: cfg.ACME.Email,
+		key:   userKey,
+	}
+
+	// Load persisted registration if present.
+	reg, err := i.loadRegistration(ctx, spec.CA, caEntry.Directory, cfg.ACME.Email)
+	if err == nil {
+		u.reg = reg
+	}
+
+	legoCfg := lego.NewConfig(u)
+	legoCfg.CADirURL = caEntry.Directory
+	legoCfg.Certificate.KeyType = specKeyType(spec.KeyType)
+
+	client, err := lego.NewClient(legoCfg)
+	if err != nil {
+		return nil, fmt.Errorf("lego client: %w", err)
+	}
+
+	// Register account if we don't have one yet.
+	if u.reg == nil {
+		if err := i.register(ctx, client, u, spec.CA, caEntry, cfg.ACME.Email); err != nil {
+			return nil, fmt.Errorf("register: %w", err)
+		}
+	}
+	return client, nil
+}
 
 func (i *Issuer) loadOrCreateAccountKey(ctx context.Context, ca, directory, email string) (*ecdsa.PrivateKey, error) {
 	rec, err := i.accounts.Get(ctx, ca, nil)

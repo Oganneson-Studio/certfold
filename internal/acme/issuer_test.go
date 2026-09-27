@@ -6,18 +6,27 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
+	"io"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/challenge"
+	"github.com/go-acme/lego/v4/registration"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/store"
@@ -261,6 +270,261 @@ func TestAccountKeyRotatesWhenDirectoryChanges(t *testing.T) {
 	}
 	if rotated.Directory != "https://new.example/directory" || rotated.RegistrationJSON != "" {
 		t.Fatalf("rotated account = %+v", rotated)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Account initialization under concurrent issuance
+// ---------------------------------------------------------------------------
+
+// fakeACME answers what ACME account initialization and ordering send. Like
+// a CA it checks every JWS signature against the key of the account the
+// request names. It fails every new order, so Issue stops before any
+// challenge, but first holds each new-order request until orders requests
+// are in flight together.
+type fakeACME struct {
+	*httptest.Server
+	orders int
+
+	mu        sync.Mutex
+	nonces    int
+	keys      map[string]*ecdsa.PublicKey // by account URL
+	accounts  []string                    // account URL of each new-account request
+	orderKIDs []string                    // account URL of each verified new-order request
+	arrivals  int
+	problems  []string
+	together  chan struct{}
+	closeOnce sync.Once
+}
+
+func newFakeACME(t *testing.T, orders int) *fakeACME {
+	t.Helper()
+	f := &fakeACME{orders: orders, keys: map[string]*ecdsa.PublicKey{}, together: make(chan struct{})}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /dir", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"newNonce":   f.URL + "/nonce",
+			"newAccount": f.URL + "/new-acct",
+			"newOrder":   f.URL + "/new-order",
+			"revokeCert": f.URL + "/revoke-cert",
+			"keyChange":  f.URL + "/key-change",
+		})
+	})
+	mux.HandleFunc("HEAD /nonce", func(w http.ResponseWriter, r *http.Request) { f.setNonce(w) })
+	mux.HandleFunc("POST /new-acct", f.newAccount)
+	mux.HandleFunc("POST /new-order", f.newOrder)
+	f.Server = httptest.NewTLSServer(mux)
+	t.Cleanup(f.Close)
+
+	// lego's HTTP client trusts exactly the certificates in this file.
+	caFile := filepath.Join(t.TempDir(), "acme-server.pem")
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: f.Certificate().Raw})
+	if err := os.WriteFile(caFile, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LEGO_CA_CERTIFICATES", caFile)
+	return f
+}
+
+func (f *fakeACME) setNonce(w http.ResponseWriter) {
+	f.mu.Lock()
+	f.nonces++
+	nonce := fmt.Sprintf("nonce-%d", f.nonces)
+	f.mu.Unlock()
+	w.Header().Set("Replay-Nonce", nonce)
+}
+
+func (f *fakeACME) problem(w http.ResponseWriter, format string, args ...any) {
+	f.setNonce(w)
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(http.StatusForbidden)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"type":   "urn:ietf:params:acme:error:unauthorized",
+		"detail": fmt.Sprintf(format, args...),
+		"status": http.StatusForbidden,
+	})
+}
+
+func (f *fakeACME) reject(w http.ResponseWriter, format string, args ...any) {
+	f.mu.Lock()
+	f.problems = append(f.problems, fmt.Sprintf(format, args...))
+	f.mu.Unlock()
+	f.problem(w, format, args...)
+}
+
+// verify checks the signature of the flattened JWS in r's body against its
+// embedded jwk or, for a kid, the key registered for that account. It returns
+// the kid and the key.
+func (f *fakeACME) verify(r *http.Request) (string, *ecdsa.PublicKey, error) {
+	var jws struct{ Protected, Payload, Signature string }
+	if err := json.NewDecoder(r.Body).Decode(&jws); err != nil {
+		return "", nil, err
+	}
+	rawHeader, err := base64.RawURLEncoding.DecodeString(jws.Protected)
+	if err != nil {
+		return "", nil, err
+	}
+	var header struct {
+		KID string `json:"kid"`
+		JWK *struct {
+			X, Y string
+		} `json:"jwk"`
+	}
+	if err := json.Unmarshal(rawHeader, &header); err != nil {
+		return "", nil, err
+	}
+	var key *ecdsa.PublicKey
+	if header.JWK != nil {
+		x, errX := base64.RawURLEncoding.DecodeString(header.JWK.X)
+		y, errY := base64.RawURLEncoding.DecodeString(header.JWK.Y)
+		if errX != nil || errY != nil {
+			return "", nil, fmt.Errorf("bad jwk")
+		}
+		if key, err = ecdsa.ParseUncompressedPublicKey(elliptic.P256(), slices.Concat([]byte{4}, x, y)); err != nil {
+			return "", nil, err
+		}
+	} else {
+		f.mu.Lock()
+		key = f.keys[header.KID]
+		f.mu.Unlock()
+		if key == nil {
+			return "", nil, fmt.Errorf("unknown account %q", header.KID)
+		}
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(jws.Signature)
+	if err != nil || len(sig) != 64 {
+		return "", nil, fmt.Errorf("bad ES256 signature encoding")
+	}
+	digest := sha256.Sum256([]byte(jws.Protected + "." + jws.Payload))
+	if !ecdsa.Verify(key, digest[:], new(big.Int).SetBytes(sig[:32]), new(big.Int).SetBytes(sig[32:])) {
+		return "", nil, fmt.Errorf("signature does not match the key of account %q", header.KID)
+	}
+	return header.KID, key, nil
+}
+
+func (f *fakeACME) newAccount(w http.ResponseWriter, r *http.Request) {
+	_, key, err := f.verify(r)
+	if err != nil {
+		f.reject(w, "new-account: %v", err)
+		return
+	}
+	// Answer slowly, so that without the account lock every concurrent
+	// issuance reads the store before the first registration reaches it.
+	time.Sleep(150 * time.Millisecond)
+	f.mu.Lock()
+	account := fmt.Sprintf("%s/acct/%d", f.URL, len(f.accounts)+1)
+	f.accounts = append(f.accounts, account)
+	f.keys[account] = key
+	f.mu.Unlock()
+
+	f.setNonce(w)
+	w.Header().Set("Location", account)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_, _ = io.WriteString(w, `{"status":"valid"}`)
+}
+
+func (f *fakeACME) newOrder(w http.ResponseWriter, r *http.Request) {
+	kid, _, err := f.verify(r)
+	f.mu.Lock()
+	if err == nil {
+		f.orderKIDs = append(f.orderKIDs, kid)
+	} else {
+		f.problems = append(f.problems, fmt.Sprintf("new-order: %v", err))
+	}
+	f.arrivals++
+	if f.arrivals == f.orders {
+		f.closeOnce.Do(func() { close(f.together) })
+	}
+	f.mu.Unlock()
+
+	select {
+	case <-f.together:
+	case <-time.After(5 * time.Second):
+		f.mu.Lock()
+		f.problems = append(f.problems, fmt.Sprintf(
+			"only %d of %d orders were in flight together: account initialization blocks ordering", f.arrivals, f.orders))
+		f.mu.Unlock()
+		f.closeOnce.Do(func() { close(f.together) })
+	}
+	f.problem(w, "the fake ACME server issues no certificates")
+}
+
+func TestIssueInitializesTheAccountOnceForConcurrentIssuances(t *testing.T) {
+	const n = 8
+	server := newFakeACME(t, n)
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	issuer := NewIssuer(db.Accounts)
+	cfg := &config.ServerConfig{
+		ACME: config.ACMESection{
+			Email:     "ops@example.com",
+			DefaultCA: "fake",
+			CAs:       map[string]config.CAEntry{"fake": {Directory: server.URL + "/dir"}},
+		},
+		// Never run: every order fails before the challenge.
+		DNSProviders: map[string]config.DNSProvider{"hook": {Type: "exec", Command: []string{"/usr/local/bin/dns-hook"}}},
+	}
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make([]error, n)
+	for i := range n {
+		spec := config.CertificateSpec{
+			Name:        fmt.Sprintf("cert-%d", i),
+			Domains:     []string{fmt.Sprintf("host%d.example.com", i)},
+			CA:          "fake",
+			DNSProvider: "hook",
+			KeyType:     "ec256",
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, errs[i] = issuer.Issue(context.Background(), cfg, spec)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	for _, problem := range server.problems {
+		t.Errorf("fake ACME server: %s", problem)
+	}
+	if len(server.accounts) != 1 {
+		t.Fatalf("%d accounts registered, want 1", len(server.accounts))
+	}
+	account := server.accounts[0]
+	if len(server.orderKIDs) != n {
+		t.Fatalf("%d verified orders, want %d; Issue errors: %v", len(server.orderKIDs), n, errs)
+	}
+	for _, kid := range server.orderKIDs {
+		if kid != account {
+			t.Errorf("order signed for account %q, want %q", kid, account)
+		}
+	}
+
+	rec, err := db.Accounts.Get(context.Background(), "fake", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := parseECDSAKey([]byte(rec.KeyPEM))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.PublicKey.Equal(server.keys[account]) {
+		t.Error("stored account key is not the key the account was registered with")
+	}
+	var reg registration.Resource
+	if err := json.Unmarshal([]byte(rec.RegistrationJSON), &reg); err != nil {
+		t.Fatal(err)
+	}
+	if reg.URI != account {
+		t.Errorf("stored registration URI = %q, want %q", reg.URI, account)
 	}
 }
 
