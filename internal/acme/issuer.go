@@ -264,9 +264,14 @@ func (i *Issuer) loadOrCreateAccountKey(ctx context.Context, ca, directory, emai
 }
 
 // loadRegistration returns the stored registration of ca's account, or nil
-// when the store has none for directory and email. Like
-// loadOrCreateAccountKey, it returns other errors rather than report no
-// registration, which would register the account again.
+// when the store has none for directory and email.
+//
+// A stored registration that does not parse counts as none. Such a record is
+// damaged and stays so, and registering the stored key again repairs it
+// without replacing the account: a CA answers a key it knows with the
+// existing account (RFC 8555, section 7.3). A store error is returned
+// instead, as in loadOrCreateAccountKey: it may be transient and says nothing
+// about the record, so it is no reason to register or write anything.
 func (i *Issuer) loadRegistration(ctx context.Context, ca, directory, email string) (*registration.Resource, error) {
 	rec, err := i.accounts.Get(ctx, ca, nil)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -279,8 +284,8 @@ func (i *Issuer) loadRegistration(ctx context.Context, ca, directory, email stri
 		return nil, nil
 	}
 	var reg registration.Resource
-	if err := json.Unmarshal([]byte(rec.RegistrationJSON), &reg); err != nil {
-		return nil, fmt.Errorf("parse stored registration: %w", err)
+	if json.Unmarshal([]byte(rec.RegistrationJSON), &reg) != nil {
+		return nil, nil // damaged: register the key again, see above
 	}
 	return &reg, nil
 }

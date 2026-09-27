@@ -371,7 +371,7 @@ type fakeACME struct {
 	mu        sync.Mutex
 	nonces    int
 	keys      map[string]*ecdsa.PublicKey // by account URL
-	accounts  []string                    // account URL of each new-account request
+	accounts  []string                    // account URL answering each new-account request
 	orderKIDs []string                    // account URL of each verified new-order request
 	arrivals  int
 	problems  []string
@@ -494,15 +494,24 @@ func (f *fakeACME) newAccount(w http.ResponseWriter, r *http.Request) {
 	// issuance reads the store before the first registration reaches it.
 	time.Sleep(150 * time.Millisecond)
 	f.mu.Lock()
-	account := fmt.Sprintf("%s/acct/%d", f.URL, len(f.accounts)+1)
+	// Like a CA (RFC 8555, section 7.3), answer a known key with its account.
+	status, account := http.StatusOK, ""
+	for url, known := range f.keys {
+		if known.Equal(key) {
+			account = url
+		}
+	}
+	if account == "" {
+		status, account = http.StatusCreated, fmt.Sprintf("%s/acct/%d", f.URL, len(f.keys)+1)
+		f.keys[account] = key
+	}
 	f.accounts = append(f.accounts, account)
-	f.keys[account] = key
 	f.mu.Unlock()
 
 	f.setNonce(w)
 	w.Header().Set("Location", account)
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
+	w.WriteHeader(status)
 	_, _ = io.WriteString(w, `{"status":"valid"}`)
 }
 
@@ -578,7 +587,7 @@ func TestIssueInitializesTheAccountOnceForConcurrentIssuances(t *testing.T) {
 		t.Errorf("fake ACME server: %s", problem)
 	}
 	if len(server.accounts) != 1 {
-		t.Fatalf("%d accounts registered, want 1", len(server.accounts))
+		t.Fatalf("%d new-account requests, want 1", len(server.accounts))
 	}
 	account := server.accounts[0]
 	if len(server.orderKIDs) != n {
@@ -767,9 +776,67 @@ func TestAccountStoreErrorsDoNotReplaceTheAccount(t *testing.T) {
 			server.mu.Lock()
 			defer server.mu.Unlock()
 			if len(server.accounts) != 1 {
-				t.Errorf("%d accounts registered, want 1", len(server.accounts))
+				t.Errorf("%d new-account requests, want 1", len(server.accounts))
 			}
 		})
+	}
+}
+
+func TestDamagedStoredRegistrationIsRepairedWithTheSameAccount(t *testing.T) {
+	server := newFakeACME(t, 1)
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	cfg := &config.ServerConfig{
+		ACME: config.ACMESection{
+			Email:     "ops@example.com",
+			DefaultCA: "fake",
+			CAs:       map[string]config.CAEntry{"fake": {Directory: server.URL + "/dir"}},
+		},
+		// Never run: every order fails before the challenge.
+		DNSProviders: map[string]config.DNSProvider{"hook": {Type: "exec", Command: []string{"/usr/local/bin/dns-hook"}}},
+	}
+	spec := config.CertificateSpec{Name: "api", Domains: []string{"api.example.com"}, CA: "fake", DNSProvider: "hook", KeyType: "ec256"}
+	issuer := NewIssuer(db.Accounts)
+	// The fake CA fails the order, after the account is registered.
+	_, _ = issuer.Issue(ctx, cfg, spec)
+	rec, err := db.Accounts.Get(ctx, "fake", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := rec.KeyPEM
+	rec.RegistrationJSON = `{"uri":`
+	if err := db.Accounts.Upsert(ctx, rec, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	_, issueErr := issuer.Issue(ctx, cfg, spec)
+
+	rec, err = db.Accounts.Get(ctx, "fake", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.KeyPEM != keyPEM {
+		t.Error("the account key was replaced")
+	}
+	var reg registration.Resource
+	if err := json.Unmarshal([]byte(rec.RegistrationJSON), &reg); err != nil {
+		t.Fatalf("stored registration still does not parse (%v); Issue error: %v", err, issueErr)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	// The fake CA answers a known key with its account, as a real one does.
+	if len(server.accounts) != 2 || server.accounts[1] != server.accounts[0] {
+		t.Fatalf("new-account requests answered with %q, want the same account twice", server.accounts)
+	}
+	if reg.URI != server.accounts[0] {
+		t.Errorf("stored registration URI = %q, want %q", reg.URI, server.accounts[0])
+	}
+	if len(server.orderKIDs) != 2 {
+		t.Errorf("%d verified orders, want 2; Issue error: %v", len(server.orderKIDs), issueErr)
 	}
 }
 
