@@ -4,7 +4,19 @@
 
 ## 当前状态
 
-项目处于持续开发阶段，不要把它描述为“v1 已全部完成”。核心注册、mTLS 鉴权、证书拉取、客户端吊销、管理命令、服务端热重载、客户端身份续签和 push 调度均已可用，并有 WSLC 黑盒测试；真实 DNS provider 的 ACME 容器 E2E 与部分 TUI 操作仍未完成。
+项目处于持续开发阶段，不要把它描述为“v1 已全部完成”。核心注册、mTLS 鉴权、证书拉取、客户端吊销、管理命令、服务端热重载、客户端身份续签和 push 调度均已可用，并有 WSLC 黑盒测试；真实 DNS provider 的 ACME 容器 E2E 与部分 TUI 操作仍未完成。2026-09-27 完成现状审阅并拍板重构方向（见下一节），按 `TODO.md` 分阶段执行。
+
+## 重构方向（2026-09-27 拍板）
+
+审阅文档未公开（缺陷编号 A1–A13、决定编号 B1–B4、C1 均出自该文档）。以下决定已接受；**对应 Phase 落地之前，现有代码和下文各条约束继续有效**。
+
+- B1（Phase 3）：服务端推送改为客户端长轮询。mTLS 上的 `GET /v1/sync` 带 etag 挂起等待，证书落库或 reload 时唤醒，默认最长 55 秒。落地后删除推送通知器、客户端 push 监听、server.yaml 的 `clients:` 和 client.yaml 的 `push_listen` / `push_token`，安全约束 9 随之作废。
+- B2（Phase 2）：取消全局签发锁，改为每张证书一把锁、有上限的并行签发。落库时比对下单时的 spec 指纹与当前配置，不一致则丢弃；reload 不再等待在途签发。
+- B3（Phase 4）：PowerShell 安装改为 `& ([scriptblock]::Create((irm <url>/install.ps1))) -Token '<token>'`，服务端不再把请求参数写进脚本，安全约束 7 随之作废。
+- B4（Phase 3）：删除 `/v1/heartbeat`，由 mTLS 鉴权中间件用条件 UPDATE 刷新 `last_seen`（每个客户端每分钟最多写一次）。
+- C1（Phase 3）：客户端每张证书可配置 `on_change` 钩子，argv 形式，带超时，只能在客户端配置。
+- 每一项删除都排在替代品落地之后：删除 IPC `POST /ipc/v1/certs` 要等 Pebble E2E；删除 heartbeat 和 push 要等 `/v1/sync`。
+- 保留不动：mTLS + 数据库指纹鉴权、一次性令牌绑定、`subscribers` 唯一授权来源、客户端本地输出配置、spec 指纹绑定、`securefile`、严格 YAML。
 
 ## 项目快览
 
@@ -63,13 +75,13 @@ go test -race ./internal/client ./internal/ipc
 
 1. `server.yaml` 的 `certificates[].subscribers` 是订阅授权的唯一来源；客户端输出配置不能扩大授权。
 2. 注册 token 是一次性的，并绑定 secret、server URL、客户端名和 mini-CA 证书。客户端发送 token 前必须验证 TLS，禁止恢复 `InsecureSkipVerify`。
-3. 已注册客户端每次访问都必须同时通过 mTLS、数据库存在性和证书指纹匹配。删除客户端即撤销访问，heartbeat 不得重新创建它。
+3. 已注册客户端每次访问都必须同时通过 mTLS、数据库存在性和证书指纹匹配。删除客户端即撤销访问；除注册外，任何写路径（包括 heartbeat）都不得创建客户端记录。
 4. `client.yaml` 包含客户端私钥。写入必须经过 `internal/securefile`：Unix 使用私有模式，Windows 使用受保护 DACL，且采用临时文件加原子替换。
 5. 私钥输出默认权限为 `0600`；公开证书可为 `0644`。不要对所有输出格式使用同一默认权限。
 6. 安装下载端点的 `os/arch` 必须保持字符白名单和目录 containment 双重检查。
-7. PowerShell 安装脚本只能反射 canonical base64url 字符，响应必须 `Cache-Control: no-store`，不得再次把任意查询值拼入可执行脚本。
+7. PowerShell 安装脚本只能反射 canonical base64url 字符，响应必须 `Cache-Control: no-store`，不得再次把任意查询值拼入可执行脚本。（Phase 4 按 B3 改造后本条作废。）
 8. 生产一键安装要求公网端点使用操作系统信任的 TLS 证书。通过 `server.tls_cert_file` 与 `server.tls_key_file` 配置；内部 mini-CA 默认证书不能让首次系统 `curl` 自动信任。
-9. 服务端 push 只能向不含 userinfo、query 或 fragment 的 HTTPS endpoint 发送 bearer 鉴权请求，且不得跟随重定向或在错误日志中泄漏完整 endpoint。客户端 push listener 是明文 HTTP，只能监听字面量回环 IP；远程接入必须先由本机反向代理或隧道终止 TLS。listener 必须配置至少 32 字符 bearer token，使用常量时间比较，并合并并发通知，避免并发写证书和状态文件。
+9. 服务端 push 只能向不含 userinfo、query 或 fragment 的 HTTPS endpoint 发送 bearer 鉴权请求，且不得跟随重定向或在错误日志中泄漏完整 endpoint。客户端 push listener 是明文 HTTP，只能监听字面量回环 IP；远程接入必须先由本机反向代理或隧道终止 TLS。listener 必须配置至少 32 字符 bearer token，使用常量时间比较，并合并并发通知，避免并发写证书和状态文件。（Phase 3 按 B1 改造后本条作废。）
 10. 配置解析使用 `yaml.KnownFields(true)`。增加字段时必须同步 schema、验证和测试。
 11. 服务端只读 IPC 必须使用显式 DTO，不能在线路上返回证书私钥、push token 或 enrollment-token secret hash。
 12. 数据库证书记录必须绑定有效配置指纹；CA directory、domains 或 key type 变化后，旧材料不得继续分发。
@@ -78,7 +90,7 @@ go test -race ./internal/client ./internal/ipc
 
 - `sigils` 与 `sigilc` 使用不同的 IPC 端点。客户端命令解析顺序为：显式 `--ipc`、`client.ipc_socket`、平台默认客户端 socket。
 - `sigils reload` 必须通过本地服务端 IPC 完整解析并应用新配置。可热更新 `acme`、`dns_providers`、`certificates` 和 `clients` push routing；若 `server.listen`、`server.public_url`、`server.data_dir`、`server.ipc_socket`、`server.tls_cert_file` 或 `server.tls_key_file` 变化，必须拒绝 reload、保留旧运行配置并明确要求重启。
-- 服务端 reload 与 periodic/manual issuance 必须共用同步点：旧 generation 的签发和 push 完成后才能发布新 generation；发布时清理旧 backoff，并立即唤醒 scheduler。
+- 服务端 reload 与 periodic/manual issuance 必须共用同步点：旧 generation 的签发和 push 完成后才能发布新 generation；发布时清理旧 backoff，并立即唤醒 scheduler。（Phase 2 按 B2 改为每证书锁加落库时比对 spec 指纹。）
 - `sigilc fetch` 必须调用真实 IPC 拉取；`--cert` 只强制目标证书。`reload` 必须先完整解析新配置，失败时保留旧配置。
 - 客户端 mTLS 身份必须在到期前自动续签；`client.identity_renew_before` 默认 30 天，允许范围为 1 小时到 89 天。
 - periodic、push 和 IPC 拉取必须由同一把锁串行化。
@@ -98,6 +110,7 @@ go test -race ./internal/client ./internal/ipc
 
 - ACME 真实 DNS provider 的容器 E2E 尚未建立；现有 E2E 用生成证书验证注册和分发安全链。
 - TUI 仍有部分管理操作未接线。
+- 2026-09-27 审阅发现的缺陷 A1–A13 见审阅文档，修复进度见 `TODO.md`。
 
 ## 修改原则
 
