@@ -15,6 +15,7 @@ import (
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/certificate"
 	"github.com/go-acme/lego/v4/challenge"
+	"github.com/go-acme/lego/v4/challenge/dns01"
 	"github.com/go-acme/lego/v4/lego"
 	"github.com/go-acme/lego/v4/providers/dns/alidns"
 	"github.com/go-acme/lego/v4/providers/dns/cloudflare"
@@ -55,6 +56,21 @@ const (
 	// dnsPollingInterval is how often propagation is checked.
 	dnsPollingInterval = 4 * time.Second
 )
+
+// SetDNSResolvers makes the DNS lookups of DNS-01 challenges (zone lookup,
+// CNAME following, propagation check) use resolvers, each "host" or
+// "host:port", instead of lego's default. An empty list keeps the default.
+//
+// lego v4.35.2 keeps the recursive nameservers in a package-level variable,
+// and the dns01.AddRecursiveNameservers option does not use the Challenge it
+// is given, so the setting is process-wide: set it once at startup, before
+// any issuance runs.
+func SetDNSResolvers(resolvers []string) {
+	if len(resolvers) == 0 {
+		return
+	}
+	_ = dns01.AddRecursiveNameservers(resolvers)(nil)
+}
 
 // Result holds the output of a successful certificate issuance.
 type Result struct {

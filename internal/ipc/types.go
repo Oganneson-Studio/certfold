@@ -13,14 +13,27 @@ import (
 
 // CertificateInfo is the read-only certificate metadata exposed over IPC.
 type CertificateInfo struct {
-	Name        string    `json:"name"`
-	CA          string    `json:"ca"`
-	Domains     []string  `json:"domains"`
-	NotAfter    time.Time `json:"not_after"`
-	Fingerprint string    `json:"fingerprint"`
-	IssuedAt    time.Time `json:"issued_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	Name          string    `json:"name"`
+	CA            string    `json:"ca"`
+	Domains       []string  `json:"domains"`
+	NotAfter      time.Time `json:"not_after"`
+	Fingerprint   string    `json:"fingerprint"`
+	IssuedAt      time.Time `json:"issued_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	State         string    `json:"state"`
+	Failures      int       `json:"failures"`
+	LastError     string    `json:"last_error"`
+	LastAttemptAt time.Time `json:"last_attempt_at"`
+	NextAttemptAt time.Time `json:"next_attempt_at"`
 }
+
+// Values of CertificateInfo.State. When several apply, the first listed wins.
+const (
+	CertStateIssuing = "issuing" // an issuance holds the certificate's lock, even while waiting for a slot
+	CertStateBackoff = "backoff" // NextAttemptAt is in the future
+	CertStateValid   = "valid"   // the stored certificate matches the running configuration
+	CertStatePending = "pending" // none of the above
+)
 
 // RenewCertRequest is the body of POST /ipc/v1/certs/renew.
 type RenewCertRequest struct {

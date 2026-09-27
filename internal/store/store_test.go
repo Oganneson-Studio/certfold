@@ -401,6 +401,112 @@ func TestAccountRepo_UpsertGetDelete(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// IssuanceRepo
+// ---------------------------------------------------------------------------
+
+func TestIssuanceRepo_UpsertGetList(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+
+	if _, err := db.Issuance.Get(ctx, "api-prod", nil); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("Get before Upsert: error = %v, want sql.ErrNoRows", err)
+	}
+
+	failed := &IssuanceStatus{
+		Name:          "api-prod",
+		Failures:      2,
+		LastError:     "obtain certificate: rate limited",
+		LastAttemptAt: now,
+		NextAttemptAt: now.Add(10 * time.Minute),
+	}
+	if err := db.Issuance.Upsert(ctx, failed, nil); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	got, err := db.Issuance.Get(ctx, "api-prod", nil)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Name != failed.Name || got.Failures != failed.Failures || got.LastError != failed.LastError ||
+		!got.LastAttemptAt.Equal(failed.LastAttemptAt) || !got.NextAttemptAt.Equal(failed.NextAttemptAt) {
+		t.Fatalf("Get = %+v, want %+v", got, failed)
+	}
+
+	// Upsert again (ON CONFLICT path) with a zero NextAttemptAt, then add a
+	// record that has never been attempted.
+	succeeded := &IssuanceStatus{Name: "api-prod", LastAttemptAt: now.Add(time.Hour)}
+	if err := db.Issuance.Upsert(ctx, succeeded, nil); err != nil {
+		t.Fatalf("Upsert (update): %v", err)
+	}
+	if err := db.Issuance.Upsert(ctx, &IssuanceStatus{Name: "alpha"}, nil); err != nil {
+		t.Fatalf("Upsert alpha: %v", err)
+	}
+
+	list, err := db.Issuance.List(ctx, nil)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 2 || list[0].Name != "alpha" || list[1].Name != "api-prod" {
+		t.Fatalf("List = %+v, want alpha then api-prod", list)
+	}
+	if list[0].Failures != 0 || list[0].LastError != "" || !list[0].LastAttemptAt.IsZero() || !list[0].NextAttemptAt.IsZero() {
+		t.Errorf("alpha = %+v, want zero values", list[0])
+	}
+	if list[1].Failures != 0 || list[1].LastError != "" ||
+		!list[1].LastAttemptAt.Equal(succeeded.LastAttemptAt) || !list[1].NextAttemptAt.IsZero() {
+		t.Errorf("updated api-prod = %+v, want %+v", list[1], succeeded)
+	}
+
+	// Zero times are stored as NULL, not as a formatted zero timestamp.
+	for _, tc := range []struct {
+		name, column string
+	}{
+		{"alpha", "last_attempt_at"},
+		{"alpha", "next_attempt_at"},
+		{"api-prod", "next_attempt_at"},
+	} {
+		var isNull bool
+		if err := db.db.QueryRow(`SELECT `+tc.column+` IS NULL FROM issuance_status WHERE name=?`, tc.name).Scan(&isNull); err != nil {
+			t.Fatalf("%s.%s: %v", tc.name, tc.column, err)
+		}
+		if !isNull {
+			t.Errorf("%s.%s is not NULL", tc.name, tc.column)
+		}
+	}
+}
+
+func TestIssuanceRepo_ClearBackoffKeepsLastAttempt(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+
+	records := []*IssuanceStatus{
+		{Name: "api-prod", Failures: 3, LastError: "dns: timeout", LastAttemptAt: now, NextAttemptAt: now.Add(20 * time.Minute)},
+		{Name: "internal", Failures: 1, LastError: "acme: unauthorized", LastAttemptAt: now.Add(-time.Minute), NextAttemptAt: now.Add(4 * time.Minute)},
+	}
+	for _, rec := range records {
+		if err := db.Issuance.Upsert(ctx, rec, nil); err != nil {
+			t.Fatalf("Upsert %s: %v", rec.Name, err)
+		}
+	}
+
+	if err := db.Issuance.ClearBackoff(ctx, nil); err != nil {
+		t.Fatalf("ClearBackoff: %v", err)
+	}
+
+	for _, want := range records {
+		got, err := db.Issuance.Get(ctx, want.Name, nil)
+		if err != nil {
+			t.Fatalf("Get %s: %v", want.Name, err)
+		}
+		if got.Failures != 0 || !got.NextAttemptAt.IsZero() {
+			t.Errorf("%s backoff not cleared: %+v", want.Name, got)
+		}
+		if got.LastError != want.LastError || !got.LastAttemptAt.Equal(want.LastAttemptAt) {
+			t.Errorf("%s last attempt changed: got %+v, want error %q at %v", want.Name, got, want.LastError, want.LastAttemptAt)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Transaction
 // ---------------------------------------------------------------------------
 
@@ -523,5 +629,79 @@ func TestOpen_MigratesV1ClientIdentitySchema(t *testing.T) {
 	}
 	if version != currentSchemaVersion {
 		t.Fatalf("schema version = %d, want %d", version, currentSchemaVersion)
+	}
+}
+
+func TestOpen_MigratesV3IssuanceStatusSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sigil-v3.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE schema_version (version INTEGER NOT NULL)`); err != nil {
+		_ = raw.Close()
+		t.Fatal(err)
+	}
+	for ver := 1; ver <= 3; ver++ {
+		if err := applyMigration(raw, ver); err != nil {
+			_ = raw.Close()
+			t.Fatalf("migration v%d: %v", ver, err)
+		}
+	}
+	if _, err := raw.Exec(`DELETE FROM schema_version; INSERT INTO schema_version(version) VALUES (3);
+		INSERT INTO certificates(name,ca,spec_fingerprint) VALUES ('api-prod','letsencrypt','sha256:SPEC')`); err != nil {
+		_ = raw.Close()
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	checkVersion := func(db *DB) {
+		t.Helper()
+		var version int
+		if err := db.db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+			t.Fatal(err)
+		}
+		if version != currentSchemaVersion {
+			t.Fatalf("schema version = %d, want %d", version, currentSchemaVersion)
+		}
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open migrated database: %v", err)
+	}
+	checkVersion(db)
+	cert, err := db.Certs.Get(ctx, "api-prod", nil)
+	if err != nil {
+		t.Fatalf("v3 certificate after migration: %v", err)
+	}
+	if cert.SpecFingerprint != "sha256:SPEC" {
+		t.Errorf("v3 certificate after migration: %+v", cert)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	want := &IssuanceStatus{Name: "api-prod", Failures: 1, LastError: "boom", LastAttemptAt: now, NextAttemptAt: now.Add(5 * time.Minute)}
+	if err := db.Issuance.Upsert(ctx, want, nil); err != nil {
+		t.Fatalf("write v4 issuance status: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Opening the migrated database again applies no migration.
+	db, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen migrated database: %v", err)
+	}
+	defer db.Close()
+	checkVersion(db)
+	got, err := db.Issuance.Get(ctx, "api-prod", nil)
+	if err != nil {
+		t.Fatalf("issuance status after reopen: %v", err)
+	}
+	if got.Failures != want.Failures || got.LastError != want.LastError ||
+		!got.LastAttemptAt.Equal(want.LastAttemptAt) || !got.NextAttemptAt.Equal(want.NextAttemptAt) {
+		t.Errorf("issuance status after reopen = %+v, want %+v", got, want)
 	}
 }

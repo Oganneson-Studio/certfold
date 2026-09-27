@@ -13,7 +13,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 3
+const currentSchemaVersion = 4
 
 // DB wraps *sql.DB and exposes typed repositories.
 type DB struct {
@@ -22,6 +22,7 @@ type DB struct {
 	Clients  *ClientRepo
 	Tokens   *TokenRepo
 	Accounts *AccountRepo
+	Issuance *IssuanceRepo
 }
 
 // Open opens (or creates) the SQLite database at dsn, runs auto-migration,
@@ -66,6 +67,7 @@ func Open(dsn string) (*DB, error) {
 	d.Clients = &ClientRepo{db: raw}
 	d.Tokens = &TokenRepo{db: raw}
 	d.Accounts = &AccountRepo{db: raw}
+	d.Issuance = &IssuanceRepo{db: raw}
 	return d, nil
 }
 
@@ -212,6 +214,17 @@ ALTER TABLE clients ADD COLUMN pending_not_after DATETIME;
 		_, err := db.Exec(`
 ALTER TABLE certificates ADD COLUMN spec_fingerprint TEXT NOT NULL DEFAULT '';
 ALTER TABLE acme_accounts ADD COLUMN directory TEXT NOT NULL DEFAULT '';
+`)
+		return err
+	case 4:
+		_, err := db.Exec(`
+CREATE TABLE issuance_status (
+    name            TEXT    PRIMARY KEY,
+    failures        INTEGER NOT NULL DEFAULT 0,
+    last_error      TEXT    NOT NULL DEFAULT '',
+    last_attempt_at DATETIME,
+    next_attempt_at DATETIME
+);
 `)
 		return err
 	default:
