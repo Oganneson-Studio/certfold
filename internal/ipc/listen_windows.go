@@ -3,38 +3,98 @@
 package ipc
 
 import (
+	"errors"
 	"fmt"
 	"net"
 
 	"github.com/Microsoft/go-winio"
+	"golang.org/x/sys/windows"
 )
 
 const (
 	serverPipe = `\\.\pipe\sigil-server`
 	clientPipe = `\\.\pipe\sigil-client`
-	// SDDL: local system + built-in administrators only.
+	// DACL: local system + built-in administrators only.
 	pipeSddl = "D:P(A;;GA;;;SY)(A;;GA;;;BA)"
 )
 
 // Listen opens a Windows named pipe and returns the net.Listener.
+//
+// Dial trusts a pipe only when LocalSystem or BUILTIN\Administrators owns it.
+// A pipe created without an explicit owner belongs to the creating user, so
+// an elevated administrator running a daemon interactively would own it as
+// that user. A process with administrator rights therefore names
+// Administrators as the owner; LocalSystem, as which the services run, has
+// those rights too. A low-privilege process cannot claim either owner.
 func Listen(path string) (net.Listener, error) {
 	if path == "" {
 		path = DefaultServerSocket()
 	}
-	cfg := &winio.PipeConfig{SecurityDescriptor: pipeSddl}
-	l, err := winio.ListenPipe(path, cfg)
+	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		return nil, fmt.Errorf("ipc listen pipe %s: %w", path, err)
+	}
+	// IsMember counts enabled groups only, so the deny-only Administrators
+	// group of a non-elevated token does not qualify.
+	admin, err := windows.GetCurrentProcessToken().IsMember(admins)
+	if err != nil {
+		return nil, fmt.Errorf("ipc listen pipe %s: %w", path, err)
+	}
+	sddl := pipeSddl
+	if admin {
+		sddl = "O:BA" + pipeSddl
+	}
+	l, err := winio.ListenPipe(path, &winio.PipeConfig{SecurityDescriptor: sddl})
 	if err != nil {
 		return nil, fmt.Errorf("ipc listen pipe %s: %w", path, err)
 	}
 	return l, nil
 }
 
-// Dial connects to the named pipe at path.
+// Dial connects to the named pipe at path and refuses a pipe that LocalSystem
+// or BUILTIN\Administrators does not own. While a daemon is stopped, any local
+// process could create its pipe and answer in its place, for example with an
+// enrollment token whose install command runs a script of its choosing; the
+// owner shows whether a privileged process created the pipe. A daemon running
+// as another account, such as a virtual service account, is refused on
+// purpose.
 func Dial(path string) (net.Conn, error) {
 	if path == "" {
 		path = DefaultServerSocket()
 	}
-	return winio.DialPipe(path, nil)
+	conn, err := winio.DialPipe(path, nil)
+	if err != nil {
+		return nil, err
+	}
+	sd, err := windows.GetSecurityInfo(
+		windows.Handle(conn.(interface{ Fd() uintptr }).Fd()),
+		windows.SE_KERNEL_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION,
+	)
+	if err == nil {
+		err = checkPipeOwner(sd)
+	}
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("ipc dial %s: %w", path, err)
+	}
+	return conn, nil
+}
+
+// checkPipeOwner accepts a pipe security descriptor owned by LocalSystem or
+// BUILTIN\Administrators.
+func checkPipeOwner(sd *windows.SECURITY_DESCRIPTOR) error {
+	owner, _, err := sd.Owner()
+	if err != nil {
+		return fmt.Errorf("read pipe owner: %w", err)
+	}
+	if owner == nil {
+		return errors.New("pipe has no owner")
+	}
+	if !owner.IsWellKnown(windows.WinLocalSystemSid) && !owner.IsWellKnown(windows.WinBuiltinAdministratorsSid) {
+		return fmt.Errorf("pipe is owned by %s rather than LocalSystem or Administrators; another program may have taken the pipe name while the daemon was not running", owner)
+	}
+	return nil
 }
 
 // DefaultServerSocket returns the default sigils IPC named pipe.
