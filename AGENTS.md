@@ -20,7 +20,8 @@
 
 ## 项目快览
 
-- Go 1.25，模块：`github.com/Oganneson-Studio/sigil`
+- Go 1.26，模块：`github.com/Oganneson-Studio/sigil`。go.mod 是 Go 版本的唯一来源：CI 用 `go-version-file: go.mod`，E2E 镜像用 `golang:1.26-alpine`。
+- go-winio 用的是未发版的 main 快照 `7e8af9b`（修复了管道 listener `Close` 的竞态：v0.6.2 下 `sigils` 停机时，如果恰好有 IPC 客户端连入，可能永久阻塞）。上游发版后换成正式 tag，见 TODO。
 - 两个二进制：`sigils`（server）与 `sigilc`（client）
 - 服务端用 SQLite 保存证书、客户端、token 和 ACME 账户
 - 客户端使用 mTLS 拉取证书并输出 PEM、DER、PKCS#12
@@ -157,8 +158,6 @@ go test -race ./internal/client ./internal/ipc ./internal/scheduler ./internal/s
 - ACME 真实 DNS provider 的容器 E2E 尚未建立；现有 E2E 用生成证书验证注册和分发安全链。
 - TUI 仍有部分管理操作未接线。
 - 2026-09-27 审阅发现的缺陷 A1–A13 见审阅文档，修复进度见 `TODO.md`。
-- go-winio v0.6.2 的管道 listener `Close` 有竞态，可能永久阻塞。ipc 测试里用限时关闭绕开；生产上 `sigils` 停机时，如果恰好有 IPC 客户端连入，服务可能停不下来。修复要等升级到 Go 1.26，见 `TODO.md`。
-
 ## 修改原则
 
 - 先读现有实现和测试，再做局部改动；不要把未实现功能写成已完成。

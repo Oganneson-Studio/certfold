@@ -35,35 +35,12 @@ func acceptAll(t *testing.T, l net.Listener) {
 		}
 	}()
 	t.Cleanup(func() {
-		if !closeListener(t, l) {
-			return
-		}
+		_ = l.Close()
 		<-done
 		for _, conn := range conns {
 			_ = conn.Close()
 		}
 	})
-}
-
-// closeListener closes l and reports whether Close returned within five
-// seconds. go-winio v0.6.2 can block in Close forever when its cancellation
-// meets a ConnectNamedPipe that Accept has only just issued, which is exactly
-// when a test that has just dialed cleans up. Upstream fixed it in 7e8af9b,
-// which needs Go 1.26.
-func closeListener(t *testing.T, l net.Listener) bool {
-	t.Helper()
-	closed := make(chan struct{})
-	go func() {
-		_ = l.Close()
-		close(closed)
-	}()
-	select {
-	case <-closed:
-		return true
-	case <-time.After(5 * time.Second):
-		t.Log("pipe listener Close did not return within 5s (go-winio v0.6.2 close race); leaving it behind")
-		return false
-	}
 }
 
 func TestCheckPipeOwner(t *testing.T) {
