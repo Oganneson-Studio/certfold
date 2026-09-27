@@ -92,8 +92,9 @@ type Result struct {
 // Issuer wraps lego to issue/renew certificates per CertificateSpec.
 type Issuer struct {
 	accounts *store.AccountRepo
-	// accountMu serializes ACME account initialization; see accountClient.
-	accountMu sync.Mutex
+	// accountLocks maps a CA name to the *sync.Mutex that serializes the
+	// initialization of its ACME account; see accountClient.
+	accountLocks sync.Map
 }
 
 // NewIssuer creates an Issuer backed by the persistent ACME account store.
@@ -163,16 +164,24 @@ func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec confi
 // the CA's current directory and email.
 //
 // Everything from reading the stored account to storing the registration runs
-// under accountMu. Without it, two first issuances for one CA could each
-// create a key, and the stored record could end up pairing one key with the
-// other's registration, which the CA rejects on every later request. The
-// lock is released before the caller orders the certificate, so issuances
-// still run in parallel. Every issuance holds it while lego fetches the CA's
-// directory, though, so a stalled CA also delays the other CAs' issuances,
-// up to lego's request timeouts.
+// under the lock of spec's CA. Without it, two first issuances for one CA
+// could each create a key, and the stored record could end up pairing one key
+// with the other's registration, which the CA rejects on every later request.
+// The lock is released before the caller orders the certificate, so
+// issuances still run in parallel.
+//
+// There is one lock per CA so that a stalled CA delays only its own
+// issuances: every issuance holds its CA's lock while lego fetches the
+// directory, for up to lego's request timeouts. The lock is keyed by CA name,
+// the key of the account record in the store. A change of the CA's directory
+// or of the email replaces the key in that same record, so keying by directory
+// and email would let an issuance started before a reload and one started
+// after it write the record at once.
 func (i *Issuer) accountClient(ctx context.Context, cfg *config.ServerConfig, spec config.CertificateSpec, caEntry config.CAEntry) (*lego.Client, error) {
-	i.accountMu.Lock()
-	defer i.accountMu.Unlock()
+	lock, _ := i.accountLocks.LoadOrStore(spec.CA, new(sync.Mutex))
+	mu := lock.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
 
 	userKey, err := i.loadOrCreateAccountKey(ctx, spec.CA, caEntry.Directory, cfg.ACME.Email)
 	if err != nil {

@@ -1,6 +1,7 @@
 package acme
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -604,6 +605,90 @@ func TestIssueInitializesTheAccountOnceForConcurrentIssuances(t *testing.T) {
 	}
 	if reg.URI != account {
 		t.Errorf("stored registration URI = %q, want %q", reg.URI, account)
+	}
+}
+
+func TestStalledCADoesNotDelayAccountSetupForAnotherCA(t *testing.T) {
+	ok := newFakeACME(t, 1)
+	arrived, release := make(chan struct{}), make(chan struct{})
+	var arrivedOnce sync.Once
+	stalled := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arrivedOnce.Do(func() { close(arrived) })
+		<-release
+		http.Error(w, "stalled", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(stalled.Close)
+	// httptest serves one built-in certificate, which newFakeACME made lego
+	// trust.
+	if !bytes.Equal(stalled.Certificate().Raw, ok.Certificate().Raw) {
+		t.Fatal("httptest servers no longer share a certificate: make lego trust the stalled server too")
+	}
+
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	issuer := NewIssuer(db.Accounts)
+	cfg := &config.ServerConfig{
+		ACME: config.ACMESection{
+			Email:     "ops@example.com",
+			DefaultCA: "ok",
+			CAs: map[string]config.CAEntry{
+				"stalled": {Directory: stalled.URL + "/dir"},
+				"ok":      {Directory: ok.URL + "/dir"},
+			},
+		},
+		// Never run: every order fails before the challenge.
+		DNSProviders: map[string]config.DNSProvider{"hook": {Type: "exec", Command: []string{"/usr/local/bin/dns-hook"}}},
+	}
+	issue := func(ca string) error {
+		_, err := issuer.Issue(context.Background(), cfg, config.CertificateSpec{
+			Name:        ca,
+			Domains:     []string{ca + ".example.com"},
+			CA:          ca,
+			DNSProvider: "hook",
+			KeyType:     "ec256",
+		})
+		return err
+	}
+
+	var stalledErr, okErr error
+	stalledDone, okDone := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(stalledDone)
+		stalledErr = issue("stalled")
+	}()
+	select {
+	case <-arrived:
+		// That issuance now holds its CA's account lock while lego waits for
+		// the directory.
+	case <-stalledDone:
+		t.Fatalf("Issue for the stalled CA returned before reaching it: %v", stalledErr)
+	}
+	go func() {
+		defer close(okDone)
+		okErr = issue("ok")
+	}()
+	defer func() {
+		close(release)
+		<-stalledDone
+		<-okDone
+	}()
+
+	select {
+	case <-okDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("account setup for one CA waited for another CA's stalled directory request")
+	}
+	ok.mu.Lock()
+	defer ok.mu.Unlock()
+	for _, problem := range ok.problems {
+		t.Errorf("fake ACME server: %s", problem)
+	}
+	if len(ok.accounts) != 1 || len(ok.orderKIDs) != 1 {
+		t.Fatalf("CA ok: %d accounts and %d verified orders, want 1 and 1; Issue error: %v",
+			len(ok.accounts), len(ok.orderKIDs), okErr)
 	}
 }
 
