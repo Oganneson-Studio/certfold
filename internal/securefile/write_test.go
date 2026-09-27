@@ -41,6 +41,10 @@ func TestWriteFileDoesNotChangeExistingParentMode(t *testing.T) {
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Mkdir applies the umask; Chmod does not, so the mode is 0755 under any umask.
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := WriteFile(filepath.Join(dir, "client.yaml"), []byte("private")); err != nil {
 		t.Fatal(err)
 	}
