@@ -238,6 +238,46 @@ func TestClientRepo_ExpiredPendingIdentityCannotPromote(t *testing.T) {
 	}
 }
 
+func TestClientRepo_MarkSeenTouchesOnlyMatchingIdentity(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := db.Clients.Upsert(ctx, &ClientRecord{
+		Name:        "web-1",
+		Fingerprint: "sha256:active",
+		EnrolledAt:  now.Add(-time.Hour),
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Clients.StagePendingIdentity(ctx, "web-1", "sha256:pending", now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.Clients.MarkSeen(ctx, "web-1", "sha256:pending", now); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("mark seen with a non-active fingerprint: error = %v, want sql.ErrNoRows", err)
+	}
+	if err := db.Clients.MarkSeen(ctx, "web-2", "sha256:active", now); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("mark seen for a missing client: error = %v, want sql.ErrNoRows", err)
+	}
+	if _, err := db.Clients.Get(ctx, "web-2", nil); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("mark seen created a client: Get error = %v", err)
+	}
+
+	if err := db.Clients.MarkSeen(ctx, "web-1", "sha256:active", now); err != nil {
+		t.Fatalf("MarkSeen: %v", err)
+	}
+	got, err := db.Clients.Get(ctx, "web-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.LastSeen.Equal(now) {
+		t.Errorf("LastSeen = %v, want %v", got.LastSeen, now)
+	}
+	if got.Fingerprint != "sha256:active" || got.PendingFingerprint != "sha256:pending" ||
+		!got.PendingNotAfter.Equal(now.Add(time.Hour)) || !got.EnrolledAt.Equal(now.Add(-time.Hour)) {
+		t.Fatalf("MarkSeen changed more than last_seen: %+v", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // TokenRepo
 // ---------------------------------------------------------------------------

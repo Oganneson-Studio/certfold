@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -75,6 +76,35 @@ func TestAddCertificateSpecPreservesPlaceholdersAndUsesDefaultCA(t *testing.T) {
 	}
 	if len(cfg.Certificates) != 1 || cfg.Certificates[0].Name != "api-prod" || cfg.Certificates[0].CA != "le" {
 		t.Fatalf("unexpected certificates: %+v", cfg.Certificates)
+	}
+}
+
+func TestAddCertificateSpecKeepsDollarSignsLiteral(t *testing.T) {
+	t.Setenv("HOME", "/expanded/home")
+	path := writeEditTestConfig(t, "  []\n")
+	names := []string{"a$b", "a$$b", "${HOME}"}
+	for _, name := range names {
+		if _, err := AddCertificateSpec(path, CertificateSpec{
+			Name:            name,
+			Domains:         []string{"api.example.com"},
+			DNSProvider:     "route",
+			KeyType:         "ec256",
+			RenewDaysBefore: 30,
+		}); err != nil {
+			t.Fatalf("AddCertificateSpec(%q): %v", name, err)
+		}
+	}
+
+	cfg, err := LoadServer(path)
+	if err != nil {
+		t.Fatalf("load updated config: %v", err)
+	}
+	var got []string
+	for _, cert := range cfg.Certificates {
+		got = append(got, cert.Name)
+	}
+	if !slices.Equal(got, names) {
+		t.Fatalf("certificate names = %q, want %q", got, names)
 	}
 }
 

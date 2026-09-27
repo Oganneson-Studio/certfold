@@ -5,14 +5,19 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"math/big"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-acme/lego/v4/certcrypto"
+	"github.com/go-acme/lego/v4/challenge"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/store"
@@ -48,6 +53,36 @@ func TestSpecKeyType(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildDNSProvider_SupportedTypes(t *testing.T) {
+	// gcloud with only a project uses application default credentials. Point
+	// them at a service account file for an unregistered account with a real
+	// RSA key: building the provider reads the file but makes no network
+	// request.
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(rsaKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceAccount, err := json.Marshal(map[string]string{
+		"type":           "service_account",
+		"project_id":     "my-proj",
+		"private_key_id": "0",
+		"private_key":    string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})),
+		"client_email":   "sigil@my-proj.iam.gserviceaccount.com",
+		"client_id":      "0",
+		"token_uri":      "https://oauth2.googleapis.com/token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials := filepath.Join(t.TempDir(), "service-account.json")
+	if err := os.WriteFile(credentials, serviceAccount, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credentials)
+
 	tests := []struct {
 		name     string
 		provider config.DNSProvider
@@ -75,12 +110,17 @@ func TestBuildDNSProvider_SupportedTypes(t *testing.T) {
 			},
 		},
 		{
-			// Without a service account file, gcloud falls back to env-based ADC
-			// which is unavailable in unit tests; we expect an error here.
-			name: "gcloud without service_account_file",
+			name: "gcloud with project and application default credentials",
 			provider: config.DNSProvider{
 				Type:   "gcloud",
 				Config: map[string]any{"project": "my-proj"},
+			},
+		},
+		{
+			name: "gcloud without project or service_account_file",
+			provider: config.DNSProvider{
+				Type:   "gcloud",
+				Config: map[string]any{},
 			},
 			wantErr: true,
 		},
@@ -113,6 +153,35 @@ func TestBuildDNSProvider_SupportedTypes(t *testing.T) {
 				t.Fatal("provider is nil")
 			}
 		})
+	}
+}
+
+func TestBuildDNSProviderBoundsPropagationWait(t *testing.T) {
+	// lego reads these defaults from the environment without an upper limit.
+	// Sigil's explicit bounds must win.
+	for _, prefix := range []string{"CLOUDFLARE_", "ALICLOUD_", "TENCENTCLOUD_", "AWS_"} {
+		t.Setenv(prefix+"PROPAGATION_TIMEOUT", "999999")
+		t.Setenv(prefix+"POLLING_INTERVAL", "999999")
+	}
+	for _, p := range []config.DNSProvider{
+		{Type: "cloudflare", Config: map[string]any{"api_token": "tok"}},
+		{Type: "aliyun", Config: map[string]any{"access_key": "k", "access_secret": "s"}},
+		{Type: "tencentcloud", Config: map[string]any{"secret_id": "id", "secret_key": "k"}},
+		{Type: "route53", Config: map[string]any{"access_key": "ak", "secret_key": "sk", "region": "us-east-1"}},
+	} {
+		provider, err := buildDNSProvider(p)
+		if err != nil {
+			t.Fatalf("%s: %v", p.Type, err)
+		}
+		bounded, ok := provider.(challenge.ProviderTimeout)
+		if !ok {
+			t.Fatalf("%s provider does not report its propagation timeout", p.Type)
+		}
+		timeout, interval := bounded.Timeout()
+		if timeout != dnsPropagationTimeout || interval != dnsPollingInterval {
+			t.Errorf("%s: Timeout() = (%v, %v), want (%v, %v)",
+				p.Type, timeout, interval, dnsPropagationTimeout, dnsPollingInterval)
+		}
 	}
 }
 

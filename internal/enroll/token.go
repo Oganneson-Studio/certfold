@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Oganneson-Studio/sigil/internal/ca"
+	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
@@ -41,8 +42,13 @@ func NewServer(tokens *store.TokenRepo, clients *store.ClientRepo, miniCA *ca.Mi
 }
 
 // Create generates a new one-time enrollment token for name with the given TTL.
+// name must be a valid client name (config.ValidateClientName); it becomes the
+// CN of the enrolled client's certificate.
 // Returns the opaque base64url-encoded token string to hand to the client.
 func (s *Server) Create(ctx context.Context, serverURL, name string, ttl time.Duration) (string, error) {
+	if err := config.ValidateClientName(name); err != nil {
+		return "", err
+	}
 	idBytes := make([]byte, 16)
 	if _, err := rand.Read(idBytes); err != nil {
 		return "", fmt.Errorf("rand: %w", err)

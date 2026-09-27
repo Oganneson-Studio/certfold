@@ -94,8 +94,9 @@ var validDNSProviderTypes = map[string]bool{
 	"gcloud":       true,
 }
 
-// LoadServer reads server.yaml from path, expands ${VAR} substitutions
-// against the process environment, applies defaults, and validates.
+// LoadServer reads server.yaml from path, expands ${VAR} references inside
+// its values against the process environment, applies defaults, and
+// validates.
 func LoadServer(path string) (*ServerConfig, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -106,15 +107,9 @@ func LoadServer(path string) (*ServerConfig, error) {
 
 // ParseServer is LoadServer without filesystem access (useful for tests).
 func ParseServer(raw []byte) (*ServerConfig, error) {
-	expanded, err := expandEnv(raw, nil)
-	if err != nil {
-		return nil, fmt.Errorf("expand env: %w", err)
-	}
 	var cfg ServerConfig
-	dec := yaml.NewDecoder(strings.NewReader(string(expanded)))
-	dec.KnownFields(true)
-	if err := dec.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("parse yaml: %w", err)
+	if err := decodeWithEnv(raw, &cfg); err != nil {
+		return nil, err
 	}
 	cfg.applyDefaults()
 	if err := cfg.Validate(); err != nil {
@@ -127,7 +122,8 @@ func ParseServer(raw []byte) (*ServerConfig, error) {
 // server.yaml at path so CLI commands can locate the daemon. Unlike LoadServer
 // it expands ${VAR} only in these two values and does not validate the file,
 // so the DNS credentials other sections reference need not be set in the
-// caller's environment. Empty results mean the field is not set.
+// caller's environment. The two values are expanded exactly as LoadServer
+// expands them. Empty results mean the field is not set.
 func ReadServerPaths(path string) (dataDir, ipcSocket string, err error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -135,22 +131,38 @@ func ReadServerPaths(path string) (dataDir, ipcSocket string, err error) {
 	}
 	var doc struct {
 		Server struct {
-			DataDir   string `yaml:"data_dir"`
-			IPCSocket string `yaml:"ipc_socket"`
+			DataDir   yaml.Node `yaml:"data_dir"`
+			IPCSocket yaml.Node `yaml:"ipc_socket"`
 		} `yaml:"server"`
 	}
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return "", "", fmt.Errorf("parse %s: %w", path, err)
 	}
-	expandedDataDir, err := expandEnv([]byte(doc.Server.DataDir), nil)
-	if err != nil {
-		return "", "", fmt.Errorf("server.data_dir: %w", err)
+	if dataDir, err = expandedString(&doc.Server.DataDir, "server.data_dir"); err != nil {
+		return "", "", err
 	}
-	expandedIPCSocket, err := expandEnv([]byte(doc.Server.IPCSocket), nil)
-	if err != nil {
-		return "", "", fmt.Errorf("server.ipc_socket: %w", err)
+	if ipcSocket, err = expandedString(&doc.Server.IPCSocket, "server.ipc_socket"); err != nil {
+		return "", "", err
 	}
-	return string(expandedDataDir), string(expandedIPCSocket), nil
+	return dataDir, ipcSocket, nil
+}
+
+// expandedString expands the value node n at path as LoadServer does and
+// decodes it as a string. An absent value decodes as "".
+func expandedString(n *yaml.Node, path string) (string, error) {
+	for n.Kind == yaml.AliasNode {
+		n = n.Alias
+	}
+	// Expand a copy: both paths may alias the same anchored node.
+	value := *n
+	if err := expandEnvNode(&value, path); err != nil {
+		return "", err
+	}
+	var s string
+	if err := value.Decode(&s); err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
+	return s, nil
 }
 
 func (c *ServerConfig) applyDefaults() {
@@ -261,6 +273,8 @@ func (c *ServerConfig) Validate() error {
 		base := fmt.Sprintf("clients[%d]", i)
 		if cl.Name == "" {
 			v.Add(base+".name", "must be set")
+		} else if err := ValidateClientName(cl.Name); err != nil {
+			v.Add(base+".name", "%v", err)
 		} else if clientNames[cl.Name] {
 			v.Add(base+".name", "duplicate client name %q", cl.Name)
 		} else {
@@ -282,11 +296,12 @@ func (c *ServerConfig) Validate() error {
 
 	// Subscribers reference clients that *might* not be enrolled yet — that's
 	// allowed (you typically write subscribers first, then enroll). We only
-	// validate that subscriber names are syntactically reasonable.
+	// validate that subscriber names are valid client names; the API matches
+	// them against certificate CNs exactly.
 	for i, cert := range c.Certificates {
 		for j, sub := range cert.Subscribers {
-			if sub == "" {
-				v.Add(fmt.Sprintf("certificates[%d].subscribers[%d]", i, j), "must not be empty")
+			if err := ValidateClientName(sub); err != nil {
+				v.Add(fmt.Sprintf("certificates[%d].subscribers[%d]", i, j), "%v", err)
 			}
 		}
 	}
@@ -331,10 +346,12 @@ func validateDNSProviderFields(v *ValidationError, path string, p DNSProvider) {
 			v.Add(path, "route53 provider requires both access_key and secret_key (or neither for IAM role)")
 		}
 	case "gcloud":
-		// gcloud can use ADC (no explicit field required),
-		// but service_account_file or project should ideally be set.
-		// We only enforce that if service_account_file is set it is non-empty
-		// (it already is non-empty by the check above); nothing more to require.
+		// Without a service account file the issuer uses application default
+		// credentials for the configured project; lego does not detect the
+		// project on that path, so one of the two must be set.
+		if strField("project") == "" && strField("service_account_file") == "" {
+			v.Add(path, "gcloud provider requires project (used with application default credentials) or service_account_file")
+		}
 	}
 }
 

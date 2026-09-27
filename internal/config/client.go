@@ -9,8 +9,6 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 // ClientConfig is the in-memory representation of client.yaml.
@@ -63,8 +61,8 @@ var validOutputFormats = map[string]bool{
 	"der":           true,
 }
 
-// LoadClient reads client.yaml from path, expands ${VAR} substitutions,
-// applies defaults, and validates.
+// LoadClient reads client.yaml from path, expands ${VAR} references inside
+// its values, applies defaults, and validates.
 func LoadClient(path string) (*ClientConfig, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -75,15 +73,9 @@ func LoadClient(path string) (*ClientConfig, error) {
 
 // ParseClient is LoadClient without filesystem access.
 func ParseClient(raw []byte) (*ClientConfig, error) {
-	expanded, err := expandEnv(raw, nil)
-	if err != nil {
-		return nil, fmt.Errorf("expand env: %w", err)
-	}
 	var cfg ClientConfig
-	dec := yaml.NewDecoder(strings.NewReader(string(expanded)))
-	dec.KnownFields(true)
-	if err := dec.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("parse yaml: %w", err)
+	if err := decodeWithEnv(raw, &cfg); err != nil {
+		return nil, err
 	}
 	cfg.applyDefaults()
 	if err := cfg.Validate(); err != nil {

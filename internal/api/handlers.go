@@ -305,14 +305,14 @@ func (h *handlers) heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
-	rec, err := h.deps.DB.Clients.Get(ctx, clientName, nil)
-	if err != nil {
+	// A single conditional write: the client may have been removed, or its
+	// identity changed, since requireActiveClient looked it up.
+	err := h.deps.DB.Clients.MarkSeen(r.Context(), clientName, ca.Fingerprint(cert.Raw), time.Now().UTC())
+	if err == sql.ErrNoRows {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	rec.LastSeen = time.Now().UTC()
-	if err := h.deps.DB.Clients.Upsert(ctx, rec, nil); err != nil {
+	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -371,13 +371,13 @@ func (h *handlers) renewIdentity(w http.ResponseWriter, r *http.Request) {
 // helpers
 // ---------------------------------------------------------------------------
 
+// subscribedSpecs returns the specs clientName subscribes to. Subscribers are
+// validated client names (config.ValidateClientName), so the match is exact.
 func subscribedSpecs(cfg *config.ServerConfig, clientName string) map[string]config.CertificateSpec {
 	out := make(map[string]config.CertificateSpec)
 	for _, spec := range cfg.Certificates {
-		for _, sub := range spec.Subscribers {
-			if strings.EqualFold(sub, clientName) {
-				out[spec.Name] = spec
-			}
+		if slices.Contains(spec.Subscribers, clientName) {
+			out[spec.Name] = spec
 		}
 	}
 	return out

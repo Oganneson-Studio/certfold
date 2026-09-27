@@ -169,6 +169,28 @@ func TestParseServer_ValidationErrors(t *testing.T) {
 	}
 }
 
+func TestParseServer_ClientNamesMustBeLowercaseDNSLabels(t *testing.T) {
+	src := strings.Replace(validServerYAML, "subscribers: [web-1, web-2]", "subscribers: [web-1, Web-2]", 1)
+	_, err := ParseServer([]byte(src))
+	if err == nil || !strings.Contains(err.Error(), `certificates[0].subscribers[1]: invalid client name "Web-2"`) {
+		t.Fatalf("expected subscriber name error, got %v", err)
+	}
+
+	withClient := validServerYAML + `
+clients:
+  - name: web_1
+`
+	_, err = ParseServer([]byte(withClient))
+	if err == nil || !strings.Contains(err.Error(), `clients[0].name: invalid client name "web_1"`) {
+		t.Fatalf("expected client name error, got %v", err)
+	}
+
+	e2eNames := strings.Replace(validServerYAML, "subscribers: [web-1, web-2]", "subscribers: [web-1, expiry-test, revoke-test]", 1)
+	if _, err := ParseServer([]byte(e2eNames)); err != nil {
+		t.Fatalf("E2E client names rejected: %v", err)
+	}
+}
+
 func TestParseServer_UnknownFieldRejected(t *testing.T) {
 	bad := validServerYAML + "\nfoo_bar: 1\n"
 	_, err := ParseServer([]byte(bad))
@@ -425,15 +447,50 @@ func TestDNSProvider_Route53_BothKeys_Valid(t *testing.T) {
 	}
 }
 
-func TestDNSProvider_Gcloud_NoFields_Valid(t *testing.T) {
-	// gcloud with no explicit config uses ADC — should be accepted.
-	src := dnsServerYAML(`dns_providers:
+func TestDNSProvider_Gcloud_RequiresProjectOrServiceAccountFile(t *testing.T) {
+	tests := []struct {
+		name  string
+		block string
+		want  string // expected error substring; empty means valid
+	}{
+		{
+			name: "neither project nor service_account_file",
+			block: `dns_providers:
   p1:
     type: gcloud
-`)
-	_, err := ParseServer([]byte(src))
-	if err != nil {
-		t.Errorf("gcloud with no explicit fields: unexpected error: %v", err)
+`,
+			want: "dns_providers.p1: gcloud provider requires project",
+		},
+		{
+			name: "project with application default credentials",
+			block: `dns_providers:
+  p1:
+    type: gcloud
+    project: "my-proj"
+`,
+		},
+		{
+			name: "service_account_file",
+			block: `dns_providers:
+  p1:
+    type: gcloud
+    service_account_file: "/etc/sigil/gcloud.json"
+`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseServer([]byte(dnsServerYAML(tt.block)))
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected error containing %q, got %v", tt.want, err)
+			}
+		})
 	}
 }
 

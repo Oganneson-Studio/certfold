@@ -9,6 +9,8 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -216,6 +218,48 @@ func TestSign_VerifiableByCA(t *testing.T) {
 	}
 	if _, err := cert.Verify(opts); err != nil {
 		t.Errorf("Verify: %v", err)
+	}
+}
+
+func TestSign_IgnoresCSRSubjectAltNames(t *testing.T) {
+	m := bootstrapInTemp(t)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uri, err := url.Parse("spiffe://example.com/workload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject:        pkix.Name{CommonName: "requested-name"},
+		DNSNames:       []string{"sigils", "api.example.com"},
+		IPAddresses:    []net.IP{net.ParseIP("127.0.0.1")},
+		EmailAddresses: []string{"ops@example.com"},
+		URIs:           []*url.URL{uri},
+	}, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr, err := x509.ParseCertificateRequest(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	certDER, err := m.Sign(csr, "web-1")
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	cert, err := x509.ParseCertificate(certDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cert.Subject.CommonName != "web-1" {
+		t.Errorf("CN = %q, want web-1", cert.Subject.CommonName)
+	}
+	if len(cert.DNSNames) != 0 || len(cert.IPAddresses) != 0 || len(cert.EmailAddresses) != 0 || len(cert.URIs) != 0 {
+		t.Fatalf("client certificate carries CSR SANs: dns=%v ip=%v email=%v uri=%v",
+			cert.DNSNames, cert.IPAddresses, cert.EmailAddresses, cert.URIs)
 	}
 }
 

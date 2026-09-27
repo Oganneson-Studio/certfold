@@ -144,8 +144,10 @@ func (m *MiniCA) CertPEM() []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: m.cert.Raw})
 }
 
-// Sign issues a client certificate for the given CSR. CN is overridden to
-// name; validity is leafValidDays from now.
+// Sign issues a client certificate for the given CSR. Only the CSR's public
+// key is used: the subject is CN=name and no subject alternative names are
+// copied, so a client cannot choose the identities its certificate names.
+// Validity is leafValidDays from now.
 func (m *MiniCA) Sign(csr *x509.CertificateRequest, name string) ([]byte, error) {
 	if err := csr.CheckSignature(); err != nil {
 		return nil, fmt.Errorf("invalid CSR signature: %w", err)
@@ -161,8 +163,6 @@ func (m *MiniCA) Sign(csr *x509.CertificateRequest, name string) ([]byte, error)
 		NotAfter:     time.Now().Add(leafValidDays * 24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		DNSNames:     csr.DNSNames,
-		IPAddresses:  csr.IPAddresses,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tpl, m.cert, csr.PublicKey, m.key)
 	if err != nil {
