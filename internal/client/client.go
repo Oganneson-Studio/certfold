@@ -49,8 +49,10 @@ type Client struct {
 	// subscribed certificate, whatever the fingerprints in state.json say:
 	// outputs may have been added to client.yaml or removed from disk since
 	// they were last written. New and Reload set it; a full pull clears it
-	// once it has listed the subscribed certificates. A certificate that pull
-	// fails to write is dropped from state.json, so the next pull retries it.
+	// once it has listed the subscribed certificates. If that pull fails for a
+	// certificate whose recorded fingerprint equals the served one, its entry
+	// is dropped from state.json so the next pull retries it; an older
+	// fingerprint stays, since a diff retries the certificate anyway.
 	// Guarded by pullMu.
 	rewriteAll bool
 	reloadCh   chan struct{}
