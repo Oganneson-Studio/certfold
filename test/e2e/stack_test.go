@@ -39,10 +39,14 @@ type containerRuntime struct {
 type e2eStack struct {
 	runtime     containerRuntime
 	rootDir     string
-	tempDir     string
 	network     string
 	serverImage string
 	clientImage string
+	// mountDir is the host directory every container mounts at /e2e. It is
+	// the same in every run, because a WSLC session can mount only 15
+	// distinct host paths; each run keeps its files in its own runDir in it.
+	mountDir string
+	runDir   string
 	// miniCA's server presents its default mini-CA certificate. publicTLS's
 	// server presents server.tls_cert_file, signed by a test root that its
 	// client trusts through the system roots, as it would a public CA.
@@ -51,10 +55,10 @@ type e2eStack struct {
 }
 
 // deployment is one sigils server and the sigilc client enrolled with it.
-// Its files live in hostDir, which its containers see as /e2e/<dir>.
+// Its files live in hostDir, which its containers see as containerDir.
 type deployment struct {
-	dir             string
 	hostDir         string
+	containerDir    string
 	alias           string // server network alias and public_url host
 	clientName      string
 	serverContainer string
@@ -112,19 +116,24 @@ func newE2EStack(rt containerRuntime) (*e2eStack, error) {
 	if err != nil {
 		return nil, err
 	}
-	tempDir, err := os.MkdirTemp("", "sigil-wslc-e2e-")
+	mountDir := filepath.Join(os.TempDir(), "sigil-wslc-e2e")
+	if err := os.MkdirAll(mountDir, 0o700); err != nil {
+		return nil, err
+	}
+	runDir, err := os.MkdirTemp(mountDir, "run-")
 	if err != nil {
 		return nil, err
 	}
 	fail := func(err error) (*e2eStack, error) {
-		_ = os.RemoveAll(tempDir)
+		_ = os.RemoveAll(runDir)
 		return nil, err
 	}
 	suffix := fmt.Sprintf("%d-%d", os.Getpid(), time.Now().Unix())
 	s := &e2eStack{
 		runtime:     rt,
 		rootDir:     rootDir,
-		tempDir:     tempDir,
+		mountDir:    mountDir,
+		runDir:      runDir,
 		network:     "sigil-e2e-" + suffix,
 		serverImage: "sigil-e2e-sigils:" + suffix,
 		clientImage: "sigil-e2e-sigilc:" + suffix,
@@ -147,8 +156,8 @@ func newE2EStack(rt containerRuntime) (*e2eStack, error) {
 
 func (s *e2eStack) newDeployment(dir, alias, clientName, suffix string, port int) (*deployment, error) {
 	d := &deployment{
-		dir:             dir,
-		hostDir:         filepath.Join(s.tempDir, dir),
+		hostDir:         filepath.Join(s.runDir, dir),
+		containerDir:    s.containerPath(dir),
 		alias:           alias,
 		clientName:      clientName,
 		serverContainer: "sigil-e2e-" + alias + "-" + suffix,
@@ -198,7 +207,7 @@ func (s *e2eStack) startServer(d *deployment) error {
 		"--network-alias", d.alias,
 		"-p", fmt.Sprintf("127.0.0.1:%d:18443", d.serverPort),
 		"-e", "SIGILS_CONFIG=" + d.containerPath("server.yaml"),
-		"-v", bindMount(s.tempDir, "/e2e", false),
+		"-v", bindMount(s.mountDir, "/e2e", false),
 		s.serverImage,
 	}
 	if out, err := s.run(args...); err != nil {
@@ -211,7 +220,7 @@ func (s *e2eStack) startServer(d *deployment) error {
 		"curl", "--fail", "--silent", "--show-error",
 		"--unix-socket", "/var/run/sigil/sigils.sock",
 		"-H", "Content-Type: application/json",
-		"--data-binary", "@/e2e/seed-cert.json",
+		"--data-binary", "@"+s.containerPath("seed-cert.json"),
 		"http://localhost/ipc/v1/certs",
 	); err != nil {
 		return fmt.Errorf("seed certificate on %s: %w\n%s", d.alias, err, out)
@@ -227,7 +236,7 @@ func (s *e2eStack) runClient(d *deployment, bootstrap bool) error {
 		"--name", d.clientContainer,
 		"--network", s.network,
 		"-e", "SIGILC_CONFIG=" + d.containerPath("client-data", "client.yaml"),
-		"-v", bindMount(s.tempDir, "/e2e", false),
+		"-v", bindMount(s.mountDir, "/e2e", false),
 	}
 	if d.publicRoot != nil {
 		// On Linux, Go loads SSL_CERT_FILE into the system roots.
@@ -253,7 +262,7 @@ func (s *e2eStack) writeFixtures() error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(s.tempDir, "seed-cert.json"), raw, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(s.runDir, "seed-cert.json"), raw, 0o600); err != nil {
 		return err
 	}
 	if s.publicTLS.publicRoot, err = writePublicTLS(s.publicTLS.hostPath("tls"), s.publicTLS.alias); err != nil {
@@ -503,7 +512,11 @@ func (d *deployment) hostPath(parts ...string) string {
 }
 
 func (d *deployment) containerPath(parts ...string) string {
-	return strings.Join(append([]string{"/e2e", d.dir}, parts...), "/")
+	return strings.Join(append([]string{d.containerDir}, parts...), "/")
+}
+
+func (s *e2eStack) containerPath(parts ...string) string {
+	return strings.Join(append([]string{"/e2e", filepath.Base(s.runDir)}, parts...), "/")
 }
 
 func (s *e2eStack) run(args ...string) (string, error) {
@@ -576,7 +589,5 @@ func (s *e2eStack) cleanup() {
 	s.removeNetwork()
 	_, _ = s.run("rmi", "-f", s.clientImage)
 	_, _ = s.run("rmi", "-f", s.serverImage)
-	if strings.HasPrefix(filepath.Base(s.tempDir), "sigil-wslc-e2e-") {
-		_ = os.RemoveAll(s.tempDir)
-	}
+	_ = os.RemoveAll(s.runDir)
 }
