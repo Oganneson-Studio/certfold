@@ -1,0 +1,286 @@
+package commands
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/sigil/internal/ipc"
+)
+
+type configChangeResult struct {
+	Name                   string `json:"name"`
+	ConfigPath             string `json:"config_path"`
+	Reloaded               bool   `json:"reloaded"`
+	RestartRequired        bool   `json:"restart_required"`
+	StoredMaterialRetained bool   `json:"stored_material_retained,omitempty"`
+}
+
+type renewalResult struct {
+	Name    string `json:"name"`
+	Renewed bool   `json:"renewed"`
+}
+
+type certificateDetails struct {
+	Name        string     `json:"name"`
+	CA          string     `json:"ca"`
+	Domains     []string   `json:"domains"`
+	NotAfter    *time.Time `json:"not_after,omitempty"`
+	Fingerprint string     `json:"fingerprint,omitempty"`
+	IssuedAt    *time.Time `json:"issued_at,omitempty"`
+	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
+}
+
+type clientDetails struct {
+	Name           string     `json:"name"`
+	Fingerprint    string     `json:"fingerprint"`
+	EnrolledAt     time.Time  `json:"enrolled_at"`
+	LastSeen       *time.Time `json:"last_seen,omitempty"`
+	PushEndpoint   string     `json:"push_endpoint,omitempty"`
+	PushConfigured bool       `json:"push_configured"`
+}
+
+type immediateRenewer interface {
+	RenewNow(context.Context, *config.ServerConfig, config.CertificateSpec) error
+}
+
+func renewConfiguredCertificate(ctx context.Context, cfg *config.ServerConfig, renewer immediateRenewer, name string) error {
+	for _, spec := range cfg.Certificates {
+		if spec.Name == name {
+			return renewer.RenewNow(ctx, cfg, spec)
+		}
+	}
+	return fmt.Errorf("cert %q not found", name)
+}
+
+func runCertAdd(cmd *cobra.Command, args []string) error {
+	domains, _ := cmd.Flags().GetStringSlice("domains")
+	dnsProvider, _ := cmd.Flags().GetString("dns")
+	if len(domains) == 0 {
+		return fmt.Errorf("at least one --domains value is required")
+	}
+	if strings.TrimSpace(dnsProvider) == "" {
+		return fmt.Errorf("--dns is required")
+	}
+
+	caName, _ := cmd.Flags().GetString("ca")
+	keyType, _ := cmd.Flags().GetString("key-type")
+	renewDays, _ := cmd.Flags().GetInt("renew-days-before")
+	subscribers, _ := cmd.Flags().GetStringSlice("subscribers")
+	spec := config.CertificateSpec{
+		Name:            strings.TrimSpace(args[0]),
+		Domains:         cleanStringList(domains),
+		CA:              strings.TrimSpace(caName),
+		DNSProvider:     strings.TrimSpace(dnsProvider),
+		KeyType:         strings.TrimSpace(keyType),
+		RenewDaysBefore: renewDays,
+		Subscribers:     cleanStringList(subscribers),
+	}
+
+	cfgPath := serverConfigPath(cmd)
+	if _, err := addCertificateSpec(cfgPath, spec); err != nil {
+		return err
+	}
+	reloaded, err := reloadServerAfterConfigChange(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
+	result := configChangeResult{
+		Name:            spec.Name,
+		ConfigPath:      cfgPath,
+		Reloaded:        reloaded,
+		RestartRequired: !reloaded,
+	}
+	if asJSON, _ := cmd.Root().PersistentFlags().GetBool("json"); asJSON {
+		return printJSON(result)
+	}
+	fmt.Printf("certificate %q added to %s\n", spec.Name, cfgPath)
+	if reloaded {
+		fmt.Println("running sigils configuration reloaded")
+	} else {
+		fmt.Println("sigils is not running; the change will apply at the next startup")
+	}
+	return nil
+}
+
+func runCertRemove(cmd *cobra.Command, args []string) error {
+	name := args[0]
+	cfgPath := serverConfigPath(cmd)
+	if err := removeCertificateSpec(cfgPath, name); err != nil {
+		return err
+	}
+	reloaded, err := reloadServerAfterConfigChange(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
+	result := configChangeResult{
+		Name:                   name,
+		ConfigPath:             cfgPath,
+		Reloaded:               reloaded,
+		RestartRequired:        !reloaded,
+		StoredMaterialRetained: true,
+	}
+	if asJSON, _ := cmd.Root().PersistentFlags().GetBool("json"); asJSON {
+		return printJSON(result)
+	}
+	fmt.Printf("certificate %q removed from %s\n", name, cfgPath)
+	if reloaded {
+		fmt.Println("running sigils configuration reloaded; stored certificate material remains in the database")
+	} else {
+		fmt.Println("sigils is not running; the change will apply at the next startup and stored certificate material remains in the database")
+	}
+	return nil
+}
+
+func reloadServerAfterConfigChange(cmd *cobra.Command, cfgPath string) (bool, error) {
+	c, err := dialServerReloader(serverIPCSocket(cmd))
+	if err != nil {
+		return false, nil
+	}
+	if err := c.ReloadServer(commandContext(cmd)); err != nil {
+		return false, fmt.Errorf("configuration saved to %s, but the running sigils daemon rejected reload: %w", cfgPath, err)
+	}
+	return true, nil
+}
+
+func runCertRenew(cmd *cobra.Command, args []string) error {
+	c, err := dialIPC(serverIPCSocket(cmd))
+	if err != nil {
+		return fmt.Errorf("ipc unavailable: %w", err)
+	}
+	if err := c.RenewCert(commandContext(cmd), args[0]); err != nil {
+		return err
+	}
+	if asJSON, _ := cmd.Root().PersistentFlags().GetBool("json"); asJSON {
+		return printJSON(renewalResult{Name: args[0], Renewed: true})
+	}
+	fmt.Printf("certificate %q renewed\n", args[0])
+	return nil
+}
+
+func runClientShow(cmd *cobra.Command, args []string) error {
+	c, err := dialIPC(serverIPCSocket(cmd))
+	if err != nil {
+		return fmt.Errorf("ipc unavailable: %w", err)
+	}
+	clients, err := c.ListClients(commandContext(cmd))
+	if err != nil {
+		return err
+	}
+	for _, rec := range clients {
+		if rec.Name != args[0] {
+			continue
+		}
+		details := newClientDetails(rec)
+		if asJSON, _ := cmd.Root().PersistentFlags().GetBool("json"); asJSON {
+			return printJSON(details)
+		}
+		lastSeen := "never"
+		if details.LastSeen != nil {
+			lastSeen = details.LastSeen.Format("2006-01-02 15:04:05 MST")
+		}
+		pushEndpoint := details.PushEndpoint
+		if pushEndpoint == "" {
+			pushEndpoint = "none"
+		}
+		fmt.Printf("Name:            %s\n", details.Name)
+		fmt.Printf("Fingerprint:     %s\n", details.Fingerprint)
+		fmt.Printf("Enrolled At:     %s\n", details.EnrolledAt.Format("2006-01-02 15:04:05 MST"))
+		fmt.Printf("Last Seen:       %s\n", lastSeen)
+		fmt.Printf("Push Endpoint:   %s\n", pushEndpoint)
+		fmt.Printf("Push Configured: %t\n", details.PushConfigured)
+		return nil
+	}
+	return fmt.Errorf("client %q not found", args[0])
+}
+
+func newClientDetails(rec *ipc.ClientInfo) clientDetails {
+	var lastSeen *time.Time
+	if !rec.LastSeen.IsZero() {
+		value := rec.LastSeen
+		lastSeen = &value
+	}
+	return clientDetails{
+		Name:           rec.Name,
+		Fingerprint:    rec.Fingerprint,
+		EnrolledAt:     rec.EnrolledAt,
+		LastSeen:       lastSeen,
+		PushEndpoint:   rec.PushEndpoint,
+		PushConfigured: rec.PushConfigured,
+	}
+}
+
+func newCertificateDetails(rec *ipc.CertificateInfo) certificateDetails {
+	return certificateDetails{
+		Name:        rec.Name,
+		CA:          rec.CA,
+		Domains:     append([]string(nil), rec.Domains...),
+		NotAfter:    timePointer(rec.NotAfter),
+		Fingerprint: rec.Fingerprint,
+		IssuedAt:    timePointer(rec.IssuedAt),
+		UpdatedAt:   timePointer(rec.UpdatedAt),
+	}
+}
+
+func certificateDetailList(records []*ipc.CertificateInfo) []certificateDetails {
+	out := make([]certificateDetails, 0, len(records))
+	for _, rec := range records {
+		out = append(out, newCertificateDetails(rec))
+	}
+	return out
+}
+
+func clientDetailList(records []*ipc.ClientInfo) []clientDetails {
+	out := make([]clientDetails, 0, len(records))
+	for _, rec := range records {
+		out = append(out, newClientDetails(rec))
+	}
+	return out
+}
+
+func timePointer(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	copy := value
+	return &copy
+}
+
+func cleanStringList(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func commandContext(cmd *cobra.Command) context.Context {
+	if ctx := cmd.Context(); ctx != nil {
+		return ctx
+	}
+	return context.Background()
+}
+
+func serverConfigPath(cmd *cobra.Command) string {
+	path, _ := cmd.Root().PersistentFlags().GetString("config")
+	if path == "" {
+		path = defaultServerCfgPath()
+	}
+	return path
+}
+
+func serverIPCSocket(cmd *cobra.Command) string {
+	if path, _ := cmd.Root().PersistentFlags().GetString("ipc"); path != "" {
+		return path
+	}
+	if cfg, err := config.LoadServer(serverConfigPath(cmd)); err == nil && cfg.Server.IPCSocket != "" {
+		return cfg.Server.IPCSocket
+	}
+	return ipc.DefaultServerSocket()
+}

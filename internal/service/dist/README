@@ -1,0 +1,2 @@
+Drop sigilc-{os}-{arch} binaries here before building a release.
+Example: sigilc-linux-amd64, sigilc-darwin-arm64, sigilc-windows-amd64.exe

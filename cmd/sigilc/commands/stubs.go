@@ -1,0 +1,74 @@
+package commands
+
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+
+	"github.com/Oganneson-Studio/sigil/internal/version"
+)
+
+func notImplemented(name string) func(*cobra.Command, []string) error {
+	return func(_ *cobra.Command, _ []string) error {
+		return fmt.Errorf("%s: not implemented yet", name)
+	}
+}
+
+func newServeCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "serve",
+		Short: "Run the sigilc daemon (used by the system service)",
+		RunE:  runServe,
+	}
+}
+
+func newReloadCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "reload",
+		Short: "Tell the running daemon to re-read client.yaml",
+		RunE:  runReload,
+	}
+}
+
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print version information",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			fmt.Printf("sigilc %s (commit %s, built %s)\n", version.Version, version.Commit, version.BuildDate)
+			return nil
+		},
+	}
+}
+
+func newEnrollCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "enroll",
+		Short: "Bootstrap this client by exchanging a one-time token for an mTLS certificate",
+		RunE:  runEnroll,
+	}
+	cmd.Flags().String("token", "", "enrollment token issued by sigils")
+	_ = cmd.MarkFlagRequired("token")
+	return cmd
+}
+
+func newStatusCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Print current client status (one-shot; for scripts)",
+		RunE:  runStatus,
+	}
+	cmd.Flags().Bool("json", false, "emit machine-readable JSON")
+	cmd.Flags().Bool("plain", false, "emit plain text without color")
+	return cmd
+}
+
+func newFetchCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "fetch",
+		Short: "Force an immediate pull from sigils, bypassing pull_interval",
+		RunE:  runFetch,
+	}
+	cmd.Flags().String("cert", "", "only fetch the named certificate (default: all subscribed)")
+	return cmd
+}
