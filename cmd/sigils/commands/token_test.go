@@ -103,6 +103,18 @@ certificates: []
 	}
 }
 
+// tokenCreate runs `sigils --ipc socket token create` with args and returns
+// what the command printed.
+func tokenCreate(socket string, args ...string) (stdout, stderr string, err error) {
+	root := NewRootCmd()
+	var out, errOut bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&errOut)
+	root.SetArgs(append([]string{"--ipc", socket, "token", "create"}, args...))
+	err = root.Execute()
+	return out.String(), errOut.String(), err
+}
+
 func TestTokenCreateIssuesTokenThroughDaemon(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -121,35 +133,41 @@ func TestTokenCreateIssuesTokenThroughDaemon(t *testing.T) {
 				wantURL = "https://" + listen
 			}
 
-			root := NewRootCmd()
-			var stdout, stderr bytes.Buffer
-			root.SetOut(&stdout)
-			root.SetErr(&stderr)
-			root.SetArgs([]string{"--ipc", socket, "token", "create", "--name", "web-1", "--expires", "10m"})
-			if err := root.Execute(); err != nil {
+			stdout, stderr, err := tokenCreate(socket, "--name", "web-1", "--expires", "10m")
+			if err != nil {
 				t.Fatalf("token create: %v", err)
 			}
 
 			// E2E reads the token from this line.
 			var token string
-			for _, line := range strings.Split(stdout.String(), "\n") {
+			for _, line := range strings.Split(stdout, "\n") {
 				if strings.HasPrefix(line, "Token: ") {
 					token = strings.TrimPrefix(line, "Token: ")
 				}
 			}
 			if token == "" {
-				t.Fatalf("no Token line in output:\n%s", stdout.String())
+				t.Fatalf("no Token line in output:\n%s", stdout)
 			}
 			for _, want := range []string{
 				"curl -fsSL " + wantURL + "/install.sh | sudo sh -s -- --token " + token,
 				"iwr -useb '" + wantURL + "/install.ps1?token=" + token + "' | iex",
 			} {
-				if !strings.Contains(stdout.String(), want) {
-					t.Errorf("output lacks %q:\n%s", want, stdout.String())
+				if !strings.Contains(stdout, want) {
+					t.Errorf("output lacks %q:\n%s", want, stdout)
 				}
 			}
-			if warned := strings.Contains(stderr.String(), "server.public_url is not set"); warned != tt.wantWarn {
-				t.Errorf("public_url warning = %t, want %t; stderr:\n%s", warned, tt.wantWarn, stderr.String())
+			if warned := strings.Contains(stderr, "server.public_url is not set"); warned != tt.wantWarn {
+				t.Errorf("public_url warning = %t, want %t; stderr:\n%s", warned, tt.wantWarn, stderr)
+			}
+
+			// A lifetime that is not positive fails instead of printing an
+			// already expired token.
+			stdout, _, err = tokenCreate(socket, "--name", "web-2", "--expires", "-5m")
+			if err == nil || !strings.Contains(err.Error(), "must be positive") {
+				t.Errorf("token create --expires -5m: error = %v, want a positive lifetime error", err)
+			}
+			if strings.Contains(stdout, "Token:") {
+				t.Errorf("token create --expires -5m printed a token:\n%s", stdout)
 			}
 
 			// The token must redeem against the daemon's own store.

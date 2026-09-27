@@ -142,6 +142,9 @@ func Run(ctx context.Context, configPath string) error {
 // createToken issues an enrollment token bound to the public base URL of the
 // running configuration, the URL clients use to reach this server.
 func createToken(ctx context.Context, enrollSrv *enroll.Server, cfg *config.ServerConfig, name string, ttl time.Duration) (ipc.CreateTokenResponse, error) {
+	if ttl <= 0 {
+		return ipc.CreateTokenResponse{}, fmt.Errorf("token lifetime must be positive, got %s", ttl)
+	}
 	serverURL := cfg.PublicBaseURL()
 	token, err := enrollSrv.Create(ctx, serverURL, name, ttl)
 	if err != nil {
