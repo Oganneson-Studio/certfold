@@ -68,19 +68,24 @@ func Dial(path string) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	sd, err := windows.GetSecurityInfo(
-		windows.Handle(conn.(interface{ Fd() uintptr }).Fd()),
-		windows.SE_KERNEL_OBJECT,
-		windows.OWNER_SECURITY_INFORMATION,
-	)
-	if err == nil {
-		err = checkPipeOwner(sd)
-	}
-	if err != nil {
+	if err := checkPipeConn(conn); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("ipc dial %s: %w", path, err)
 	}
 	return conn, nil
+}
+
+// checkPipeConn checks the owner of the pipe that conn is connected to.
+func checkPipeConn(conn net.Conn) error {
+	f, ok := conn.(interface{ Fd() uintptr })
+	if !ok {
+		return fmt.Errorf("cannot read the pipe owner of a %T connection", conn)
+	}
+	sd, err := windows.GetSecurityInfo(windows.Handle(f.Fd()), windows.SE_KERNEL_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return fmt.Errorf("read pipe owner: %w", err)
+	}
+	return checkPipeOwner(sd)
 }
 
 // checkPipeOwner accepts a pipe security descriptor owned by LocalSystem or

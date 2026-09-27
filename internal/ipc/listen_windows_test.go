@@ -96,6 +96,15 @@ func TestCheckPipeOwner(t *testing.T) {
 	}
 }
 
+func TestCheckPipeConnRefusesConnectionWithoutHandle(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	if err := checkPipeConn(client); err == nil {
+		t.Fatal("checkPipeConn accepted a connection whose pipe owner it cannot read")
+	}
+}
+
 func TestDialAcceptsPipeOfListen(t *testing.T) {
 	name := testPipeName()
 	l, err := Listen(name)
