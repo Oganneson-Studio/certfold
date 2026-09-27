@@ -53,10 +53,8 @@ func Run(ctx context.Context, configPath string) error {
 	}
 
 	// Bind both listeners before starting background work, so a busy address
-	// fails fast instead of waiting for the scheduler's first issuance. HTTPS
-	// goes first: on Unix ipc.Listen removes an existing socket, and a second
-	// instance that cannot get the HTTPS address must not take the running
-	// daemon's management endpoint with it.
+	// or a daemon that is already running fails fast instead of waiting for
+	// the scheduler's first issuance.
 	httpsListener, err := net.Listen("tcp", cfg.Server.Listen)
 	if err != nil {
 		return fmt.Errorf("https listen: %w", err)
