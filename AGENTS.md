@@ -111,7 +111,13 @@ go test -race ./internal/client ./internal/ipc
 - Windows 的 `os.Chmod(0600)` 不能替代 DACL。
 - Windows 安装脚本必须区分 AMD64、ARM64 和 x86。
 - Windows 上 daemon 必须以 LocalSystem 或提权管理员身份运行。IPC 客户端只信任属主为 SYSTEM 或 Administrators 的命名管道，校验在发出请求之前完成。有管理员权限的 `Listen` 会显式把属主设为 Administrators；不指定属主时，属主取令牌的默认属主，Git Bash 下会变成用户 SID。
-- Windows 服务（2026-09-27 真机实测）：正常启停退出码为 0；启动即失败时 SCM 记为 System 日志 7034、`ExitCode=1067`，失败原因写在 Application 日志，来源为服务名 `sigils`/`sigilc`。事件写入后要过几秒才查得到，脚本不能查一次为空就下结论。未握手的旧版本会等到 SCM 超时（本机 90 秒）后报 1053。`service uninstall` 会一并删除事件日志源。
+- Windows 服务（2026-09-27 真机实测）：
+  - 正常启停退出码为 0，不会触发恢复动作。
+  - 启动即失败时 `ExitCode=1067`，失败原因写在 Application 日志，来源为服务名 `sigils`/`sigilc`。
+  - `service install` 会写入恢复动作：失败后 10 秒重启，失败计数 24 小时清零。这种情况下 System 日志记 7031，服务会以新进程重新拉起；没有恢复动作的旧安装只记 7034、停在 Stopped，要重新安装服务才会带上恢复动作。
+  - 事件写入后有时要过几秒才查得到，脚本不能查一次为空就下结论。
+  - 未握手的旧版本会等到 SCM 超时（本机 90 秒）后报 1053。
+  - `service uninstall` 会一并删除事件日志源。
 - WSLC 2.9.4 每个会话最多挂载 15 个**不同的主机路径**（2026-09-27 实测：按会话存活期间出现过的不同路径计数，与容器数无关，同一路径挂 17 个容器也不受影响）。E2E 每轮只挂载一个临时根目录，但每轮路径都不同，会话里累计满 15 个就报 `装入的卷太多 (限制： 15)`。确认没有容器和网络后，可以用 `wslc system session terminate` 重置空闲会话。
 - 不运行或依赖 Docker Desktop。需要容器验证时直接调用 `wslc`。
 
