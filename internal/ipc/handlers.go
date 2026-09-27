@@ -1,8 +1,6 @@
 package ipc
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -14,10 +12,6 @@ import (
 
 type ipcHandlers struct {
 	deps ServerDeps
-}
-
-type certNameRequest struct {
-	Name string `json:"name"`
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -73,21 +67,12 @@ func (h *ipcHandlers) upsertCert(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *ipcHandlers) deleteCert(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
-	if err := h.deps.DB.Certs.Delete(r.Context(), name, nil); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 func (h *ipcHandlers) renewCert(w http.ResponseWriter, r *http.Request) {
 	if h.deps.Certificates.Renew == nil {
 		http.Error(w, "certificate renewal unavailable", http.StatusNotImplemented)
 		return
 	}
-	var req certNameRequest
+	var req RenewCertRequest
 	if err := readJSON(r, &req); err != nil || req.Name == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -125,37 +110,20 @@ func (h *ipcHandlers) deleteClient(w http.ResponseWriter, r *http.Request) {
 // /ipc/v1/tokens
 // ---------------------------------------------------------------------------
 
-type createTokenRequest struct {
-	Name      string        `json:"name"`
-	TTL       time.Duration `json:"ttl"`
-	ServerURL string        `json:"server_url"`
-}
-
-type createTokenResponse struct {
-	Token string `json:"token"`
-}
-
 func (h *ipcHandlers) createToken(w http.ResponseWriter, r *http.Request) {
-	var req createTokenRequest
-	if err := readJSON(r, &req); err != nil || req.Name == "" {
+	var req CreateTokenRequest
+	if err := readJSON(r, &req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	if req.TTL == 0 {
-		req.TTL = 24 * time.Hour
-	}
-
-	rec := &store.TokenRecord{
-		TokenID:   randomHexID(),
-		Name:      req.Name,
-		ExpiresAt: time.Now().UTC().Add(req.TTL),
-		CreatedAt: time.Now().UTC(),
-	}
-	if err := h.deps.DB.Tokens.Upsert(r.Context(), rec, nil); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+	resp, err := h.deps.Tokens.Create(r.Context(), req.Name, req.TTL)
+	if err != nil {
+		// The daemon's reason (for example an invalid client name) is what
+		// the operator needs to see.
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
-	writeJSON(w, http.StatusCreated, createTokenResponse{Token: rec.TokenID})
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 func (h *ipcHandlers) listTokens(w http.ResponseWriter, r *http.Request) {
@@ -177,28 +145,8 @@ func (h *ipcHandlers) deleteToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
-// /ipc/v1/state
-// ---------------------------------------------------------------------------
-
-func (h *ipcHandlers) getState(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	certs, _ := h.deps.DB.Certs.List(ctx, nil)
-	clients, _ := h.deps.DB.Clients.List(ctx, nil)
-	tokens, _ := h.deps.DB.Tokens.List(ctx, nil)
-	writeJSON(w, http.StatusOK, ServerState{
-		Certs:   certificateInfos(certs),
-		Clients: clientInfos(clients),
-		Tokens:  tokenInfos(tokens),
-	})
-}
-
-// ---------------------------------------------------------------------------
 // /ipc/v1/client/*
 // ---------------------------------------------------------------------------
-
-type fetchClientRequest struct {
-	Name string `json:"name,omitempty"`
-}
 
 func (h *ipcHandlers) getClientState(w http.ResponseWriter, r *http.Request) {
 	if h.deps.Client.State == nil {
@@ -221,7 +169,7 @@ func (h *ipcHandlers) fetchClient(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "fetch unavailable", http.StatusNotImplemented)
 		return
 	}
-	var req fetchClientRequest
+	var req FetchClientRequest
 	if err := readJSON(r, &req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -243,10 +191,4 @@ func (h *ipcHandlers) reloadClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func randomHexID() string {
-	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
 }

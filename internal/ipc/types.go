@@ -6,6 +6,10 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
+// This file defines every request and response body of the IPC API. The
+// read models are explicit DTOs: they never carry certificate private keys,
+// push tokens or enrollment-token secret hashes.
+
 // CertificateInfo is the read-only certificate metadata exposed over IPC.
 type CertificateInfo struct {
 	Name        string    `json:"name"`
@@ -15,6 +19,11 @@ type CertificateInfo struct {
 	Fingerprint string    `json:"fingerprint"`
 	IssuedAt    time.Time `json:"issued_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// RenewCertRequest is the body of POST /ipc/v1/certs/renew.
+type RenewCertRequest struct {
+	Name string `json:"name"`
 }
 
 // ClientInfo is the read-only enrolled-client metadata exposed over IPC.
@@ -36,11 +45,35 @@ type TokenInfo struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// ServerState is the read-only daemon state exposed over IPC.
-type ServerState struct {
-	Certs   []*CertificateInfo `json:"certs"`
-	Clients []*ClientInfo      `json:"clients"`
-	Tokens  []*TokenInfo       `json:"tokens"`
+// CreateTokenRequest is the body of POST /ipc/v1/tokens.
+type CreateTokenRequest struct {
+	Name string        `json:"name"`
+	TTL  time.Duration `json:"ttl"`
+}
+
+// CreateTokenResponse is returned by POST /ipc/v1/tokens. ServerURL is the
+// base URL the token is bound to. PublicURLConfigured reports whether it
+// comes from server.public_url rather than being derived from server.listen.
+type CreateTokenResponse struct {
+	Token               string `json:"token"`
+	ServerURL           string `json:"server_url"`
+	PublicURLConfigured bool   `json:"public_url_configured"`
+}
+
+// ClientState is the runtime status returned by a sigilc daemon.
+type ClientState struct {
+	Name       string            `json:"name"`
+	ServerURL  string            `json:"server_url"`
+	Online     bool              `json:"online"`
+	LastPullAt time.Time         `json:"last_pull_at,omitempty"`
+	LastError  string            `json:"last_error,omitempty"`
+	Certs      map[string]string `json:"certs"`
+}
+
+// FetchClientRequest is the body of POST /ipc/v1/client/fetch. An empty name
+// fetches all subscribed certificates whose fingerprints changed.
+type FetchClientRequest struct {
+	Name string `json:"name,omitempty"`
 }
 
 func certificateInfos(records []*store.CertRecord) []*CertificateInfo {
