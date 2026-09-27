@@ -78,6 +78,9 @@ func Run(ctx context.Context, configPath string) error {
 		_ = r.RunDynamic(ctx, runtimeConfig.Current)
 	}()
 
+	// Enrollment tokens are created over IPC and redeemed over HTTPS.
+	enrollSrv := enroll.NewServer(db.Tokens, db.Clients, miniCA)
+
 	// IPC server. Requests inherit ctx, so once shutdown starts a manual
 	// renewal can no longer be stored: lego ignores ctx and finishes the ACME
 	// order, then the upsert fails and the new certificate is discarded.
@@ -87,6 +90,11 @@ func Run(ctx context.Context, configPath string) error {
 		Certificates: &ipc.CertificateControlDeps{
 			Renew: func(ctx context.Context, name string) error {
 				return r.RenewNamed(ctx, runtimeConfig.Current, name)
+			},
+		},
+		Tokens: &ipc.TokenControlDeps{
+			Create: func(ctx context.Context, name string, ttl time.Duration) (ipc.CreateTokenResponse, error) {
+				return createToken(ctx, enrollSrv, runtimeConfig.Current(), name, ttl)
 			},
 		},
 	})
@@ -101,7 +109,7 @@ func Run(ctx context.Context, configPath string) error {
 		DB:            db,
 		MiniCA:        miniCA,
 		DataDir:       cfg.Server.DataDir,
-		EnrollServer:  enroll.NewServer(db.Tokens, db.Clients, miniCA),
+		EnrollServer:  enrollSrv,
 	}, serverTLSCert)
 	httpsDone := make(chan error, 1)
 	go func() { httpsDone <- httpSrv.ServeTLS(httpsListener, "", "") }()
@@ -129,6 +137,21 @@ func Run(ctx context.Context, configPath string) error {
 	}
 	<-schedulerDone
 	return runErr
+}
+
+// createToken issues an enrollment token bound to the public base URL of the
+// running configuration, the URL clients use to reach this server.
+func createToken(ctx context.Context, enrollSrv *enroll.Server, cfg *config.ServerConfig, name string, ttl time.Duration) (ipc.CreateTokenResponse, error) {
+	serverURL := cfg.PublicBaseURL()
+	token, err := enrollSrv.Create(ctx, serverURL, name, ttl)
+	if err != nil {
+		return ipc.CreateTokenResponse{}, err
+	}
+	return ipc.CreateTokenResponse{
+		Token:               token,
+		ServerURL:           serverURL,
+		PublicURLConfigured: cfg.Server.PublicURL != "",
+	}, nil
 }
 
 // serverTLSCertificate builds the hosts list from the config and issues a
