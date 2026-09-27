@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -91,6 +92,11 @@ func validateHotReload(previous, next *config.ServerConfig) error {
 	}
 	if previous.Server.TLSKeyFile != next.Server.TLSKeyFile {
 		immutable = append(immutable, "server.tls_key_file")
+	}
+	// lego keeps the DNS resolvers in a process-wide variable that sigils sets
+	// once at startup; changing it under running issuances would be a race.
+	if !slices.Equal(previous.ACME.DNSResolvers, next.ACME.DNSResolvers) {
+		immutable = append(immutable, "acme.dns_resolvers")
 	}
 	if len(immutable) > 0 {
 		return fmt.Errorf(
