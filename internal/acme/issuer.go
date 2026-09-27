@@ -37,13 +37,20 @@ import (
 //
 // The DNS values below replace lego's per-provider defaults, which lego reads
 // from environment variables such as CLOUDFLARE_PROPAGATION_TIMEOUT without
-// any upper limit. None is lower than lego's own default.
+// any upper limit. None is lower than lego's own default. The exec provider
+// uses them too, and each run of its program is bounded by dnsHookTimeout
+// (dns_exec.go).
 //
 // lego does not let Sigil bound everything:
 //   - lego builds the gcloud provider's configuration itself, so it keeps
 //     lego's defaults (180 s propagation, 5 s polling, read from
 //     GCE_PROPAGATION_TIMEOUT and GCE_POLLING_INTERVAL), and like route53
 //     (AWS SDK) it uses an HTTP client without an overall timeout;
+//   - each DNS query of the DNS-01 lookups (CNAME following, zone and name
+//     server lookups, the propagation check) waits up to lego's fixed 10 s
+//     (20 s on Windows) per resolver, trying the resolvers in turn; the
+//     CNAME lookups run outside the propagation timeout, and that timeout is
+//     only checked between attempts;
 //   - after a challenge is submitted, lego polls the authorization for up to
 //     100 times the CA's Retry-After (500 s when the CA sends none).
 const (
@@ -145,7 +152,10 @@ func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec confi
 	if err != nil {
 		return nil, fmt.Errorf("dns provider %q: %w", spec.DNSProvider, err)
 	}
-	if err := client.Challenge.SetDNS01Provider(provider); err != nil {
+	// Unlike the process-wide resolvers, skipping the propagation check is an
+	// option of this challenge only, so each provider can choose.
+	skipPropagation := dns01.CondOption(dnsP.SkipPropagationCheck, dns01.PropagationWait(0, true))
+	if err := client.Challenge.SetDNS01Provider(provider, skipPropagation); err != nil {
 		return nil, fmt.Errorf("set dns01 provider: %w", err)
 	}
 
@@ -328,6 +338,9 @@ func buildDNSProvider(p config.DNSProvider) (challenge.Provider, error) {
 		// Application default credentials for the configured project.
 		project, _ := cfg["project"].(string)
 		return gcloud.NewDNSProviderCredentials(project)
+
+	case "exec":
+		return &execProvider{argv: p.Command}, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported provider type %q", p.Type)

@@ -168,6 +168,7 @@ func TestBuildDNSProviderBoundsPropagationWait(t *testing.T) {
 		{Type: "aliyun", Config: map[string]any{"access_key": "k", "access_secret": "s"}},
 		{Type: "tencentcloud", Config: map[string]any{"secret_id": "id", "secret_key": "k"}},
 		{Type: "route53", Config: map[string]any{"access_key": "ak", "secret_key": "sk", "region": "us-east-1"}},
+		{Type: "exec", Command: []string{"/usr/local/bin/dns-hook"}},
 	} {
 		provider, err := buildDNSProvider(p)
 		if err != nil {
