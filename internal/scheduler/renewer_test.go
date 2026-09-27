@@ -1251,6 +1251,58 @@ func TestRenewNamedPropagatesIssuerFailure(t *testing.T) {
 	})
 }
 
+// RenewNamed hands its error over IPC to a terminal: no path may return the
+// issuer's text raw.
+func TestRenewNamedErrorIsSanitized(t *testing.T) {
+	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	want := errors.New("acme: 400 \x1b]0;pwned\x07\x1b[2J done")
+	check := func(t *testing.T, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatal("RenewNamed succeeded")
+		}
+		if i := strings.IndexFunc(err.Error(), unicode.IsControl); i >= 0 {
+			t.Fatalf("RenewNamed error keeps a control character: %q", err.Error())
+		}
+		if !errors.Is(err, want) {
+			t.Fatalf("RenewNamed error %q no longer wraps the issuer error", err)
+		}
+	}
+
+	t.Run("same generation", func(t *testing.T) {
+		db := mustOpenDB(t)
+		r := New(&mockIssuer{err: want}, db.Certs, db.Issuance, nil, func() time.Time { return now })
+		check(t, r.RenewNamed(context.Background(), static(minimalCfg("api-prod", 30, nil)), "api-prod"))
+	})
+
+	t.Run("cancelled", func(t *testing.T) {
+		db := mustOpenDB(t)
+		iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
+		r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+		ctx, cancel := context.WithCancel(context.Background())
+		renewed := renewAsync(ctx, r, static(minimalCfg("api-prod", 30, nil)), "api-prod")
+		call := iss.next(t)
+		cancel()
+		call.fail(want)
+		check(t, receive(t, renewed, "RenewNamed"))
+	})
+
+	t.Run("old generation", func(t *testing.T) {
+		db := mustOpenDB(t)
+		iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
+		r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+		var current atomic.Pointer[config.ServerConfig]
+		current.Store(minimalCfg("api-prod", 30, nil))
+		renewed := renewAsync(context.Background(), r, current.Load, "api-prod")
+		call := iss.next(t)
+		if err := r.PublishConfig(context.Background(), func() { current.Store(minimalCfg("api-prod", 30, nil)) }); err != nil {
+			t.Fatal(err)
+		}
+		call.fail(want)
+		check(t, receive(t, renewed, "RenewNamed"))
+	})
+}
+
 func TestRenewNamedReportsStoreFailure(t *testing.T) {
 	ctx := context.Background()
 	db := mustOpenDB(t)

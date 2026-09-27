@@ -322,6 +322,11 @@ func (r *Renewer) issue(ctx context.Context, current func() *config.ServerConfig
 	}
 	fp := config.CertificateSpecFingerprint(cfg, spec)
 	result, err := r.issuer.Issue(ctx, cfg, spec)
+	if err != nil {
+		// Its text can quote the ACME CA and the DNS provider API, and
+		// RenewNamed hands it over IPC to a terminal.
+		err = issuerError{err}
+	}
 	now := r.clock()
 	if err != nil && ctx.Err() != nil {
 		// Shutdown or an abandoned manual renewal, not a verdict on the configuration.
@@ -438,6 +443,12 @@ func lastError(err error) string {
 	}
 	return msg
 }
+
+// issuerError reads like lastError; Unwrap keeps the issuer error for errors.Is and errors.As.
+type issuerError struct{ err error }
+
+func (e issuerError) Error() string { return lastError(e.err) }
+func (e issuerError) Unwrap() error { return e.err }
 
 func specNamed(cfg *config.ServerConfig, name string) (config.CertificateSpec, bool) {
 	if cfg != nil {
