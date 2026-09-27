@@ -29,13 +29,18 @@ type renewalResult struct {
 }
 
 type certificateDetails struct {
-	Name        string     `json:"name"`
-	CA          string     `json:"ca"`
-	Domains     []string   `json:"domains"`
-	NotAfter    *time.Time `json:"not_after,omitempty"`
-	Fingerprint string     `json:"fingerprint,omitempty"`
-	IssuedAt    *time.Time `json:"issued_at,omitempty"`
-	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
+	Name          string     `json:"name"`
+	CA            string     `json:"ca"`
+	Domains       []string   `json:"domains"`
+	NotAfter      *time.Time `json:"not_after,omitempty"`
+	Fingerprint   string     `json:"fingerprint,omitempty"`
+	IssuedAt      *time.Time `json:"issued_at,omitempty"`
+	UpdatedAt     *time.Time `json:"updated_at,omitempty"`
+	State         string     `json:"state"`
+	Failures      int        `json:"failures"`
+	LastError     string     `json:"last_error,omitempty"`
+	LastAttemptAt *time.Time `json:"last_attempt_at,omitempty"`
+	NextAttemptAt *time.Time `json:"next_attempt_at,omitempty"`
 }
 
 type clientDetails struct {
@@ -216,13 +221,18 @@ func newClientDetails(rec *ipc.ClientInfo) clientDetails {
 
 func newCertificateDetails(rec *ipc.CertificateInfo) certificateDetails {
 	return certificateDetails{
-		Name:        rec.Name,
-		CA:          rec.CA,
-		Domains:     append([]string(nil), rec.Domains...),
-		NotAfter:    timePointer(rec.NotAfter),
-		Fingerprint: rec.Fingerprint,
-		IssuedAt:    timePointer(rec.IssuedAt),
-		UpdatedAt:   timePointer(rec.UpdatedAt),
+		Name:          rec.Name,
+		CA:            rec.CA,
+		Domains:       append([]string(nil), rec.Domains...),
+		NotAfter:      timePointer(rec.NotAfter),
+		Fingerprint:   rec.Fingerprint,
+		IssuedAt:      timePointer(rec.IssuedAt),
+		UpdatedAt:     timePointer(rec.UpdatedAt),
+		State:         rec.State,
+		Failures:      rec.Failures,
+		LastError:     rec.LastError,
+		LastAttemptAt: timePointer(rec.LastAttemptAt),
+		NextAttemptAt: timePointer(rec.NextAttemptAt),
 	}
 }
 
@@ -248,6 +258,14 @@ func timePointer(value time.Time) *time.Time {
 	}
 	copy := value
 	return &copy
+}
+
+// formatTime formats value with layout, or returns "-" for the zero time.
+func formatTime(value time.Time, layout string) string {
+	if value.IsZero() {
+		return "-"
+	}
+	return value.Format(layout)
 }
 
 func cleanStringList(values []string) []string {

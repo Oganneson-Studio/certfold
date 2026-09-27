@@ -68,9 +68,12 @@ func Run(ctx context.Context, configPath string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Renewal scheduler.
+	// Renewal scheduler. lego keeps DNS resolvers in a process-wide variable,
+	// so they are set once, before any issuance can run; changing them needs a
+	// restart.
+	acme.SetDNSResolvers(cfg.ACME.DNSResolvers)
 	pushNotifier := scheduler.NewHTTPPushNotifier(nil)
-	r := scheduler.New(acme.NewIssuer(db.Accounts), db.Certs, pushNotifier, nil)
+	r := scheduler.New(acme.NewIssuer(db.Accounts), db.Certs, db.Issuance, pushNotifier, nil)
 	runtimeConfig := newServerConfigRuntime(configPath, cfg, r)
 	schedulerDone := make(chan struct{})
 	go func() {
@@ -82,8 +85,10 @@ func Run(ctx context.Context, configPath string) error {
 	enrollSrv := enroll.NewServer(db.Tokens, db.Clients, miniCA)
 
 	// IPC server. Requests inherit ctx, so once shutdown starts a manual
-	// renewal can no longer be stored: lego ignores ctx and finishes the ACME
-	// order, then the upsert fails and the new certificate is discarded.
+	// renewal still waiting for its certificate's lock or an issuance slot
+	// gives up. One already running continues, as lego ignores ctx, and stores
+	// its certificate if it finishes before the store closes: shutdown waits
+	// for the scheduler's issuances but not for manual renewals.
 	ipcSrv := ipc.NewServer(ipc.ServerDeps{
 		DB:     db,
 		Server: &ipc.ServerControlDeps{Reload: runtimeConfig.Reload},
@@ -91,6 +96,8 @@ func Run(ctx context.Context, configPath string) error {
 			Renew: func(ctx context.Context, name string) error {
 				return r.RenewNamed(ctx, runtimeConfig.Current, name)
 			},
+			Current: runtimeConfig.Current,
+			Issuing: r.Issuing,
 		},
 		Tokens: &ipc.TokenControlDeps{
 			Create: func(ctx context.Context, name string, ttl time.Duration) (ipc.CreateTokenResponse, error) {

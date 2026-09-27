@@ -101,6 +101,12 @@ func TestServerConfigRuntimeRejectsImmutableChangesWithoutPublishing(t *testing.
 			new:  "  ipc_socket: \"/var/run/sigil/sigils.sock\"\n  tls_cert_file: \"/etc/sigil/cert.pem\"\n  tls_key_file: \"/etc/sigil/key.pem\"",
 			want: "server.tls_cert_file",
 		},
+		{
+			name: "DNS resolvers",
+			old:  `  default_ca: "le"`,
+			new:  "  default_ca: \"le\"\n  dns_resolvers: [\"1.1.1.1\"]",
+			want: "acme.dns_resolvers",
+		},
 	}
 
 	for _, tt := range tests {
@@ -118,6 +124,22 @@ func TestServerConfigRuntimeRejectsImmutableChangesWithoutPublishing(t *testing.
 				t.Fatal("rejected reload changed the published generation")
 			}
 		})
+	}
+}
+
+func TestServerConfigRuntimeReloadWithUnchangedDNSResolversPublishes(t *testing.T) {
+	withResolvers := strings.Replace(initialRuntimeConfig, `  default_ca: "le"`,
+		"  default_ca: \"le\"\n  dns_resolvers: [\"1.1.1.1\", \"8.8.8.8:53\"]", 1)
+	path := filepath.Join(t.TempDir(), "server.yaml")
+	initial := parseRuntimeConfig(t, withResolvers)
+	runtime := newServerConfigRuntime(path, initial)
+	writeRuntimeConfig(t, path, strings.Replace(withResolvers, "ops@example.com", "security@example.com", 1))
+
+	if err := runtime.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if got := runtime.Current(); got == initial || got.ACME.Email != "security@example.com" {
+		t.Fatal("reload with unchanged dns_resolvers did not publish the new generation")
 	}
 }
 

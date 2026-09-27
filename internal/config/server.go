@@ -2,10 +2,16 @@ package config
 
 import (
 	"fmt"
+	"maps"
+	"net"
 	"net/url"
 	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -37,6 +43,11 @@ type ACMESection struct {
 	Email     string             `yaml:"email"`
 	DefaultCA string             `yaml:"default_ca"`
 	CAs       map[string]CAEntry `yaml:"cas"`
+	// DNSResolvers, each "host" or "host:port", replace lego's default
+	// resolvers (/etc/resolv.conf, else Google Public DNS, as on Windows) for
+	// the DNS lookups of DNS-01 challenges. lego keeps them process-wide, so
+	// changing them requires a restart.
+	DNSResolvers []string `yaml:"dns_resolvers,omitempty"`
 }
 
 type CAEntry struct {
@@ -48,8 +59,15 @@ type CAEntry struct {
 // DNSProvider is intentionally loose: each provider type accepts different
 // fields. We unmarshal into a generic map and validate per-type at load.
 type DNSProvider struct {
-	Type   string         `yaml:"type"`
-	Config map[string]any `yaml:",inline"`
+	Type string `yaml:"type"`
+	// Command is the argv of the program an exec provider runs, starting with
+	// its absolute path. Only type exec accepts it.
+	Command []string `yaml:"command,omitempty"`
+	// SkipPropagationCheck hands the challenge to the CA without first
+	// checking that the TXT record has reached the zone's authoritative name
+	// servers.
+	SkipPropagationCheck bool           `yaml:"skip_propagation_check,omitempty"`
+	Config               map[string]any `yaml:",inline"`
 }
 
 type CertificateSpec struct {
@@ -85,13 +103,15 @@ var validKeyTypes = map[string]bool{
 }
 
 // validDNSProviderTypes is the closed set of DNS provider types Sigil
-// supports out of the box. Each value corresponds to a lego provider package.
+// supports out of the box. Each value except exec corresponds to a lego
+// provider package; exec runs the program given by command.
 var validDNSProviderTypes = map[string]bool{
 	"cloudflare":   true,
 	"aliyun":       true,
 	"tencentcloud": true,
 	"route53":      true,
 	"gcloud":       true,
+	"exec":         true,
 }
 
 // LoadServer reads server.yaml from path, expands ${VAR} references inside
@@ -220,13 +240,18 @@ func (c *ServerConfig) Validate() error {
 	} else if _, ok := c.ACME.CAs[c.ACME.DefaultCA]; !ok {
 		v.Add("acme.default_ca", "references unknown CA %q", c.ACME.DefaultCA)
 	}
+	for i, resolver := range c.ACME.DNSResolvers {
+		if !isValidDNSResolver(resolver) {
+			v.Add(fmt.Sprintf("acme.dns_resolvers[%d]", i), "invalid DNS resolver %q (want host or host:port)", resolver)
+		}
+	}
 
 	for name, p := range c.DNSProviders {
 		path := fmt.Sprintf("dns_providers.%s", name)
 		if p.Type == "" {
 			v.Add(path+".type", "must be set")
 		} else if !validDNSProviderTypes[p.Type] {
-			v.Add(path+".type", "unknown DNS provider type %q (supported: cloudflare, aliyun, tencentcloud, route53, gcloud)", p.Type)
+			v.Add(path+".type", "unknown DNS provider type %q (supported: cloudflare, aliyun, tencentcloud, route53, gcloud, exec)", p.Type)
 		} else {
 			validateDNSProviderFields(v, path, p)
 		}
@@ -323,6 +348,10 @@ func validateDNSProviderFields(v *ValidationError, path string, p DNSProvider) {
 		}
 	}
 
+	if p.Type != "exec" && len(p.Command) > 0 {
+		v.Add(path+".command", "only valid for provider type \"exec\"")
+	}
+
 	switch p.Type {
 	case "cloudflare":
 		// Either api_token (recommended) or auth_email+auth_key must be set.
@@ -352,6 +381,24 @@ func validateDNSProviderFields(v *ValidationError, path string, p DNSProvider) {
 		if strField("project") == "" && strField("service_account_file") == "" {
 			v.Add(path, "gcloud provider requires project (used with application default credentials) or service_account_file")
 		}
+	case "exec":
+		// The inline map takes any key, so KnownFields cannot catch a typo
+		// such as "comand". exec has only typed fields: reject every other key.
+		for _, key := range slices.Sorted(maps.Keys(p.Config)) {
+			v.Add(fmt.Sprintf("%s.%s", path, key), "unknown field for provider type %q", p.Type)
+		}
+		// Whether the program exists is not checked: that can change between
+		// runs, and a failed run is reported as the certificate's last error.
+		if len(p.Command) == 0 {
+			v.Add(path+".command", "required for provider type %q", p.Type)
+		}
+		for i, arg := range p.Command {
+			if arg == "" {
+				v.Add(fmt.Sprintf("%s.command[%d]", path, i), "must not be empty")
+			} else if i == 0 && !filepath.IsAbs(arg) {
+				v.Add(path+".command[0]", "must be an absolute program path, got %q", arg)
+			}
+		}
 	}
 }
 
@@ -364,6 +411,24 @@ func (c *ServerConfig) PublicBaseURL() string {
 	}
 	// Best-effort: wrap listen address with https scheme.
 	return "https://" + strings.TrimLeft(c.Server.Listen, ":")
+}
+
+// isValidDNSResolver reports whether s works as a resolver address after
+// lego's dns01.ParseNameservers adds the default port 53 to it, which lego
+// does whenever net.SplitHostPort fails on s.
+func isValidDNSResolver(s string) bool {
+	addr := s
+	if _, _, err := net.SplitHostPort(s); err != nil {
+		addr = net.JoinHostPort(s, "53")
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || host == "" || strings.ContainsFunc(host, func(r rune) bool {
+		return r == '/' || unicode.IsSpace(r)
+	}) {
+		return false
+	}
+	n, err := strconv.ParseUint(port, 10, 16)
+	return err == nil && n > 0
 }
 
 func isValidListen(addr string) bool {

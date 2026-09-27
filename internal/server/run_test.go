@@ -1,18 +1,23 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-acme/lego/v4/challenge/dns01"
 
 	"github.com/Oganneson-Studio/sigil/internal/ca"
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
@@ -44,21 +49,29 @@ func freeTCPPort(t *testing.T) int {
 
 // writeServerConfig writes a server.yaml without certificates, so Run never
 // contacts the ACME directory.
-func writeServerConfig(t *testing.T, listen, dataDir, ipcSocket string) string {
+func writeServerConfig(t *testing.T, listen, dataDir, ipcSocket string, dnsResolvers ...string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "server.yaml")
+	var resolvers string
+	if len(dnsResolvers) > 0 {
+		list, err := json.Marshal(dnsResolvers)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolvers = "\n  dns_resolvers: " + string(list)
+	}
 	raw := fmt.Sprintf(`server:
   listen: %q
   data_dir: %q
   ipc_socket: %q
 acme:
   email: "ops@example.com"
-  default_ca: "le"
+  default_ca: "le"%s
   cas:
     le:
       directory: "https://acme.example.com/directory"
 certificates: []
-`, listen, dataDir, ipcSocket)
+`, listen, dataDir, ipcSocket, resolvers)
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +92,99 @@ func TestRunServesUntilCancelled(t *testing.T) {
 	defer cancel()
 	result := make(chan error, 1)
 	go func() { result <- Run(ctx, path) }()
+	waitServing(t, miniCA, port, result)
 
+	cancel()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("Run returned %v after cancellation, want nil", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run did not return after cancellation")
+	}
+}
+
+// TestRunSetsConfiguredDNSResolvers checks that acme.dns_resolvers reaches
+// lego, which keeps it in a process-wide variable.
+//
+// Nothing can restore that variable, so the check runs in a child process.
+func TestRunSetsConfiguredDNSResolvers(t *testing.T) {
+	const childEnv = "SIGIL_TEST_RUN_DNS_RESOLVERS"
+	if os.Getenv(childEnv) == "" {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestRunSetsConfiguredDNSResolvers$", "-test.v", "-test.timeout=1m")
+		cmd.Env = append(os.Environ(), childEnv+"=1")
+		out, err := cmd.CombinedOutput()
+		// Without the PASS line the child may have run no test at all.
+		if err != nil || !strings.Contains(string(out), "--- PASS: TestRunSetsConfiguredDNSResolvers") {
+			t.Fatalf("child process: %v\n%s", err, out)
+		}
+		return
+	}
+
+	resolver, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resolver.Close()
+	dataDir := t.TempDir()
+	miniCA, err := ca.Bootstrap(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := freeTCPPort(t)
+	path := writeServerConfig(t, fmt.Sprintf("127.0.0.1:%d", port), dataDir, testIPCSocket(t), resolver.LocalAddr().String())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- Run(ctx, path) }()
+	waitServing(t, miniCA, port, result)
+	cancel()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("Run returned %v after cancellation, want nil", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run did not return after cancellation")
+	}
+
+	// Run has returned, so this lookup cannot race with Run setting the
+	// resolvers.
+	lookup := make(chan error, 1)
+	go func() {
+		_, err := dns01.FindZoneByFqdn("probe.sigil.test.")
+		lookup <- err
+	}()
+	if err := resolver.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	query := make([]byte, 512)
+	n, from, err := resolver.ReadFrom(query)
+	if err != nil {
+		t.Fatalf("no DNS query reached the configured resolver: %v", err)
+	}
+	if !bytes.Contains(query[:n], []byte("\x05probe\x05sigil\x04test\x00")) {
+		t.Fatalf("DNS query %x does not ask for the probe name", query[:n])
+	}
+	// Echo the query back as a REFUSED answer so the lookup ends at once.
+	query[2] |= 0x80                // QR: response
+	query[3] = query[3]&0xf0 | 0x05 // RCODE: REFUSED
+	if _, err := resolver.WriteTo(query[:n], from); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-lookup:
+	case <-time.After(10 * time.Second):
+		t.Fatal("DNS lookup did not end after the REFUSED answer")
+	}
+}
+
+// waitServing polls the HTTPS listener of a Run started in the background
+// until it answers, failing the test if Run returns first.
+func waitServing(t *testing.T, miniCA *ca.MiniCA, port int, result <-chan error) {
+	t.Helper()
 	roots := x509.NewCertPool()
 	roots.AddCert(miniCA.Cert())
 	probe := &http.Client{
@@ -106,16 +211,6 @@ func TestRunServesUntilCancelled(t *testing.T) {
 			t.Fatalf("HTTPS listener did not become ready: %v", err)
 		}
 		time.Sleep(50 * time.Millisecond)
-	}
-
-	cancel()
-	select {
-	case err := <-result:
-		if err != nil {
-			t.Fatalf("Run returned %v after cancellation, want nil", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("Run did not return after cancellation")
 	}
 }
 

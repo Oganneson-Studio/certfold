@@ -11,7 +11,7 @@
 审阅文档未公开（缺陷编号 A1–A13、决定编号 B1–B4、C1 均出自该文档）。以下决定已接受；**对应 Phase 落地之前，现有代码和下文各条约束继续有效**。
 
 - B1（Phase 3）：服务端推送改为客户端长轮询。mTLS 上的 `GET /v1/sync` 带 etag 挂起等待，证书落库或 reload 时唤醒，默认最长 55 秒。落地后删除推送通知器、客户端 push 监听、server.yaml 的 `clients:` 和 client.yaml 的 `push_listen` / `push_token`，安全约束 9 随之作废。
-- B2（Phase 2）：取消全局签发锁，改为每张证书一把锁、有上限的并行签发。落库时比对下单时的 spec 指纹与当前配置，不一致则丢弃；reload 不再等待在途签发。
+- B2（Phase 2，2026-09-28 已落地，规则见运行时约束）：取消全局签发锁，改为每张证书一把锁、有上限的并行签发。落库时比对下单时的 spec 指纹与当前配置，不一致则丢弃；reload 不再等待在途签发。
 - B3（Phase 4）：PowerShell 安装改为 `& ([scriptblock]::Create((irm <url>/install.ps1))) -Token '<token>'`，服务端不再把请求参数写进脚本，安全约束 7 随之作废。
 - B4（Phase 3）：删除 `/v1/heartbeat`，由 mTLS 鉴权中间件用条件 UPDATE 刷新 `last_seen`（每个客户端每分钟最多写一次）。
 - C1（Phase 3）：客户端每张证书可配置 `on_change` 钩子，argv 形式，带超时，只能在客户端配置。
@@ -68,7 +68,7 @@ E2E 不依赖 Compose 或固定 IP。它构建临时镜像、创建随机命名�
 竞态测试需要 CGO：
 
 ```powershell
-go test -race ./internal/client ./internal/ipc
+go test -race ./internal/client ./internal/ipc ./internal/scheduler ./internal/server ./internal/acme ./internal/store ./internal/config
 ```
 
 如果当前 Go 环境 `CGO_ENABLED=0`，应明确报告无法运行，不能把它写成已通过。
@@ -90,12 +90,31 @@ go test -race ./internal/client ./internal/ipc
 10. 配置解析使用 `yaml.KnownFields(true)`。增加字段时必须同步 schema、验证和测试。`config.ReadServerPaths` 是只给 CLI 定位 IPC、给安装器找 data_dir 用的宽松读取函数，daemon 不得用它加载配置。`${VAR}` 和 `${VAR:-default}` 在 YAML 解析后逐个标量值展开：值原样插入、不 trim；键不展开；`$$` 表示字面 `$`；变量未设置且没有默认值时报错。三个解析入口（`ParseServer`、`ParseClient`、`ReadServerPaths`）必须得到一致结果。
 11. 服务端只读 IPC 必须使用显式 DTO，不能在线路上返回证书私钥、push token 或 enrollment-token secret hash。
 12. 数据库证书记录必须绑定有效配置指纹；CA directory、domains 或 key type 变化后，旧材料不得继续分发。
+13. `exec` DNS provider 只能在 server.yaml 中配置。它以 sigils 服务账户运行、继承其全部环境变量（包括 `${VAR}` 引用的凭据），单次运行 2 分钟超时。
+   - 错误信息只含动作、记录名和退出状态或超时，启动失败时另带 argv[0]。
+   - argv[1:] 和脚本输出永远不进入错误。
+   - 脚本输出只在失败时截尾写日志。
+14. 来自 ACME CA 和 DNS provider 的错误文本，写入 `issuance_status.last_error` 或经 IPC 返回（手动 renew）之前，必须替换控制字符和非法 UTF-8，并截断到 1 KiB，因为 CLI 会把它原样打印到终端。
 
 ## 运行时约束
 
 - `sigils` 与 `sigilc` 使用不同的 IPC 端点。客户端命令解析顺序为：显式 `--ipc`、`client.ipc_socket`、平台默认客户端 socket。
-- `sigils reload` 必须通过本地服务端 IPC 完整解析并应用新配置。可热更新 `acme`、`dns_providers`、`certificates` 和 `clients` push routing；若 `server.listen`、`server.public_url`、`server.data_dir`、`server.ipc_socket`、`server.tls_cert_file` 或 `server.tls_key_file` 变化，必须拒绝 reload、保留旧运行配置并明确要求重启。
-- 服务端 reload 与 periodic/manual issuance 必须共用同步点：旧 generation 的签发和 push 完成后才能发布新 generation；发布时清理旧 backoff，并立即唤醒 scheduler。（Phase 2 按 B2 改为每证书锁加落库时比对 spec 指纹。）
+- `sigils reload` 必须通过本地服务端 IPC 完整解析并应用新配置。可热更新 `acme`、`dns_providers`、`certificates` 和 `clients` push routing；若 `server.listen`、`server.public_url`、`server.data_dir`、`server.ipc_socket`、`server.tls_cert_file`、`server.tls_key_file` 或 `acme.dns_resolvers` 变化，必须拒绝 reload、保留旧运行配置并明确要求重启。`acme.dns_resolvers` 需要重启，是因为 lego 把它存在进程级全局变量里。
+- 服务端签发按证书加锁：
+  - 同一张证书同一时刻最多一个签发：周期 tick 遇到在途签发即跳过；`sigils cert renew` 等它结束后再强制签发。全局并行上限为 `scheduler.maxConcurrentIssuance`（4）。
+  - 签发结果落库前，在 generation 读锁下按名字从当前运行配置重新取 spec 计算指纹，与下单前捕获的指纹比对。不一致或证书已删除，就丢弃结果并立即唤醒 scheduler。
+  - generation 读锁内只允许 `current()`、指纹计算和毫秒级的 DB 写；push 和一切网络调用必须在锁外。
+  - 旧 generation 的失败、ctx 取消导致的失败都不计入退避。
+  - reload 不等待在途签发：只在 generation 写锁下清零所有证书的持久化退避（保留最近错误）、原子发布新配置并立即唤醒 scheduler。
+  - 每证书退避（5 分钟起、翻倍、封顶 24 小时）与最近错误存 `issuance_status` 表，重启不清零；调度定时器按最早的下次尝试时间唤醒。
+  - 失败记入退避后立即唤醒 scheduler 重算定时器；退避写库失败则不唤醒，以免立即重试。
+  - 因为退避持久化，改配置加重启不会清零退避；修好原因后用 `sigils reload` 或 `sigils cert renew`。
+  - 传给 `Issue` 的 ctx 必须可取消，`WithoutCancel` 只用于收尾的 DB 写入。
+- ACME 账户初始化按 CA 名加锁（账户记录以 CA 名为主键），从取或建 key 一直锁到 register 完成，下单前释放。读账户库出错时原样返回，不新建 key、不覆盖记录；只有库里的 registration JSON 损坏时，才用同一把 key 重新注册来修复。
+- `GET /ipc/v1/certs`（即 `sigils cert list/show`）按运行配置顺序列出配置中的证书：
+  - `not_after`、`fingerprint` 等材料字段，只在库中记录的 spec 指纹与当前配置一致时才填写；
+  - 已从配置删除的证书，库里残留的记录不列出；
+  - state 优先级为 issuing > backoff > valid > pending。
 - `sigils token create` 由运行中的 daemon 经服务端 IPC 签发，daemon 未运行时报错，不再在 CLI 进程里直接写库；CLI 拒绝不支持新协议的旧 daemon 的应答。`cert add`/`cert remove` 改完 `server.yaml` 后通知 daemon reload。
 - `sigilc fetch` 必须调用真实 IPC 拉取；`--cert` 只强制目标证书。`reload` 必须先完整解析新配置，失败时保留旧配置。
 - sigilc 启动后和 reload 后，第一次完整拉取会重写全部订阅证书的输出；写失败的证书在后续拉取中重试，带名的 fetch 不会消耗这个重写标记。
@@ -124,6 +143,13 @@ go test -race ./internal/client ./internal/ipc
   - E2E 每轮都把固定目录 `%TEMP%\sigil-wslc-e2e` 挂到 `/e2e`，本轮文件放在其下的 `run-*` 子目录，结束时只删子目录。所以跑多少轮都只占 2 个名额：挂载根和构建上下文。
   - 新增挂载或镜像构建时，主机路径必须在各轮之间保持不变。
   - 满额时报 `装入的卷太多 (限制： 15)`；确认没有容器和网络后，可以用 `wslc system session terminate` 重置空闲会话。
+  - 每个 worktree 根作为构建上下文时路径都不同，在同一会话里各占一个名额。
+- WSLC 容器网络与构建（2026-09-27 实测，WSLC 2.9.4）：
+  - 同一网络内，网络别名在所有容器里都能解析，容器之间 DNS 的 UDP 和 TCP 都通。
+  - 需要容器 IP 时，从 `wslc inspect <容器>` 的 `NetworkSettings.Networks.<网络名>.IPAddress` 取。
+  - `wslc build` 走 BuildKit：构建时拉取的基础镜像只在 BuildKit 存储里，`wslc images` 看不到；构建缓存在 `rmi` 之后仍然有效；没有 builder prune 命令。
+  - 构建上下文的大小不影响耗时，开销在 `COPY . .` 的缓存失效：上下文里任何文件变了，sigils 和 sigilc 各要重编约 12–15 秒。
+- 本机 Git for Windows 的 curl（Schannel）校验私有根时会报 `CERT_TRUST_REVOCATION_STATUS_UNKNOWN`，要加 `--ssl-no-revoke`；Go 写的 harness 不受影响。
 - 不运行或依赖 Docker Desktop。需要容器验证时直接调用 `wslc`。
 
 ## 已知未完成项

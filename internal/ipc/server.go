@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
@@ -34,6 +35,10 @@ type ServerControlDeps struct {
 // by the sigils daemon.
 type CertificateControlDeps struct {
 	Renew func(context.Context, string) error
+	// Current returns the running configuration.
+	Current func() *config.ServerConfig
+	// Issuing reports whether an issuance of the named certificate is running or waiting for a slot.
+	Issuing func(name string) bool
 }
 
 // TokenControlDeps exposes enrollment-token operations implemented by the
@@ -77,7 +82,6 @@ func buildIPCRouter(h *ipcHandlers) http.Handler {
 	r.Use(middleware.RequestSize(maxRequestBody))
 
 	if h.deps.DB != nil {
-		r.Get("/ipc/v1/certs", h.listCerts)
 		// Seeds the E2E stack with a certificate (JSON shape store.CertRecord)
 		// until the Pebble E2E issues real ones.
 		r.Post("/ipc/v1/certs", h.upsertCert)
@@ -92,6 +96,7 @@ func buildIPCRouter(h *ipcHandlers) http.Handler {
 		r.Post("/ipc/v1/server/reload", h.reloadServer)
 	}
 	if h.deps.Certificates != nil {
+		r.Get("/ipc/v1/certs", h.listCerts)
 		r.Post("/ipc/v1/certs/renew", h.renewCert)
 	}
 	if h.deps.Tokens != nil {
