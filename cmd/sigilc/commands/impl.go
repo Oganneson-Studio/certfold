@@ -47,7 +47,7 @@ func runReload(cmd *cobra.Command, _ []string) error {
 	if err := c.ReloadClient(context.Background()); err != nil {
 		return err
 	}
-	fmt.Println("reload sent")
+	fmt.Println("configuration applied; rewriting certificate outputs in the background (see sigilc status)")
 	return nil
 }
 
