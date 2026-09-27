@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -106,7 +107,21 @@ func TestRunServesUntilCancelled(t *testing.T) {
 
 // TestRunSetsConfiguredDNSResolvers checks that acme.dns_resolvers reaches
 // lego, which keeps it in a process-wide variable.
+//
+// Nothing can restore that variable, so the check runs in a child process.
 func TestRunSetsConfiguredDNSResolvers(t *testing.T) {
+	const childEnv = "SIGIL_TEST_RUN_DNS_RESOLVERS"
+	if os.Getenv(childEnv) == "" {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestRunSetsConfiguredDNSResolvers$", "-test.v", "-test.timeout=1m")
+		cmd.Env = append(os.Environ(), childEnv+"=1")
+		out, err := cmd.CombinedOutput()
+		// Without the PASS line the child may have run no test at all.
+		if err != nil || !strings.Contains(string(out), "--- PASS: TestRunSetsConfiguredDNSResolvers") {
+			t.Fatalf("child process: %v\n%s", err, out)
+		}
+		return
+	}
+
 	resolver, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -126,8 +141,13 @@ func TestRunSetsConfiguredDNSResolvers(t *testing.T) {
 	go func() { result <- Run(ctx, path) }()
 	waitServing(t, miniCA, port, result)
 	cancel()
-	if err := <-result; err != nil {
-		t.Fatalf("Run returned %v after cancellation, want nil", err)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("Run returned %v after cancellation, want nil", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run did not return after cancellation")
 	}
 
 	// Run has returned, so this lookup cannot race with Run setting the
