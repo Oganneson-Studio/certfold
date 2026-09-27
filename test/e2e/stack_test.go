@@ -309,9 +309,10 @@ func (s *e2eStack) startServer(d *deployment) error {
 // certState is the part of an entry of `sigils --json cert list` that the
 // tests read.
 type certState struct {
-	Name      string `json:"name"`
-	State     string `json:"state"`
-	LastError string `json:"last_error"`
+	Name        string `json:"name"`
+	Fingerprint string `json:"fingerprint"`
+	State       string `json:"state"`
+	LastError   string `json:"last_error"`
 }
 
 // waitForIssuance waits until the server of d has issued all its

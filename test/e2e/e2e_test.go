@@ -8,6 +8,7 @@ package e2e
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -50,13 +51,24 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func TestEnrollFetchAndRevoke(t *testing.T) {
+func TestEnrollFetchRenewAndRevoke(t *testing.T) {
 	d := stack.miniCA
-	enrollAndFetch(t, d)
+	issued := enrollAndFetch(t, d)
 
 	status := mustExec(t, d.clientContainer, "sigilc", "status")
 	if !strings.Contains(status, "Certificates : 1") {
 		t.Fatalf("client status did not report fetched certificate:\n%s", status)
+	}
+
+	// A manual renewal issues a new certificate, which the next fetch writes.
+	fingerprint := certFingerprint(t, d)
+	mustExec(t, d.serverContainer, "sigils", "cert", "renew", "test-cert")
+	if renewed := certFingerprint(t, d); renewed == fingerprint {
+		t.Fatalf("cert list still shows fingerprint %s after renewal", fingerprint)
+	}
+	mustExec(t, d.clientContainer, "sigilc", "fetch", "--cert", "test-cert")
+	if renewed := verifyOutput(t, d); renewed.SerialNumber.Cmp(issued.SerialNumber) == 0 {
+		t.Fatalf("client output still holds serial %s after renewal and fetch", issued.SerialNumber)
 	}
 
 	mustExec(t, d.serverContainer, "sigils", "client", "remove", d.clientName)
@@ -98,8 +110,8 @@ func TestIssuanceUsesDNSResolvers(t *testing.T) {
 }
 
 // enrollAndFetch enrolls the client of d, starts its daemon, and checks that a
-// fetch writes test-cert as pebble issued it.
-func enrollAndFetch(t *testing.T, d *deployment) {
+// fetch writes test-cert as pebble issued it. It returns the certificate.
+func enrollAndFetch(t *testing.T, d *deployment) *x509.Certificate {
 	t.Helper()
 	token := createToken(t, d, d.clientName, "10m")
 	out := mustExec(t, d.clientContainer, "sigilc", "enroll", "--token", token)
@@ -114,13 +126,13 @@ func enrollAndFetch(t *testing.T, d *deployment) {
 	mustExec(t, d.clientContainer, "sigilc", "fetch", "--cert", "test-cert")
 
 	waitForFile(t, d.hostPath("cert-output", "test-cert", "fullchain.pem"), certPollTimeout)
-	verifyOutput(t, d)
+	return verifyOutput(t, d)
 }
 
 // verifyOutput checks the test-cert output of the client of d: a chain from
 // the root pebble issues from to a certificate for test-cert's domain, and
-// the key of that certificate.
-func verifyOutput(t *testing.T, d *deployment) {
+// the key of that certificate. It returns the certificate.
+func verifyOutput(t *testing.T, d *deployment) *x509.Certificate {
 	t.Helper()
 	chainPEM, err := os.ReadFile(d.hostPath("cert-output", "test-cert", "fullchain.pem"))
 	if err != nil {
@@ -166,6 +178,25 @@ func verifyOutput(t *testing.T, d *deployment) {
 	if _, err := tls.X509KeyPair(chainPEM, []byte(keyPEM)); err != nil {
 		t.Fatalf("key output does not belong to the certificate output: %v", err)
 	}
+	return leaf
+}
+
+// certFingerprint returns the fingerprint of test-cert that the server of d
+// lists.
+func certFingerprint(t *testing.T, d *deployment) string {
+	t.Helper()
+	out := mustExec(t, d.serverContainer, "sigils", "--json", "cert", "list")
+	var certs []certState
+	if err := json.Unmarshal([]byte(out), &certs); err != nil {
+		t.Fatalf("parse cert list: %v\n%s", err, out)
+	}
+	for _, cert := range certs {
+		if cert.Name == "test-cert" && cert.Fingerprint != "" {
+			return cert.Fingerprint
+		}
+	}
+	t.Fatalf("cert list has no fingerprint for test-cert:\n%s", out)
+	return ""
 }
 
 func TestExpiredTokenIsRejected(t *testing.T) {
