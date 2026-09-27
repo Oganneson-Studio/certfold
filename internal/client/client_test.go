@@ -743,6 +743,16 @@ func TestPushHandlerRequiresBearerAndCoalescesPulls(t *testing.T) {
 		t.Fatalf("concurrent push notifications started %d pulls, want 1", got)
 	}
 	close(release)
+
+	// The pull writes state.json into the test's data directory; let it
+	// finish before the directory is removed.
+	deadline = time.Now().Add(5 * time.Second)
+	for c.pushInFlight.Load() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if c.pushInFlight.Load() {
+		t.Fatal("push-triggered pull did not finish")
+	}
 }
 
 func TestDiffCerts(t *testing.T) {
