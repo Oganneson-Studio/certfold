@@ -73,7 +73,7 @@ func newCertCmd() *cobra.Command {
 	_ = add.MarkFlagRequired("dns")
 
 	cmd.AddCommand(
-		&cobra.Command{Use: "list", Short: "List all certificates", RunE: runCertList},
+		&cobra.Command{Use: "list", Short: "List configured certificates and their issuance state", RunE: runCertList},
 		&cobra.Command{Use: "show <name>", Short: "Show certificate details", Args: cobra.ExactArgs(1), RunE: runCertShow},
 		add,
 		&cobra.Command{Use: "remove <name>", Short: "Remove a certificate from server.yaml", Args: cobra.ExactArgs(1), RunE: runCertRemove},

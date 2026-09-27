@@ -86,7 +86,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	return nil
 }
 
-// ListCerts returns certificate metadata from the daemon store.
+// ListCerts returns the configured certificates and their issuance state.
 func (c *Client) ListCerts(ctx context.Context) ([]*CertificateInfo, error) {
 	var out []*CertificateInfo
 	return out, c.do(ctx, http.MethodGet, "/ipc/v1/certs", nil, &out)
