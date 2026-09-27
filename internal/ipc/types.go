@@ -72,7 +72,9 @@ type ClientState struct {
 }
 
 // FetchClientRequest is the body of POST /ipc/v1/client/fetch. An empty name
-// fetches all subscribed certificates whose fingerprints changed.
+// runs a full pull: it fetches the certificates whose fingerprints changed, or
+// every subscribed certificate while the rewrite that follows startup or a
+// reload is pending.
 type FetchClientRequest struct {
 	Name string `json:"name,omitempty"`
 }
