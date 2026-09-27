@@ -142,9 +142,8 @@ func TestRunFailsFastOnBusyHTTPSWithoutTouchingIPC(t *testing.T) {
 		t.Fatalf("busy HTTPS address took %s to fail", elapsed)
 	}
 
-	// On Unix, binding IPC first would have removed the live socket file.
-	// Dialing a Windows pipe needs elevation, and there binding IPC first
-	// already fails with "ipc listen" instead.
+	// The running daemon's endpoint must still answer. Dialing a Windows pipe
+	// needs elevation, and a second listener on a pipe name fails there anyway.
 	if runtime.GOOS != "windows" {
 		conn, err := ipc.Dial(socket)
 		if err != nil {

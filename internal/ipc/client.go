@@ -9,8 +9,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
 // Client is an IPC client that communicates with the daemon over the local
@@ -20,21 +18,26 @@ type Client struct {
 	base string // e.g. "http://ipc"
 }
 
-// NewClient dials the IPC socket at path and returns a ready Client.
-// Pass an empty path to use the platform default.
+// NewClient returns a Client for the IPC endpoint at path. Pass an empty path
+// to use the platform default. It dials once up front, so a daemon that is
+// not running is reported here rather than by the first request.
 func NewClient(path string) (*Client, error) {
 	conn, err := Dial(path)
 	if err != nil {
 		return nil, fmt.Errorf("ipc dial: %w", err)
 	}
-	return newClientFromConn(conn), nil
+	_ = conn.Close()
+	return newClient(func() (net.Conn, error) { return Dial(path) }), nil
 }
 
-func newClientFromConn(conn net.Conn) *Client {
+// newClient returns a Client that opens a new connection with dial for every
+// request, so it never depends on a connection the daemon may have closed.
+func newClient(dial func() (net.Conn, error)) *Client {
 	transport := &http.Transport{
-		DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-			return conn, nil
-		},
+		// Dial needs no context: a Unix socket connects or fails at once, and
+		// a busy Windows pipe is retried for at most two seconds.
+		DialContext:       func(context.Context, string, string) (net.Conn, error) { return dial() },
+		DisableKeepAlives: true,
 	}
 	return &Client{
 		http: &http.Client{Transport: transport, Timeout: 5 * time.Minute},
@@ -89,20 +92,10 @@ func (c *Client) ListCerts(ctx context.Context) ([]*CertificateInfo, error) {
 	return out, c.do(ctx, http.MethodGet, "/ipc/v1/certs", nil, &out)
 }
 
-// UpsertCert inserts or updates a certificate record.
-func (c *Client) UpsertCert(ctx context.Context, rec *store.CertRecord) error {
-	return c.do(ctx, http.MethodPost, "/ipc/v1/certs", rec, nil)
-}
-
-// DeleteCert removes a certificate record by name.
-func (c *Client) DeleteCert(ctx context.Context, name string) error {
-	return c.do(ctx, http.MethodDelete, "/ipc/v1/certs/"+name, nil, nil)
-}
-
 // RenewCert asks the running sigils daemon to issue and persist a certificate
 // immediately, bypassing its normal expiry threshold and retry backoff.
 func (c *Client) RenewCert(ctx context.Context, name string) error {
-	return c.do(ctx, http.MethodPost, "/ipc/v1/certs/renew", certNameRequest{Name: name}, nil)
+	return c.do(ctx, http.MethodPost, "/ipc/v1/certs/renew", RenewCertRequest{Name: name}, nil)
 }
 
 // ReloadServer asks sigils to validate and atomically apply server.yaml.
@@ -121,13 +114,14 @@ func (c *Client) DeleteClient(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodDelete, "/ipc/v1/clients/"+name, nil, nil)
 }
 
-// CreateToken asks the daemon to create an enrollment token.
-func (c *Client) CreateToken(ctx context.Context, req createTokenRequest) (string, error) {
-	var resp createTokenResponse
-	if err := c.do(ctx, http.MethodPost, "/ipc/v1/tokens", req, &resp); err != nil {
-		return "", err
+// CreateToken asks the daemon to create an enrollment token bound to its
+// public base URL.
+func (c *Client) CreateToken(ctx context.Context, req CreateTokenRequest) (*CreateTokenResponse, error) {
+	var out CreateTokenResponse
+	if err := c.do(ctx, http.MethodPost, "/ipc/v1/tokens", req, &out); err != nil {
+		return nil, err
 	}
-	return resp.Token, nil
+	return &out, nil
 }
 
 // ListTokens returns enrollment-token metadata.
@@ -141,12 +135,6 @@ func (c *Client) DeleteToken(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/ipc/v1/tokens/"+id, nil, nil)
 }
 
-// GetState returns the full daemon state (certs, clients, tokens).
-func (c *Client) GetState(ctx context.Context) (*ServerState, error) {
-	var out ServerState
-	return &out, c.do(ctx, http.MethodGet, "/ipc/v1/state", nil, &out)
-}
-
 // GetClientState returns the current sigilc runtime status.
 func (c *Client) GetClientState(ctx context.Context) (*ClientState, error) {
 	var out ClientState
@@ -156,7 +144,7 @@ func (c *Client) GetClientState(ctx context.Context) (*ClientState, error) {
 // FetchClient asks sigilc to pull immediately. An empty name fetches all
 // subscribed certificates whose fingerprints changed.
 func (c *Client) FetchClient(ctx context.Context, name string) error {
-	return c.do(ctx, http.MethodPost, "/ipc/v1/client/fetch", fetchClientRequest{Name: name}, nil)
+	return c.do(ctx, http.MethodPost, "/ipc/v1/client/fetch", FetchClientRequest{Name: name}, nil)
 }
 
 // ReloadClient asks sigilc to re-read and apply client.yaml.

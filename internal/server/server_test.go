@@ -1,14 +1,48 @@
 package server
 
 import (
+	"context"
 	"crypto/x509"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Oganneson-Studio/sigil/internal/ca"
 	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/sigil/internal/enroll"
+	"github.com/Oganneson-Studio/sigil/internal/store"
 )
+
+func TestCreateTokenRejectsNonPositiveLifetime(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	miniCA, err := ca.Bootstrap(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollSrv := enroll.NewServer(db.Tokens, db.Clients, miniCA)
+	cfg := &config.ServerConfig{Server: config.ServerSection{PublicURL: "https://sigil.example.com"}}
+	ctx := context.Background()
+
+	// Zero can only arrive over IPC directly; the CLI maps it to its default.
+	for _, ttl := range []time.Duration{0, -5 * time.Minute} {
+		if _, err := createToken(ctx, enrollSrv, cfg, "web-1", ttl); err == nil || !strings.Contains(err.Error(), "must be positive") {
+			t.Errorf("createToken with lifetime %s: error = %v, want a positive lifetime error", ttl, err)
+		}
+	}
+	tokens, err := db.Tokens.List(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tokens) != 0 {
+		t.Fatalf("stored %d tokens for rejected lifetimes", len(tokens))
+	}
+}
 
 func TestServerTLSCertificateDefaultIncludesLoopbackSANs(t *testing.T) {
 	miniCA, err := ca.Bootstrap(t.TempDir())

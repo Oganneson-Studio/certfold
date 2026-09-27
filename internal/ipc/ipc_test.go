@@ -1,13 +1,16 @@
 package ipc
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,19 +27,29 @@ func mustOpenDB(t *testing.T) *store.DB {
 	return db
 }
 
-// startTestServer starts an IPC server listening on a random TCP address.
-// Returns the base URL of the test server.
-func startTestServer(t *testing.T, db *store.DB) *http.Server {
-	t.Helper()
-	srv := NewServer(ServerDeps{DB: db})
-	return srv
+// newTestClient returns a client that reaches ts over TCP through the same
+// transport NewClient uses.
+func newTestClient(ts *httptest.Server) *Client {
+	return newClient(func() (net.Conn, error) { return net.Dial("tcp", ts.Listener.Addr().String()) })
 }
 
-// newTestClient creates a client backed by httptest.Server transport (TCP).
-func newTestClient(ts *httptest.Server) *Client {
-	return &Client{
-		http: ts.Client(),
-		base: ts.URL,
+func TestClientDialsForEveryRequest(t *testing.T) {
+	db := mustOpenDB(t)
+	ts := httptest.NewServer(buildIPCRouter(&ipcHandlers{deps: ServerDeps{DB: db}}))
+	defer ts.Close()
+
+	var dials atomic.Int32
+	c := newClient(func() (net.Conn, error) {
+		dials.Add(1)
+		return net.Dial("tcp", ts.Listener.Addr().String())
+	})
+	for i := 1; i <= 3; i++ {
+		if _, err := c.ListTokens(context.Background()); err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+	}
+	if got := dials.Load(); got != 3 {
+		t.Fatalf("dials = %d, want one per request", got)
 	}
 }
 
@@ -76,16 +89,9 @@ func TestReadEndpointsReturnEmptyArrays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, err := c.GetState(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	if certs == nil || clients == nil || tokens == nil {
 		t.Fatalf("list response contains null array: certs=%v clients=%v tokens=%v", certs, clients, tokens)
-	}
-	if state.Certs == nil || state.Clients == nil || state.Tokens == nil {
-		t.Fatalf("state response contains null array: %+v", state)
 	}
 }
 
@@ -95,18 +101,26 @@ func TestUpsertAndListCerts(t *testing.T) {
 	ts := httptest.NewServer(buildIPCRouter(h))
 	defer ts.Close()
 
-	c := newTestClient(ts)
-	rec := &store.CertRecord{
-		Name:      "api-prod",
-		CA:        "le",
-		Domains:   []string{"api.example.com"},
-		NotAfter:  time.Now().Add(90 * 24 * time.Hour),
-		UpdatedAt: time.Now(),
+	// The E2E stack seeds its certificate by posting a raw store.CertRecord.
+	body, err := json.Marshal(&store.CertRecord{
+		Name:     "api-prod",
+		CA:       "le",
+		Domains:  []string{"api.example.com"},
+		NotAfter: time.Now().Add(90 * 24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := c.UpsertCert(context.Background(), rec); err != nil {
-		t.Fatalf("UpsertCert: %v", err)
+	resp, err := ts.Client().Post(ts.URL+"/ipc/v1/certs", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
 	}
-	certs, err := c.ListCerts(context.Background())
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+
+	certs, err := newTestClient(ts).ListCerts(context.Background())
 	if err != nil {
 		t.Fatalf("ListCerts: %v", err)
 	}
@@ -115,24 +129,31 @@ func TestUpsertAndListCerts(t *testing.T) {
 	}
 }
 
-func TestDeleteCert(t *testing.T) {
+func TestRequestBodyIsLimited(t *testing.T) {
 	db := mustOpenDB(t)
-	ctx := context.Background()
-	_ = db.Certs.Upsert(ctx, &store.CertRecord{
-		Name: "api-prod", CA: "le", Domains: []string{"x.com"}, UpdatedAt: time.Now(),
-	}, nil)
+	router := buildIPCRouter(&ipcHandlers{deps: ServerDeps{DB: db}})
 
-	h := &ipcHandlers{deps: ServerDeps{DB: db}}
-	ts := httptest.NewServer(buildIPCRouter(h))
-	defer ts.Close()
-
-	c := newTestClient(ts)
-	if err := c.DeleteCert(ctx, "api-prod"); err != nil {
-		t.Fatalf("DeleteCert: %v", err)
+	// A well-formed record that is larger than the limit must not be read.
+	body, err := json.Marshal(&store.CertRecord{
+		Name:         "api-prod",
+		CA:           "le",
+		Domains:      []string{"api.example.com"},
+		FullchainPEM: strings.Repeat("a", maxRequestBody),
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	certs, _ := c.ListCerts(ctx)
-	if len(certs) != 0 {
-		t.Errorf("expected 0 certs after delete, got %d", len(certs))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/ipc/v1/certs", bytes.NewReader(body)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	stored, err := db.Certs.List(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 0 {
+		t.Fatalf("oversized request was stored: %d records", len(stored))
 	}
 }
 
@@ -246,33 +267,50 @@ func TestListClients(t *testing.T) {
 	}
 }
 
-func TestCreateAndListTokens(t *testing.T) {
-	db := mustOpenDB(t)
-	h := &ipcHandlers{deps: ServerDeps{DB: db}}
+func TestCreateToken(t *testing.T) {
+	var gotName string
+	var gotTTL time.Duration
+	want := CreateTokenResponse{
+		Token:               "opaque-token",
+		ServerURL:           "https://sigil.example.com",
+		PublicURLConfigured: true,
+	}
+	h := &ipcHandlers{deps: ServerDeps{Tokens: &TokenControlDeps{
+		Create: func(_ context.Context, name string, ttl time.Duration) (CreateTokenResponse, error) {
+			gotName, gotTTL = name, ttl
+			return want, nil
+		},
+	}}}
 	ts := httptest.NewServer(buildIPCRouter(h))
 	defer ts.Close()
 
-	c := newTestClient(ts)
-	tok, err := c.CreateToken(context.Background(), createTokenRequest{
+	created, err := newTestClient(ts).CreateToken(context.Background(), CreateTokenRequest{
 		Name: "web-1",
-		TTL:  time.Hour,
+		TTL:  10 * time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("CreateToken: %v", err)
 	}
-	if tok == "" {
-		t.Fatal("empty token")
+	if gotName != "web-1" || gotTTL != 10*time.Minute {
+		t.Fatalf("daemon received name %q and ttl %s", gotName, gotTTL)
 	}
+	if *created != want {
+		t.Fatalf("response = %+v, want %+v", *created, want)
+	}
+}
 
-	tokens, err := c.ListTokens(context.Background())
-	if err != nil {
-		t.Fatalf("ListTokens: %v", err)
-	}
-	if len(tokens) != 1 {
-		t.Fatalf("expected 1 token, got %d", len(tokens))
-	}
-	if tokens[0].Name != "web-1" {
-		t.Errorf("token name: %q", tokens[0].Name)
+func TestCreateTokenReportsDaemonRejection(t *testing.T) {
+	h := &ipcHandlers{deps: ServerDeps{Tokens: &TokenControlDeps{
+		Create: func(context.Context, string, time.Duration) (CreateTokenResponse, error) {
+			return CreateTokenResponse{}, errors.New(`invalid client name "Web 1"`)
+		},
+	}}}
+	ts := httptest.NewServer(buildIPCRouter(h))
+	defer ts.Close()
+
+	_, err := newTestClient(ts).CreateToken(context.Background(), CreateTokenRequest{Name: "Web 1", TTL: time.Hour})
+	if err == nil || !strings.Contains(err.Error(), `invalid client name "Web 1"`) || !strings.Contains(err.Error(), "422") {
+		t.Fatalf("CreateToken error = %v, want the daemon's reason with status 422", err)
 	}
 }
 
@@ -297,35 +335,6 @@ func TestDeleteToken(t *testing.T) {
 	tokens, _ := c.ListTokens(ctx)
 	if len(tokens) != 0 {
 		t.Errorf("expected 0 tokens after delete, got %d", len(tokens))
-	}
-}
-
-func TestGetState(t *testing.T) {
-	db := mustOpenDB(t)
-	ctx := context.Background()
-	_ = db.Certs.Upsert(ctx, &store.CertRecord{
-		Name: "api-prod", CA: "le", Domains: []string{"x.com"}, UpdatedAt: time.Now(),
-	}, nil)
-	_ = db.Clients.Upsert(ctx, &store.ClientRecord{
-		Name:        "web-1",
-		Fingerprint: "sha256:BB",
-		EnrolledAt:  time.Now(),
-	}, nil)
-
-	h := &ipcHandlers{deps: ServerDeps{DB: db}}
-	ts := httptest.NewServer(buildIPCRouter(h))
-	defer ts.Close()
-
-	c := newTestClient(ts)
-	st, err := c.GetState(ctx)
-	if err != nil {
-		t.Fatalf("GetState: %v", err)
-	}
-	if len(st.Certs) != 1 {
-		t.Errorf("expected 1 cert in state, got %d", len(st.Certs))
-	}
-	if len(st.Clients) != 1 {
-		t.Errorf("expected 1 client in state, got %d", len(st.Clients))
 	}
 }
 
@@ -389,12 +398,6 @@ func TestReadEndpointsDoNotExposeStoredSecrets(t *testing.T) {
 			path:            "/ipc/v1/tokens",
 			forbiddenFields: []string{"secrethash"},
 			forbiddenValues: []string{"sentinel-secret-hash"},
-		},
-		{
-			name:            "state",
-			path:            "/ipc/v1/state",
-			forbiddenFields: []string{"keypem", "fullchainpem", "pushtoken", "pendingfingerprint", "secrethash"},
-			forbiddenValues: []string{"sentinel-private-key-pem", "sentinel-fullchain-pem", "sentinel-push-token", "sentinel-pending-fingerprint", "sentinel-secret-hash"},
 		},
 	}
 
@@ -480,7 +483,7 @@ func TestClientOnlyRouterDoesNotExposeServerState(t *testing.T) {
 	ts := httptest.NewServer(buildIPCRouter(h))
 	defer ts.Close()
 
-	resp, err := ts.Client().Get(ts.URL + "/ipc/v1/state")
+	resp, err := ts.Client().Get(ts.URL + "/ipc/v1/tokens")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -490,66 +493,34 @@ func TestClientOnlyRouterDoesNotExposeServerState(t *testing.T) {
 	}
 }
 
-// TestServe_NetPipe exercises the full Serve path using net.Pipe.
-func TestServe_NetPipe(t *testing.T) {
+// TestServe exercises the full Serve path on a real listener.
+func TestServe(t *testing.T) {
 	db := mustOpenDB(t)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
+	defer cancel()
+	served := make(chan error, 1)
+	go func() { served <- Serve(ctx, l, ServerDeps{DB: db}) }()
 
-	// Wrap net.Pipe in a listener.
-	serverConn, clientConn := net.Pipe()
-	l := &singleConnListener{conn: serverConn}
-
-	go func() {
-		_ = Serve(ctx, l, ServerDeps{DB: db})
-	}()
-
-	// Use clientConn to make a raw HTTP request.
-	c := newClientFromConn(clientConn)
+	c := newClient(func() (net.Conn, error) { return net.Dial("tcp", l.Addr().String()) })
 	certs, err := c.ListCerts(ctx)
 	if err != nil {
-		t.Fatalf("ListCerts over pipe: %v", err)
+		t.Fatalf("ListCerts: %v", err)
 	}
 	if len(certs) != 0 {
 		t.Errorf("expected empty, got %v", certs)
 	}
-}
 
-// singleConnListener is a net.Listener that returns a single conn then blocks.
-type singleConnListener struct {
-	conn    net.Conn
-	served  bool
-	closeCh chan struct{}
-}
-
-func (l *singleConnListener) Accept() (net.Conn, error) {
-	if !l.served {
-		l.served = true
-		l.closeCh = make(chan struct{})
-		return l.conn, nil
-	}
-	<-l.closeCh
-	return nil, net.ErrClosed
-}
-func (l *singleConnListener) Close() error {
-	if l.closeCh != nil {
-		close(l.closeCh)
-	}
-	return nil
-}
-func (l *singleConnListener) Addr() net.Addr { return l.conn.LocalAddr() }
-
-// TestRandomHexID ensures uniqueness.
-func TestRandomHexID(t *testing.T) {
-	ids := make(map[string]bool)
-	for i := 0; i < 50; i++ {
-		id := randomHexID()
-		if len(id) != 16 {
-			t.Errorf("id length: got %d, want 16", len(id))
+	cancel()
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("Serve returned %v after cancellation, want nil", err)
 		}
-		if ids[id] {
-			t.Errorf("duplicate id: %q", id)
-		}
-		ids[id] = true
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return after cancellation")
 	}
 }

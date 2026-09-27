@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,13 +12,10 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/Oganneson-Studio/sigil/internal/ca"
 	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/enroll"
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 	"github.com/Oganneson-Studio/sigil/internal/server"
 	internalsvc "github.com/Oganneson-Studio/sigil/internal/service"
-	"github.com/Oganneson-Studio/sigil/internal/store"
 	tuiserver "github.com/Oganneson-Studio/sigil/internal/tui/server"
 )
 
@@ -64,18 +59,13 @@ func runReload(cmd *cobra.Command, _ []string) error {
 func dialReloadServer(cmd *cobra.Command) (serverReloader, error) {
 	path := serverIPCSocket(cmd)
 	c, err := dialServerReloader(path)
-	if err == nil {
-		return c, nil
+	if err != nil {
+		return nil, fmt.Errorf(
+			"connect to %q: %w; if server.ipc_socket changed on disk, retry with --ipc set to the running daemon's current socket",
+			path, err,
+		)
 	}
-	if !cmd.Root().PersistentFlags().Changed("ipc") && path != ipc.DefaultServerSocket() {
-		if fallback, fallbackErr := dialServerReloader(ipc.DefaultServerSocket()); fallbackErr == nil {
-			return fallback, nil
-		}
-	}
-	return nil, fmt.Errorf(
-		"connect to %q: %w; if server.ipc_socket changed on disk, retry with --ipc set to the running daemon's current socket",
-		path, err,
-	)
+	return c, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -210,44 +200,33 @@ func runTokenCreate(cmd *cobra.Command, _ []string) error {
 		ttl = time.Hour
 	}
 
-	cfgPath, _ := cmd.Root().PersistentFlags().GetString("config")
-	if cfgPath == "" {
-		cfgPath = defaultServerCfgPath()
-	}
-	cfg, err := config.LoadServer(cfgPath)
+	// The running daemon owns the store and the mini-CA, and binds the token
+	// to the public URL of the configuration it runs.
+	c, err := dialIPC(serverIPCSocket(cmd))
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
+		return fmt.Errorf("ipc unavailable: %w", err)
 	}
-	db, err := store.Open(dbPath(cfg))
-	if err != nil {
-		return fmt.Errorf("open store: %w", err)
-	}
-	defer db.Close()
-
-	miniCA, err := ca.Bootstrap(cfg.Server.DataDir)
-	if err != nil {
-		return fmt.Errorf("init CA: %w", err)
-	}
-
-	publicURL := cfg.PublicBaseURL()
-	// Warn when public_url is not set: the fallback URL may lack a hostname and
-	// will not be reachable by clients.
-	if cfg.Server.PublicURL == "" {
-		if h, _, err := net.SplitHostPort(cfg.Server.Listen); err == nil && h == "" {
-			fmt.Fprintf(os.Stderr, "warning: server.public_url is not set; install URL may be unreachable (%s). Set server.public_url in server.yaml.\n", publicURL)
-		}
-	}
-	srv := enroll.NewServer(db.Tokens, db.Clients, miniCA)
-	tokenStr, err := srv.Create(context.Background(), publicURL, name, ttl)
+	created, err := c.CreateToken(commandContext(cmd), ipc.CreateTokenRequest{Name: name, TTL: ttl})
 	if err != nil {
 		return fmt.Errorf("create token: %w", err)
 	}
+	// A daemon started before this binary was installed answers the same
+	// route with a bare token ID that can never be redeemed.
+	if created.Token == "" || created.ServerURL == "" {
+		return fmt.Errorf("create token: the running sigils daemon returned no usable token; it is older than this command, so restart the sigils service and try again")
+	}
+	// Without public_url the URL is derived from server.listen and may not be
+	// reachable by clients.
+	if !created.PublicURLConfigured {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: server.public_url is not set; install URL may be unreachable (%s). Set server.public_url in server.yaml.\n", created.ServerURL)
+	}
 
-	fmt.Printf("Token: %s\n\n", tokenStr)
-	fmt.Println("Install (Linux/macOS):")
-	fmt.Printf("  curl -fsSL %s/install.sh | sudo sh -s -- --token %s\n\n", publicURL, tokenStr)
-	fmt.Println("Install (Windows):")
-	fmt.Printf("  iwr -useb '%s/install.ps1?token=%s' | iex\n", publicURL, tokenStr)
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Token: %s\n\n", created.Token)
+	fmt.Fprintln(out, "Install (Linux/macOS):")
+	fmt.Fprintf(out, "  curl -fsSL %s/install.sh | sudo sh -s -- --token %s\n\n", created.ServerURL, created.Token)
+	fmt.Fprintln(out, "Install (Windows):")
+	fmt.Fprintf(out, "  iwr -useb '%s/install.ps1?token=%s' | iex\n", created.ServerURL, created.Token)
 	return nil
 }
 
@@ -320,10 +299,6 @@ func printJSON(v any) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
-}
-
-func dbPath(cfg *config.ServerConfig) string {
-	return filepath.Join(cfg.Server.DataDir, "sigils.db")
 }
 
 func defaultServerCfgPath() string {

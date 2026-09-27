@@ -12,11 +12,16 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
+// maxRequestBody bounds every IPC request body. The largest legitimate one is
+// a seeded certificate record of a few kilobytes.
+const maxRequestBody = 1 << 20
+
 // ServerDeps holds the dependencies for the IPC server.
 type ServerDeps struct {
 	DB           *store.DB
 	Server       *ServerControlDeps
 	Certificates *CertificateControlDeps
+	Tokens       *TokenControlDeps
 	Client       *ClientControlDeps
 }
 
@@ -31,22 +36,18 @@ type CertificateControlDeps struct {
 	Renew func(context.Context, string) error
 }
 
+// TokenControlDeps exposes enrollment-token operations implemented by the
+// sigils daemon.
+type TokenControlDeps struct {
+	Create func(ctx context.Context, name string, ttl time.Duration) (CreateTokenResponse, error)
+}
+
 // ClientControlDeps exposes the operations supported by a sigilc daemon.
 // It is optional because the same IPC package is also used by sigils.
 type ClientControlDeps struct {
 	State  func(context.Context) (ClientState, error)
 	Fetch  func(context.Context, string) error
 	Reload func(context.Context) error
-}
-
-// ClientState is the runtime status returned by a sigilc daemon.
-type ClientState struct {
-	Name       string            `json:"name"`
-	ServerURL  string            `json:"server_url"`
-	Online     bool              `json:"online"`
-	LastPullAt time.Time         `json:"last_pull_at,omitempty"`
-	LastError  string            `json:"last_error,omitempty"`
-	Certs      map[string]string `json:"certs"`
 }
 
 // NewServer constructs an *http.Server that serves over the provided listener.
@@ -73,26 +74,28 @@ func Serve(ctx context.Context, l net.Listener, deps ServerDeps) error {
 func buildIPCRouter(h *ipcHandlers) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
+	r.Use(middleware.RequestSize(maxRequestBody))
 
 	if h.deps.DB != nil {
 		r.Get("/ipc/v1/certs", h.listCerts)
+		// Seeds the E2E stack with a certificate (JSON shape store.CertRecord)
+		// until the Pebble E2E issues real ones.
 		r.Post("/ipc/v1/certs", h.upsertCert)
-		r.Delete("/ipc/v1/certs/{name}", h.deleteCert)
 
 		r.Get("/ipc/v1/clients", h.listClients)
 		r.Delete("/ipc/v1/clients/{name}", h.deleteClient)
 
-		r.Post("/ipc/v1/tokens", h.createToken)
 		r.Get("/ipc/v1/tokens", h.listTokens)
 		r.Delete("/ipc/v1/tokens/{id}", h.deleteToken)
-
-		r.Get("/ipc/v1/state", h.getState)
 	}
 	if h.deps.Server != nil {
 		r.Post("/ipc/v1/server/reload", h.reloadServer)
 	}
 	if h.deps.Certificates != nil {
 		r.Post("/ipc/v1/certs/renew", h.renewCert)
+	}
+	if h.deps.Tokens != nil {
+		r.Post("/ipc/v1/tokens", h.createToken)
 	}
 
 	if h.deps.Client != nil {
