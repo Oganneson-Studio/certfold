@@ -262,30 +262,26 @@ func TestUpsertAndListCerts(t *testing.T) {
 }
 
 func TestRequestBodyIsLimited(t *testing.T) {
-	db := mustOpenDB(t)
-	router := buildIPCRouter(&ipcHandlers{deps: ServerDeps{DB: db}})
+	created := false
+	router := buildIPCRouter(&ipcHandlers{deps: ServerDeps{Tokens: &TokenControlDeps{
+		Create: func(context.Context, string, time.Duration) (CreateTokenResponse, error) {
+			created = true
+			return CreateTokenResponse{}, nil
+		},
+	}}})
 
-	// A well-formed record that is larger than the limit must not be read.
-	body, err := json.Marshal(&store.CertRecord{
-		Name:         "api-prod",
-		CA:           "le",
-		Domains:      []string{"api.example.com"},
-		FullchainPEM: strings.Repeat("a", maxRequestBody),
-	})
+	// A well-formed request that is larger than the limit must not be read.
+	body, err := json.Marshal(CreateTokenRequest{Name: strings.Repeat("a", maxRequestBody), TTL: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
 	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/ipc/v1/certs", bytes.NewReader(body)))
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/ipc/v1/tokens", bytes.NewReader(body)))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
-	stored, err := db.Certs.List(context.Background(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(stored) != 0 {
-		t.Fatalf("oversized request was stored: %d records", len(stored))
+	if created {
+		t.Fatal("the oversized request reached the daemon")
 	}
 }
 
