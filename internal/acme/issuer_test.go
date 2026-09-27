@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-acme/lego/v4/certcrypto"
+	"github.com/go-acme/lego/v4/challenge"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/store"
@@ -113,6 +114,35 @@ func TestBuildDNSProvider_SupportedTypes(t *testing.T) {
 				t.Fatal("provider is nil")
 			}
 		})
+	}
+}
+
+func TestBuildDNSProviderBoundsPropagationWait(t *testing.T) {
+	// lego reads these defaults from the environment without an upper limit.
+	// Sigil's explicit bounds must win.
+	for _, prefix := range []string{"CLOUDFLARE_", "ALICLOUD_", "TENCENTCLOUD_", "AWS_"} {
+		t.Setenv(prefix+"PROPAGATION_TIMEOUT", "999999")
+		t.Setenv(prefix+"POLLING_INTERVAL", "999999")
+	}
+	for _, p := range []config.DNSProvider{
+		{Type: "cloudflare", Config: map[string]any{"api_token": "tok"}},
+		{Type: "aliyun", Config: map[string]any{"access_key": "k", "access_secret": "s"}},
+		{Type: "tencentcloud", Config: map[string]any{"secret_id": "id", "secret_key": "k"}},
+		{Type: "route53", Config: map[string]any{"access_key": "ak", "secret_key": "sk", "region": "us-east-1"}},
+	} {
+		provider, err := buildDNSProvider(p)
+		if err != nil {
+			t.Fatalf("%s: %v", p.Type, err)
+		}
+		bounded, ok := provider.(challenge.ProviderTimeout)
+		if !ok {
+			t.Fatalf("%s provider does not report its propagation timeout", p.Type)
+		}
+		timeout, interval := bounded.Timeout()
+		if timeout != dnsPropagationTimeout || interval != dnsPollingInterval {
+			t.Errorf("%s: Timeout() = (%v, %v), want (%v, %v)",
+				p.Type, timeout, interval, dnsPropagationTimeout, dnsPollingInterval)
+		}
 	}
 }
 

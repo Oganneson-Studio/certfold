@@ -27,6 +27,35 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
+// Explicit bounds on one issuance. lego's API takes no context, so these
+// timeouts are what stop a stalled ACME server or DNS provider from blocking
+// issuance forever. None is lower than lego's own default. The DNS values
+// replace lego's per-provider defaults, which lego otherwise reads from
+// environment variables such as CLOUDFLARE_PROPAGATION_TIMEOUT without any
+// upper limit.
+//
+// lego does not let Sigil bound everything:
+//   - the gcloud provider built from a service account file keeps lego's
+//     defaults, including GCE_PROPAGATION_TIMEOUT, and like route53 (AWS SDK)
+//     it uses an HTTP client without an overall timeout;
+//   - after a challenge is submitted, lego polls the authorization for up to
+//     100 times the CA's Retry-After (500 s when the CA sends none).
+const (
+	// acmeHTTPTimeout bounds each request to the ACME server.
+	acmeHTTPTimeout = 2 * time.Minute
+	// acmeCertificateTimeout bounds the wait for the certificate after the
+	// order is finalized.
+	acmeCertificateTimeout = 30 * time.Second
+	// dnsAPITimeout bounds each request to the DNS provider's API.
+	dnsAPITimeout = 30 * time.Second
+	// dnsPropagationTimeout bounds the wait, per domain, for the challenge TXT
+	// record to reach the authoritative name servers. route53 also uses it to
+	// wait for its change to become INSYNC.
+	dnsPropagationTimeout = 2 * time.Minute
+	// dnsPollingInterval is how often propagation is checked.
+	dnsPollingInterval = 4 * time.Second
+)
+
 // Result holds the output of a successful certificate issuance.
 type Result struct {
 	Domain      string
@@ -46,7 +75,13 @@ func NewIssuer(accounts *store.AccountRepo) *Issuer { return &Issuer{accounts: a
 
 // Issue requests a certificate for the given spec from its configured CA.
 // cfg and spec must come from the same validated runtime configuration
-// snapshot. ctx is forwarded to all blocking network calls through lego.
+// snapshot.
+//
+// ctx is used only for the account store. lego's API takes no context, so
+// cancelling ctx does not interrupt a running ACME exchange; the timeouts at
+// the top of this file bound it instead. sigils waits for the scheduler's
+// in-flight Issue during shutdown, so those timeouts also bound how long
+// issuance can delay shutdown.
 func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec config.CertificateSpec) (*Result, error) {
 	caEntry, ok := cfg.ACME.CAs[spec.CA]
 	if !ok {
@@ -72,6 +107,8 @@ func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec confi
 	legoCfg := lego.NewConfig(u)
 	legoCfg.CADirURL = caEntry.Directory
 	legoCfg.Certificate.KeyType = specKeyType(spec.KeyType)
+	legoCfg.Certificate.Timeout = acmeCertificateTimeout
+	legoCfg.HTTPClient.Timeout = acmeHTTPTimeout
 
 	client, err := lego.NewClient(legoCfg)
 	if err != nil {
@@ -216,6 +253,8 @@ func buildDNSProvider(p config.DNSProvider) (challenge.Provider, error) {
 	switch p.Type {
 	case "cloudflare":
 		c := cloudflare.NewDefaultConfig()
+		c.PropagationTimeout, c.PollingInterval = dnsPropagationTimeout, dnsPollingInterval
+		c.HTTPClient.Timeout = dnsAPITimeout
 		if v, ok := cfg["api_token"].(string); ok {
 			c.AuthToken = v
 		}
@@ -232,6 +271,8 @@ func buildDNSProvider(p config.DNSProvider) (challenge.Provider, error) {
 
 	case "aliyun":
 		c := alidns.NewDefaultConfig()
+		c.PropagationTimeout, c.PollingInterval = dnsPropagationTimeout, dnsPollingInterval
+		c.HTTPTimeout = dnsAPITimeout
 		if v, ok := cfg["access_key"].(string); ok {
 			c.APIKey = v
 		}
@@ -242,6 +283,8 @@ func buildDNSProvider(p config.DNSProvider) (challenge.Provider, error) {
 
 	case "tencentcloud":
 		c := tencentcloud.NewDefaultConfig()
+		c.PropagationTimeout, c.PollingInterval = dnsPropagationTimeout, dnsPollingInterval
+		c.HTTPTimeout = dnsAPITimeout
 		if v, ok := cfg["secret_id"].(string); ok {
 			c.SecretID = v
 		}
@@ -252,6 +295,7 @@ func buildDNSProvider(p config.DNSProvider) (challenge.Provider, error) {
 
 	case "route53":
 		c := route53.NewDefaultConfig()
+		c.PropagationTimeout, c.PollingInterval = dnsPropagationTimeout, dnsPollingInterval
 		if v, ok := cfg["access_key"].(string); ok {
 			c.AccessKeyID = v
 		}
