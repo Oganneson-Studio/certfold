@@ -116,11 +116,11 @@ func runCertList(cmd *cobra.Command, _ []string) error {
 	if asJSON {
 		return printJSON(certificateDetailList(certs))
 	}
-	fmt.Printf("%-20s %-12s %-30s %s\n", "NAME", "CA", "DOMAINS", "NOT AFTER")
+	fmt.Printf("%-20s %-12s %-30s %-10s %s\n", "NAME", "CA", "DOMAINS", "STATE", "NOT AFTER")
 	for _, cert := range certs {
-		fmt.Printf("%-20s %-12s %-30s %s\n",
-			cert.Name, cert.CA, strings.Join(cert.Domains, ","),
-			cert.NotAfter.Format("2006-01-02"))
+		fmt.Printf("%-20s %-12s %-30s %-10s %s\n",
+			cert.Name, cert.CA, strings.Join(cert.Domains, ","), cert.State,
+			formatTime(cert.NotAfter, "2006-01-02"))
 	}
 	return nil
 }
@@ -140,9 +140,18 @@ func runCertShow(cmd *cobra.Command, args []string) error {
 			if asJSON {
 				return printJSON(newCertificateDetails(cert))
 			}
-			fmt.Printf("Name:      %s\nCA:        %s\nDomains:   %s\nNot After: %s\n",
-				cert.Name, cert.CA, strings.Join(cert.Domains, ", "),
-				cert.NotAfter.Format("2006-01-02"))
+			lastError := cert.LastError
+			if lastError == "" {
+				lastError = "-"
+			}
+			fmt.Printf("Name:         %s\n", cert.Name)
+			fmt.Printf("CA:           %s\n", cert.CA)
+			fmt.Printf("Domains:      %s\n", strings.Join(cert.Domains, ", "))
+			fmt.Printf("Not After:    %s\n", formatTime(cert.NotAfter, "2006-01-02"))
+			fmt.Printf("State:        %s\n", cert.State)
+			fmt.Printf("Failures:     %d\n", cert.Failures)
+			fmt.Printf("Last Error:   %s\n", lastError)
+			fmt.Printf("Next Attempt: %s\n", formatTime(cert.NextAttemptAt, "2006-01-02 15:04:05 MST"))
 			return nil
 		}
 	}
