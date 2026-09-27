@@ -632,7 +632,7 @@ func TestListCertificates_FilterBySubscriber(t *testing.T) {
 
 func TestSubscriptionMatchIsExact(t *testing.T) {
 	deps := buildDeps(t)
-	_ = deps.DB.Certs.Upsert(context.Background(), &store.CertRecord{
+	if err := deps.DB.Certs.Upsert(context.Background(), &store.CertRecord{
 		Name:            "api-prod",
 		CA:              "letsencrypt",
 		Domains:         []string{"api.example.com"},
@@ -640,7 +640,9 @@ func TestSubscriptionMatchIsExact(t *testing.T) {
 		FullchainPEM:    "chain",
 		KeyPEM:          "private-key-for-web-1",
 		UpdatedAt:       time.Now(),
-	}, nil)
+	}, nil); err != nil {
+		t.Fatalf("seed certificate: %v", err)
+	}
 
 	// A client enrolled under another spelling of the subscriber "web-1" is a
 	// different client and must not receive its certificates.
