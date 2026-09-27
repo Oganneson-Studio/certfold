@@ -27,12 +27,16 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
-// Explicit bounds on one issuance. lego's API takes no context, so these
-// timeouts are what stop a stalled ACME server or DNS provider from blocking
-// issuance forever. None is lower than lego's own default. The DNS values
-// replace lego's per-provider defaults, which lego otherwise reads from
-// environment variables such as CLOUDFLARE_PROPAGATION_TIMEOUT without any
-// upper limit.
+// Bounds on one issuance. lego's API takes no context, so timeouts are what
+// stop a stalled ACME server or DNS provider from blocking issuance forever.
+//
+// lego.NewConfig already bounds the ACME side with fixed values that no
+// environment variable changes: 2 minutes per request to the ACME server and
+// 30 seconds of waiting for the certificate after the order is finalized.
+//
+// The DNS values below replace lego's per-provider defaults, which lego reads
+// from environment variables such as CLOUDFLARE_PROPAGATION_TIMEOUT without
+// any upper limit. None is lower than lego's own default.
 //
 // lego does not let Sigil bound everything:
 //   - lego builds the gcloud provider's configuration itself, so it keeps
@@ -42,11 +46,6 @@ import (
 //   - after a challenge is submitted, lego polls the authorization for up to
 //     100 times the CA's Retry-After (500 s when the CA sends none).
 const (
-	// acmeHTTPTimeout bounds each request to the ACME server.
-	acmeHTTPTimeout = 2 * time.Minute
-	// acmeCertificateTimeout bounds the wait for the certificate after the
-	// order is finalized.
-	acmeCertificateTimeout = 30 * time.Second
 	// dnsAPITimeout bounds each request to the DNS provider's API.
 	dnsAPITimeout = 30 * time.Second
 	// dnsPropagationTimeout bounds the wait, per domain, for the challenge TXT
@@ -79,10 +78,10 @@ func NewIssuer(accounts *store.AccountRepo) *Issuer { return &Issuer{accounts: a
 // snapshot.
 //
 // ctx is used only for the account store. lego's API takes no context, so
-// cancelling ctx does not interrupt a running ACME exchange; the timeouts at
-// the top of this file bound it instead. sigils waits for the scheduler's
-// in-flight Issue during shutdown, so those timeouts also bound how long
-// issuance can delay shutdown.
+// cancelling ctx does not interrupt a running ACME exchange; the timeouts
+// described at the top of this file bound it instead. sigils waits for the
+// scheduler's in-flight Issue during shutdown, so those timeouts also bound
+// how long issuance can delay shutdown.
 func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec config.CertificateSpec) (*Result, error) {
 	caEntry, ok := cfg.ACME.CAs[spec.CA]
 	if !ok {
@@ -108,8 +107,6 @@ func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec confi
 	legoCfg := lego.NewConfig(u)
 	legoCfg.CADirURL = caEntry.Directory
 	legoCfg.Certificate.KeyType = specKeyType(spec.KeyType)
-	legoCfg.Certificate.Timeout = acmeCertificateTimeout
-	legoCfg.HTTPClient.Timeout = acmeHTTPTimeout
 
 	client, err := lego.NewClient(legoCfg)
 	if err != nil {
