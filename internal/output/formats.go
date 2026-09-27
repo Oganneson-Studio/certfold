@@ -128,7 +128,7 @@ func atomicWrite(spec config.OutputSpec, data []byte) error {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("write temp: %w", err)
 	}
-	if err := tmp.Chmod(os.FileMode(outputMode(spec))); err != nil {
+	if err := applyMode(tmp, spec); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("chmod temp: %w", err)

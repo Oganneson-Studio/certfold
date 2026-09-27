@@ -59,6 +59,21 @@ func TestWriteReplacesInheritedReadableKey(t *testing.T) {
 	checkMode(t, path, 0o600)
 }
 
+// TestWriteTwiceWithReadOnlyMode covers an explicit mode without the owner
+// write bit. Chmod would mark the output read-only on Windows, and the next
+// rewrite could not replace it.
+func TestWriteTwiceWithReadOnlyMode(t *testing.T) {
+	dir := outputDir(t)
+	for _, format := range []string{"pem-key", "pem-cert"} {
+		spec := config.OutputSpec{Format: format, Path: filepath.Join(dir, format), Mode: 0o440}
+		for attempt := 1; attempt <= 2; attempt++ {
+			if err := Write(makeBundle(t), spec); err != nil {
+				t.Fatalf("%s write %d: %v", format, attempt, err)
+			}
+		}
+	}
+}
+
 // TestWriteUnknownOwnerFailsClosed covers an owner that does not resolve: the
 // write must fail before the key exists anywhere with the directory's ACL.
 func TestWriteUnknownOwnerFailsClosed(t *testing.T) {

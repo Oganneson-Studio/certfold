@@ -50,6 +50,11 @@ func createTemp(dir string, spec config.OutputSpec) (*os.File, error) {
 	return nil, fmt.Errorf("no unused temporary file name in %s", dir)
 }
 
+// applyMode does nothing on Windows. Chmod only sets or clears the read-only
+// attribute there, and a read-only output cannot be replaced by the next
+// rewrite; createTemp sets the access controls instead.
+func applyMode(*os.File, config.OutputSpec) error { return nil }
+
 // privateDescriptor builds a protected DACL with full access for SYSTEM,
 // Administrators and the current user. The owner, when set, consumes the key
 // and gets read access only: sigilc does every write.
