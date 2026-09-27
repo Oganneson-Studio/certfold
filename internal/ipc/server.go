@@ -13,8 +13,8 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
-// maxRequestBody bounds every IPC request body. The largest legitimate one is
-// a seeded certificate record of a few kilobytes.
+// maxRequestBody bounds every IPC request body. The legitimate ones are small
+// JSON objects, such as the name of a certificate or client, far below it.
 const maxRequestBody = 1 << 20
 
 // ServerDeps holds the dependencies for the IPC server.
@@ -82,10 +82,6 @@ func buildIPCRouter(h *ipcHandlers) http.Handler {
 	r.Use(middleware.RequestSize(maxRequestBody))
 
 	if h.deps.DB != nil {
-		// Seeds the E2E stack with a certificate (JSON shape store.CertRecord)
-		// until the Pebble E2E issues real ones.
-		r.Post("/ipc/v1/certs", h.upsertCert)
-
 		r.Get("/ipc/v1/clients", h.listClients)
 		r.Delete("/ipc/v1/clients/{name}", h.deleteClient)
 
