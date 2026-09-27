@@ -18,9 +18,9 @@ import (
 // createTemp creates the temporary file for an output in dir. os.Chmod(0600)
 // cannot restrict access on Windows, so a format that carries the private key
 // is created with a protected DACL that grants only SYSTEM, Administrators,
-// the current user and spec.Owner. Setting the DACL at creation leaves no
-// moment in which another account could open the file and keep the handle.
-// Other formats inherit the directory's ACL.
+// the current user and, for reading, spec.Owner. Setting the DACL at creation
+// leaves no moment in which another account could open the file and keep the
+// handle. Other formats inherit the directory's ACL.
 func createTemp(dir string, spec config.OutputSpec) (*os.File, error) {
 	if !carriesKey(spec.Format) {
 		return os.CreateTemp(dir, ".sigil-tmp-*")
@@ -51,7 +51,8 @@ func createTemp(dir string, spec config.OutputSpec) (*os.File, error) {
 }
 
 // privateDescriptor builds a protected DACL with full access for SYSTEM,
-// Administrators, the current user and, when set, owner.
+// Administrators and the current user. The owner, when set, consumes the key
+// and gets read access only: sigilc does every write.
 func privateDescriptor(owner string) (*windows.SECURITY_DESCRIPTOR, error) {
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
@@ -63,7 +64,7 @@ func privateDescriptor(owner string) (*windows.SECURITY_DESCRIPTOR, error) {
 		if err != nil {
 			return nil, err
 		}
-		sddl += "(A;;FA;;;" + sid.String() + ")"
+		sddl += "(A;;FR;;;" + sid.String() + ")"
 	}
 	descriptor, err := windows.SecurityDescriptorFromString(sddl)
 	if err != nil {

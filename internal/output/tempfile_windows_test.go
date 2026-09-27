@@ -21,8 +21,8 @@ func TestCreateTempGrantsConfiguredOwner(t *testing.T) {
 	if err := tmp.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if sddl := fileSecurity(t, tmp.Name()).String(); !strings.Contains(sddl, ";;;"+owner+")") {
-		t.Fatalf("DACL does not grant the configured owner: %s", sddl)
+	if sddl := fileSecurity(t, tmp.Name()).String(); !strings.Contains(sddl, "(A;;FR;;;"+owner+")") {
+		t.Fatalf("DACL does not grant the configured owner read access only: %s", sddl)
 	}
 }
 
