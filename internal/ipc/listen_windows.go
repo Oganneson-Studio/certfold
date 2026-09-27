@@ -21,11 +21,13 @@ const (
 // Listen opens a Windows named pipe and returns the net.Listener.
 //
 // Dial trusts a pipe only when LocalSystem or BUILTIN\Administrators owns it.
-// A pipe created without an explicit owner belongs to the creating user, so
-// an elevated administrator running a daemon interactively would own it as
-// that user. A process with administrator rights therefore names
-// Administrators as the owner; LocalSystem, as which the services run, has
-// those rights too. A low-privilege process cannot claim either owner.
+// Without an explicit owner, a pipe belongs to the default owner of the
+// creating token: LocalSystem for the services, and normally Administrators
+// for an elevated administrator. The environment that starts the process can
+// change that default, though; under Git Bash, MSYS makes it the user's own
+// SID. A process with administrator rights, LocalSystem included, therefore
+// names Administrators as the owner, so the owner does not depend on how the
+// daemon was started. A low-privilege process cannot claim either owner.
 func Listen(path string) (net.Listener, error) {
 	if path == "" {
 		path = DefaultServerSocket()
