@@ -11,8 +11,10 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,6 +25,7 @@ import (
 	"time"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/sigil/internal/enroll"
 	"github.com/Oganneson-Studio/sigil/pkg/proto"
 )
 
@@ -81,6 +84,43 @@ func (authority *testIdentityCA) issue(t *testing.T, name string, publicKey any,
 		t.Fatal(err)
 	}
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}
+
+// serverTLSCertificate issues a certificate for the httptest listener address.
+func (authority *testIdentityCA) serverTLSCertificate(t *testing.T, now time.Time) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(100),
+		Subject:      pkix.Name{CommonName: "sigils"},
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
+		NotBefore:    now.Add(-time.Minute),
+		NotAfter:     now.Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, authority.cert, &key.PublicKey, authority.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// withSystemRoots stands in for the operating system trust store.
+func withSystemRoots(t *testing.T, roots ...*x509.Certificate) {
+	t.Helper()
+	original := enroll.SystemCertPool
+	enroll.SystemCertPool = func() (*x509.CertPool, error) {
+		pool := x509.NewCertPool()
+		for _, root := range roots {
+			pool.AddCert(root)
+		}
+		return pool, nil
+	}
+	t.Cleanup(func() { enroll.SystemCertPool = original })
 }
 
 func privateKeyPEM(t *testing.T, key *ecdsa.PrivateKey) string {
@@ -260,6 +300,68 @@ func TestPullOnce_ServerError_Tolerant(t *testing.T) {
 	err := c.pullOnce(context.Background())
 	if err == nil {
 		t.Error("expected error from server, got nil")
+	}
+}
+
+// TestFetchTrustsSystemRootsAndMiniCA covers a server that presents a publicly
+// trusted server.tls_cert_file: pulls must trust the system roots, as
+// enrollment does, while the mini-CA keeps authenticating the client.
+func TestFetchTrustsSystemRootsAndMiniCA(t *testing.T) {
+	now := time.Now()
+	miniCA := newTestIdentityCA(t, now)
+	publicCA := newTestIdentityCA(t, now)
+	unrelatedCA := newTestIdentityCA(t, now)
+	withSystemRoots(t, publicCA.cert)
+
+	clientKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientCert := miniCA.issue(t, "web-1", &clientKey.PublicKey, now, now.Add(90*24*time.Hour), 2)
+	clientCAs := x509.NewCertPool()
+	clientCAs.AddCert(miniCA.cert)
+
+	for _, tc := range []struct {
+		name    string
+		issuer  *testIdentityCA
+		trusted bool
+	}{
+		{name: "public CA in system roots", issuer: publicCA, trusted: true},
+		{name: "mini-CA", issuer: miniCA, trusted: true},
+		{name: "unrelated CA", issuer: unrelatedCA, trusted: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewUnstartedServer((&fakeServer{}).handler())
+			ts.TLS = &tls.Config{
+				Certificates: []tls.Certificate{tc.issuer.serverTLSCertificate(t, now)},
+				ClientAuth:   tls.RequireAndVerifyClientCert,
+				ClientCAs:    clientCAs,
+			}
+			ts.StartTLS()
+			defer ts.Close()
+
+			cfg := buildTestCfg(t, ts.URL)
+			cfg.Identity = config.IdentitySection{
+				CACert:     miniCA.certPEM,
+				ClientCert: clientCert,
+				ClientKey:  privateKeyPEM(t, clientKey),
+			}
+			c, err := New(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = c.Fetch(context.Background(), "")
+			if tc.trusted {
+				if err != nil {
+					t.Fatalf("Fetch: %v", err)
+				}
+				return
+			}
+			var unknownAuthority x509.UnknownAuthorityError
+			if !errors.As(err, &unknownAuthority) {
+				t.Fatalf("Fetch error = %v, want an unknown authority error", err)
+			}
+		})
 	}
 }
 

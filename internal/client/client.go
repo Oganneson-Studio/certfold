@@ -624,7 +624,9 @@ func splitBundle(b *proto.CertBundle) *output.CertBundle {
 	}
 }
 
-// buildHTTPClient constructs an mTLS HTTP client from cfg.Identity.
+// buildHTTPClient constructs an mTLS HTTP client from cfg.Identity. The server
+// is authenticated with the same roots as during enrollment, so a server that
+// presents a publicly trusted server.tls_cert_file stays reachable.
 func buildHTTPClient(cfg *config.ClientConfig) (*http.Client, error) {
 	id := cfg.Identity
 	if id.ClientCert == "" && id.ClientKey == "" {
@@ -635,9 +637,9 @@ func buildHTTPClient(cfg *config.ClientConfig) (*http.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load client cert: %w", err)
 	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM([]byte(id.CACert)) {
-		return nil, fmt.Errorf("parse CA cert")
+	pool, err := enroll.ServerRoots(id.CACert)
+	if err != nil {
+		return nil, err
 	}
 	tlsCfg := &tls.Config{
 		Certificates: []tls.Certificate{tlsCert},

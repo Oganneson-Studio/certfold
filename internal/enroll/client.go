@@ -47,11 +47,30 @@ func GenerateKeyAndCSR(name string) (*KeyAndCSR, error) {
 	return &KeyAndCSR{KeyPEM: keyPEM, CSRDER: csrDER}, nil
 }
 
+// SystemCertPool loads the operating system trust store. It is a variable only
+// so tests can stand in for a publicly trusted CA.
+var SystemCertPool = x509.SystemCertPool
+
+// ServerRoots returns the roots that authenticate the sigils HTTPS endpoint:
+// the operating system trust store, for a publicly trusted
+// server.tls_cert_file, plus the sigil mini-CA in caCertPEM, which signs the
+// default server certificate. Enrollment and every later request use it.
+func ServerRoots(caCertPEM string) (*x509.CertPool, error) {
+	roots, err := SystemCertPool()
+	if err != nil || roots == nil {
+		roots = x509.NewCertPool()
+	}
+	if !roots.AppendCertsFromPEM([]byte(caCertPEM)) {
+		return nil, fmt.Errorf("parse server CA certificate")
+	}
+	return roots, nil
+}
+
 // PostEnroll sends the enroll request to the server and returns the response.
 // tokenStr is the opaque base64url token from Create. csrDER is the raw CSR.
 //
 // The token carries the expected server CA certificate. TLS is verified against
-// that pinned CA before the bearer token or CSR is sent.
+// that pinned CA and the system roots before the bearer token or CSR is sent.
 func PostEnroll(serverURL, tokenStr string, csrDER []byte) (*proto.EnrollResponse, error) {
 	payload, err := decodeToken(tokenStr)
 	if err != nil {
@@ -67,11 +86,8 @@ func PostEnroll(serverURL, tokenStr string, csrDER []byte) (*proto.EnrollRespons
 	if u.Scheme != "https" || u.Host == "" {
 		return nil, fmt.Errorf("invalid server URL %q", serverURL)
 	}
-	roots, err := x509.SystemCertPool()
-	if err != nil || roots == nil {
-		roots = x509.NewCertPool()
-	}
-	if !roots.AppendCertsFromPEM([]byte(payload.CACert)) {
+	roots, err := ServerRoots(payload.CACert)
+	if err != nil {
 		return nil, fmt.Errorf("token does not contain a valid server CA certificate")
 	}
 
