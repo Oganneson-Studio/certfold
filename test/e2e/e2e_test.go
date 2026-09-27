@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -50,19 +49,48 @@ func TestMain(m *testing.M) {
 }
 
 func TestEnrollFetchAndRevoke(t *testing.T) {
-	token := createToken(t, "web-1", "10m")
-	out := mustExec(t, stack.clientName, "sigilc", "enroll", "--token", token)
-	if !strings.Contains(out, `enrolled as "web-1"`) {
+	d := stack.miniCA
+	enrollAndFetch(t, d)
+
+	status := mustExec(t, d.clientContainer, "sigilc", "status")
+	if !strings.Contains(status, "Certificates : 1") {
+		t.Fatalf("client status did not report fetched certificate:\n%s", status)
+	}
+
+	mustExec(t, d.serverContainer, "sigils", "client", "remove", d.clientName)
+	out, err := stack.exec(d.clientContainer, "sigilc", "fetch", "--cert", "test-cert")
+	if err == nil {
+		t.Fatalf("revoked client still fetched certificates:\n%s", out)
+	}
+	if !strings.Contains(out, "401") && !strings.Contains(out, "403") {
+		t.Fatalf("revoked client failed for an unexpected reason:\n%s", out)
+	}
+}
+
+// TestPublicTLSEnrollAndFetch covers a server that presents a publicly trusted
+// server.tls_cert_file: the client trusts it through the system roots, both
+// to enroll and for every pull after enrollment.
+func TestPublicTLSEnrollAndFetch(t *testing.T) {
+	enrollAndFetch(t, stack.publicTLS)
+}
+
+// enrollAndFetch enrolls the client of d, starts its daemon, and checks that a
+// fetch writes the seeded certificate.
+func enrollAndFetch(t *testing.T, d *deployment) {
+	t.Helper()
+	token := createToken(t, d, d.clientName, "10m")
+	out := mustExec(t, d.clientContainer, "sigilc", "enroll", "--token", token)
+	if !strings.Contains(out, fmt.Sprintf("enrolled as %q", d.clientName)) {
 		t.Fatalf("unexpected enroll output:\n%s", out)
 	}
 
-	if err := stack.startClientDaemon(); err != nil {
+	if err := stack.startClientDaemon(d); err != nil {
 		t.Fatal(err)
 	}
-	waitForClientDaemon(t)
-	mustExec(t, stack.clientName, "sigilc", "fetch", "--cert", "test-cert")
+	waitForClientDaemon(t, d)
+	mustExec(t, d.clientContainer, "sigilc", "fetch", "--cert", "test-cert")
 
-	certPath := stack.certPath("test-cert", "fullchain.pem")
+	certPath := d.hostPath("cert-output", "test-cert", "fullchain.pem")
 	waitForFile(t, certPath, certPollTimeout)
 	raw, err := os.ReadFile(certPath)
 	if err != nil {
@@ -79,31 +107,18 @@ func TestEnrollFetchAndRevoke(t *testing.T) {
 	if err := cert.VerifyHostname("test.example.com"); err != nil {
 		t.Fatalf("certificate SAN verification: %v", err)
 	}
-
-	status := mustExec(t, stack.clientName, "sigilc", "status")
-	if !strings.Contains(status, "Certificates : 1") {
-		t.Fatalf("client status did not report fetched certificate:\n%s", status)
-	}
-
-	mustExec(t, stack.serverName, "sigils", "client", "remove", "web-1")
-	out, err = stack.exec(stack.clientName, "sigilc", "fetch", "--cert", "test-cert")
-	if err == nil {
-		t.Fatalf("revoked client still fetched certificates:\n%s", out)
-	}
-	if !strings.Contains(out, "401") && !strings.Contains(out, "403") {
-		t.Fatalf("revoked client failed for an unexpected reason:\n%s", out)
-	}
 }
 
 func TestExpiredTokenIsRejected(t *testing.T) {
-	token := createToken(t, "expiry-test", "1s")
+	token := createToken(t, stack.miniCA, "expiry-test", "1s")
 	time.Sleep(2 * time.Second)
-	assertEnrollmentRejected(t, token, "/e2e/client-data/expiry.yaml")
+	assertEnrollmentRejected(t, stack.miniCA, token, "expiry.yaml")
 }
 
 func TestRevokedTokenIsRejected(t *testing.T) {
-	token := createToken(t, "revoke-test", "10m")
-	list := mustExec(t, stack.serverName, "sigils", "token", "list")
+	d := stack.miniCA
+	token := createToken(t, d, "revoke-test", "10m")
+	list := mustExec(t, d.serverContainer, "sigils", "token", "list")
 	var tokenID string
 	for _, line := range strings.Split(list, "\n") {
 		if strings.Contains(line, "revoke-test") {
@@ -117,12 +132,12 @@ func TestRevokedTokenIsRejected(t *testing.T) {
 	if tokenID == "" {
 		t.Fatalf("revoke-test token not found:\n%s", list)
 	}
-	mustExec(t, stack.serverName, "sigils", "token", "revoke", tokenID)
-	assertEnrollmentRejected(t, token, "/e2e/client-data/revoked.yaml")
+	mustExec(t, d.serverContainer, "sigils", "token", "revoke", tokenID)
+	assertEnrollmentRejected(t, d, token, "revoked.yaml")
 }
 
 func TestInstallScriptUsesNetworkAlias(t *testing.T) {
-	resp, err := insecureHTTPGet(stack.hostServerURL() + "/install.sh")
+	resp, err := insecureHTTPGet(stack.miniCA.hostURL() + "/install.sh")
 	if err != nil {
 		t.Fatalf("GET /install.sh: %v", err)
 	}
@@ -139,9 +154,9 @@ func TestInstallScriptUsesNetworkAlias(t *testing.T) {
 	}
 }
 
-func createToken(t *testing.T, name, ttl string) string {
+func createToken(t *testing.T, d *deployment, name, ttl string) string {
 	t.Helper()
-	out := mustExec(t, stack.serverName,
+	out := mustExec(t, d.serverContainer,
 		"sigils", "token", "create", "--name", name, "--expires", ttl,
 	)
 	for _, line := range strings.Split(out, "\n") {
@@ -153,10 +168,12 @@ func createToken(t *testing.T, name, ttl string) string {
 	return ""
 }
 
-func assertEnrollmentRejected(t *testing.T, token, configPath string) {
+// assertEnrollmentRejected enrolls in the client container of d with a fresh
+// client-data/<configName>, so the running daemon's identity is untouched.
+func assertEnrollmentRejected(t *testing.T, d *deployment, token, configName string) {
 	t.Helper()
-	out, err := stack.exec(stack.clientName,
-		"sigilc", "--config", configPath, "enroll", "--token", token,
+	out, err := stack.exec(d.clientContainer,
+		"sigilc", "--config", d.containerPath("client-data", configName), "enroll", "--token", token,
 	)
 	if err == nil {
 		t.Fatalf("expected enrollment rejection, got success:\n%s", out)
@@ -175,20 +192,20 @@ func mustExec(t *testing.T, container string, args ...string) string {
 	return out
 }
 
-func waitForClientDaemon(t *testing.T) {
+func waitForClientDaemon(t *testing.T, d *deployment) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	var lastOutput string
 	for time.Now().Before(deadline) {
-		out, err := stack.exec(stack.clientName, "sigilc", "status")
+		out, err := stack.exec(d.clientContainer, "sigilc", "status")
 		lastOutput = out
-		if err == nil && strings.Contains(out, "Client       : web-1") {
+		if err == nil && strings.Contains(out, "Client       : "+d.clientName) {
 			return
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 	t.Fatalf("sigilc daemon did not become ready:\n%s\ncontainer logs:\n%s",
-		lastOutput, stack.logs(stack.clientName))
+		lastOutput, stack.logs(d.clientContainer))
 }
 
 func waitForFile(t *testing.T, path string, timeout time.Duration) {
@@ -201,9 +218,4 @@ func waitForFile(t *testing.T, path string, timeout time.Duration) {
 		time.Sleep(certPollInterval)
 	}
 	t.Fatalf("timed out waiting for %s", path)
-}
-
-func (s *e2eStack) certPath(parts ...string) string {
-	all := append([]string{s.certOutputDir}, parts...)
-	return filepath.Join(all...)
 }

@@ -8,6 +8,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
@@ -36,19 +37,31 @@ type containerRuntime struct {
 }
 
 type e2eStack struct {
-	runtime       containerRuntime
-	rootDir       string
-	tempDir       string
-	network       string
-	serverName    string
-	clientName    string
-	serverImage   string
-	clientImage   string
-	serverPort    int
-	serverDataDir string
-	clientDataDir string
-	certOutputDir string
-	sharedDir     string
+	runtime     containerRuntime
+	rootDir     string
+	tempDir     string
+	network     string
+	serverImage string
+	clientImage string
+	// miniCA's server presents its default mini-CA certificate. publicTLS's
+	// server presents server.tls_cert_file, signed by a test root that its
+	// client trusts through the system roots, as it would a public CA.
+	miniCA    *deployment
+	publicTLS *deployment
+}
+
+// deployment is one sigils server and the sigilc client enrolled with it.
+// Its files live in hostDir, which its containers see as /e2e/<dir>.
+type deployment struct {
+	dir             string
+	hostDir         string
+	alias           string // server network alias and public_url host
+	clientName      string
+	serverContainer string
+	clientContainer string
+	serverPort      int
+	// publicRoot signs the server's tls_cert_file; nil for a mini-CA server.
+	publicRoot *x509.Certificate
 }
 
 var stack *e2eStack
@@ -103,38 +116,55 @@ func newE2EStack(rt containerRuntime) (*e2eStack, error) {
 	if err != nil {
 		return nil, err
 	}
-	port, err := availablePort()
-	if err != nil {
+	fail := func(err error) (*e2eStack, error) {
 		_ = os.RemoveAll(tempDir)
 		return nil, err
 	}
 	suffix := fmt.Sprintf("%d-%d", os.Getpid(), time.Now().Unix())
 	s := &e2eStack{
-		runtime:       rt,
-		rootDir:       rootDir,
-		tempDir:       tempDir,
-		network:       "sigil-e2e-" + suffix,
-		serverName:    "sigil-e2e-server-" + suffix,
-		clientName:    "sigil-e2e-client-" + suffix,
-		serverImage:   "sigil-e2e-sigils:" + suffix,
-		clientImage:   "sigil-e2e-sigilc:" + suffix,
-		serverPort:    port,
-		serverDataDir: filepath.Join(tempDir, "server-data"),
-		clientDataDir: filepath.Join(tempDir, "client-data"),
-		certOutputDir: filepath.Join(tempDir, "cert-output"),
-		sharedDir:     filepath.Join(tempDir, "shared"),
+		runtime:     rt,
+		rootDir:     rootDir,
+		tempDir:     tempDir,
+		network:     "sigil-e2e-" + suffix,
+		serverImage: "sigil-e2e-sigils:" + suffix,
+		clientImage: "sigil-e2e-sigilc:" + suffix,
 	}
-	for _, dir := range []string{s.serverDataDir, s.clientDataDir, s.certOutputDir, s.sharedDir} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			s.cleanup()
+	if s.miniCA, err = s.newDeployment("minica", "sigils", "web-1", suffix); err != nil {
+		return fail(err)
+	}
+	if s.publicTLS, err = s.newDeployment("public", "sigils-public", "web-public", suffix); err != nil {
+		return fail(err)
+	}
+	if err := s.writeFixtures(); err != nil {
+		return fail(err)
+	}
+	return s, nil
+}
+
+func (s *e2eStack) newDeployment(dir, alias, clientName, suffix string) (*deployment, error) {
+	port, err := availablePort()
+	if err != nil {
+		return nil, err
+	}
+	d := &deployment{
+		dir:             dir,
+		hostDir:         filepath.Join(s.tempDir, dir),
+		alias:           alias,
+		clientName:      clientName,
+		serverContainer: "sigil-e2e-" + alias + "-" + suffix,
+		clientContainer: "sigil-e2e-" + clientName + "-" + suffix,
+		serverPort:      port,
+	}
+	for _, sub := range []string{"server-data", "client-data", "cert-output"} {
+		if err := os.MkdirAll(d.hostPath(sub), 0o700); err != nil {
 			return nil, err
 		}
 	}
-	if err := s.writeFixtures(); err != nil {
-		s.cleanup()
-		return nil, err
-	}
-	return s, nil
+	return d, nil
+}
+
+func (s *e2eStack) deployments() []*deployment {
+	return []*deployment{s.miniCA, s.publicTLS}
 }
 
 func (s *e2eStack) start() error {
@@ -149,56 +179,105 @@ func (s *e2eStack) start() error {
 	if out, err := s.runInRoot("build", "-f", "test/e2e/Dockerfile.sigilc", "-t", s.clientImage, "."); err != nil {
 		return fmt.Errorf("build sigilc: %w\n%s", err, out)
 	}
+	for _, d := range s.deployments() {
+		if err := s.startServer(d); err != nil {
+			return err
+		}
+		if err := s.runClient(d, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-	serverArgs := []string{
+func (s *e2eStack) startServer(d *deployment) error {
+	args := []string{
 		"run", "-d",
-		"--name", s.serverName,
+		"--name", d.serverContainer,
 		"--network", s.network,
-		"--network-alias", "sigils",
-		"-p", fmt.Sprintf("127.0.0.1:%d:18443", s.serverPort),
-		"-e", "SIGILS_CONFIG=/e2e/shared/server.yaml",
+		"--network-alias", d.alias,
+		"-p", fmt.Sprintf("127.0.0.1:%d:18443", d.serverPort),
+		"-e", "SIGILS_CONFIG=" + d.containerPath("server.yaml"),
 		"-v", bindMount(s.tempDir, "/e2e", false),
 		s.serverImage,
 	}
-	if out, err := s.run(serverArgs...); err != nil {
-		return fmt.Errorf("start sigils: %w\n%s", err, out)
+	if out, err := s.run(args...); err != nil {
+		return fmt.Errorf("start %s: %w\n%s", d.alias, err, out)
 	}
-	if err := waitForHTTP(s.hostServerURL()+"/install.sh", startupTimeout); err != nil {
-		return fmt.Errorf("wait for sigils: %w\n%s", err, s.logs(s.serverName))
+	if err := waitForHTTP(d.hostURL()+"/install.sh", d.readinessTransport(), startupTimeout); err != nil {
+		return fmt.Errorf("wait for %s: %w\n%s", d.alias, err, s.logs(d.serverContainer))
 	}
-	if out, err := s.exec(s.serverName,
+	if out, err := s.exec(d.serverContainer,
 		"curl", "--fail", "--silent", "--show-error",
 		"--unix-socket", "/var/run/sigil/sigils.sock",
 		"-H", "Content-Type: application/json",
-		"--data-binary", "@/e2e/shared/seed-cert.json",
+		"--data-binary", "@/e2e/seed-cert.json",
 		"http://localhost/ipc/v1/certs",
 	); err != nil {
-		return fmt.Errorf("seed certificate: %w\n%s", err, out)
+		return fmt.Errorf("seed certificate on %s: %w\n%s", d.alias, err, out)
 	}
+	return nil
+}
 
-	clientArgs := []string{
+// runClient starts the client container of d. A bootstrap container idles so
+// tests can run sigilc enroll in it; otherwise the container runs the daemon.
+func (s *e2eStack) runClient(d *deployment, bootstrap bool) error {
+	args := []string{
 		"run", "-d",
-		"--name", s.clientName,
+		"--name", d.clientContainer,
 		"--network", s.network,
-		"--network-alias", "sigilc",
-		"--entrypoint", "/bin/sh",
-		"-e", "SIGILC_CONFIG=/e2e/client-data/client.yaml",
+		"-e", "SIGILC_CONFIG=" + d.containerPath("client-data", "client.yaml"),
 		"-v", bindMount(s.tempDir, "/e2e", false),
-		s.clientImage,
-		"-c", "while :; do sleep 3600; done",
 	}
-	if out, err := s.run(clientArgs...); err != nil {
-		return fmt.Errorf("start sigilc container: %w\n%s", err, out)
+	if d.publicRoot != nil {
+		// On Linux, Go loads SSL_CERT_FILE into the system roots.
+		args = append(args, "-e", "SSL_CERT_FILE="+d.containerPath("tls", "root.pem"))
+	}
+	if bootstrap {
+		args = append(args, "--entrypoint", "/bin/sh", s.clientImage, "-c", "while :; do sleep 3600; done")
+	} else {
+		args = append(args, s.clientImage)
+	}
+	if out, err := s.run(args...); err != nil {
+		return fmt.Errorf("start %s: %w\n%s", d.clientContainer, err, out)
 	}
 	return nil
 }
 
 func (s *e2eStack) writeFixtures() error {
-	serverConfig := `server:
-  listen: ":18443"
-  data_dir: "/e2e/server-data"
-  public_url: "https://sigils:18443"
+	record, err := seededCertificate()
+	if err != nil {
+		return err
+	}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(s.tempDir, "seed-cert.json"), raw, 0o600); err != nil {
+		return err
+	}
+	if s.publicTLS.publicRoot, err = writePublicTLS(s.publicTLS.hostPath("tls"), s.publicTLS.alias); err != nil {
+		return err
+	}
+	for _, d := range s.deployments() {
+		if err := d.writeConfigs(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
+func (d *deployment) writeConfigs() error {
+	tlsFiles := ""
+	if d.publicRoot != nil {
+		tlsFiles = fmt.Sprintf("  tls_cert_file: %q\n  tls_key_file: %q\n",
+			d.containerPath("tls", "server.pem"), d.containerPath("tls", "server-key.pem"))
+	}
+	serverConfig := fmt.Sprintf(`server:
+  listen: ":18443"
+  data_dir: %q
+  public_url: "https://%s:18443"
+%s
 acme:
   email: "test@example.com"
   default_ca: test
@@ -217,45 +296,80 @@ certificates:
     dns_provider: test
     key_type: ec256
     renew_days_before: 30
-    subscribers: ["web-1"]
-`
-	clientConfig := `client:
-  name: web-1
-  server_url: "https://sigils:18443"
+    subscribers: [%q]
+`, d.containerPath("server-data"), d.alias, tlsFiles, d.clientName)
+	clientConfig := fmt.Sprintf(`client:
+  name: %s
+  server_url: "https://%s:18443"
   pull_interval: 30s
-  data_dir: "/e2e/client-data"
+  data_dir: %q
 
 outputs:
   test-cert:
     - format: pem-fullchain
-      path: /e2e/cert-output/test-cert/fullchain.pem
+      path: %s
     - format: pem-key
-      path: /e2e/cert-output/test-cert/key.pem
-`
-	if err := os.WriteFile(filepath.Join(s.sharedDir, "server.yaml"), []byte(serverConfig), 0o600); err != nil {
+      path: %s
+`, d.clientName, d.alias, d.containerPath("client-data"),
+		d.containerPath("cert-output", "test-cert", "fullchain.pem"),
+		d.containerPath("cert-output", "test-cert", "key.pem"))
+	if err := os.WriteFile(d.hostPath("server.yaml"), []byte(serverConfig), 0o600); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(s.clientDataDir, "client.yaml"), []byte(clientConfig), 0o600); err != nil {
-		return err
-	}
-	record, err := seededCertificate()
-	if err != nil {
-		return err
-	}
-	raw, err := json.Marshal(record)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(s.sharedDir, "seed-cert.json"), raw, 0o600)
+	return os.WriteFile(d.hostPath("client-data", "client.yaml"), []byte(clientConfig), 0o600)
 }
 
-func seededCertificate() (*store.CertRecord, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+// writePublicTLS writes a test root to dir/root.pem and a certificate for host
+// signed by it to dir/server.pem and dir/server-key.pem. The root stands in
+// for a publicly trusted CA.
+func writePublicTLS(dir, host string) (*x509.Certificate, error) {
+	now := time.Now().UTC()
+	root, rootKey, err := issueCertificate(&x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "Sigil E2E Public Root"},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}, nil, nil)
 	if err != nil {
 		return nil, err
 	}
+	server, serverKey, err := issueCertificate(&x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: host},
+		DNSNames:     []string{host},
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     now.Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}, root, rootKey)
+	if err != nil {
+		return nil, err
+	}
+	keyPEM, err := privateKeyPEM(serverKey)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	for name, data := range map[string][]byte{
+		"root.pem":       certificatePEM(root),
+		"server.pem":     certificatePEM(server),
+		"server-key.pem": keyPEM,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			return nil, err
+		}
+	}
+	return root, nil
+}
+
+func seededCertificate() (*store.CertRecord, error) {
 	now := time.Now().UTC()
-	template := &x509.Certificate{
+	cert, key, err := issueCertificate(&x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject:      pkix.Name{CommonName: "test.example.com"},
 		DNSNames:     []string{"test.example.com"},
@@ -263,17 +377,15 @@ func seededCertificate() (*store.CertRecord, error) {
 		NotAfter:     now.Add(90 * 24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	}, nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	certPEM := certificatePEM(cert)
+	keyPEM, err := privateKeyPEM(key)
 	if err != nil {
 		return nil, err
 	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 	sum := sha256.Sum256(certPEM)
 	cfg := &config.ServerConfig{ACME: config.ACMESection{CAs: map[string]config.CAEntry{
 		"test": {Directory: "https://127.0.0.1:18443/directory"},
@@ -288,11 +400,44 @@ func seededCertificate() (*store.CertRecord, error) {
 		SpecFingerprint: config.CertificateSpecFingerprint(cfg, spec),
 		FullchainPEM:    string(certPEM),
 		KeyPEM:          string(keyPEM),
-		NotAfter:        template.NotAfter,
+		NotAfter:        cert.NotAfter,
 		Fingerprint:     "sha256:" + hex.EncodeToString(sum[:]),
 		IssuedAt:        now,
 		UpdatedAt:       now,
 	}, nil
+}
+
+// issueCertificate creates a certificate from template for a new P-256 key,
+// signed by parentKey, or self-signed when parent is nil.
+func issueCertificate(template, parent *x509.Certificate, parentKey *ecdsa.PrivateKey) (*x509.Certificate, *ecdsa.PrivateKey, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	if parent == nil {
+		parent, parentKey = template, key
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, parent, &key.PublicKey, parentKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, nil, err
+	}
+	return cert, key, nil
+}
+
+func certificatePEM(cert *x509.Certificate) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+}
+
+func privateKeyPEM(key *ecdsa.PrivateKey) ([]byte, error) {
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return nil, err
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
 }
 
 func availablePort() (int, error) {
@@ -312,8 +457,8 @@ func bindMount(source, destination string, readOnly bool) string {
 	return mount
 }
 
-func waitForHTTP(target string, timeout time.Duration) error {
-	client := &http.Client{Timeout: 5 * time.Second, Transport: insecureTransport()}
+func waitForHTTP(target string, transport *http.Transport, timeout time.Duration) error {
+	client := &http.Client{Timeout: 5 * time.Second, Transport: transport}
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
@@ -332,8 +477,27 @@ func waitForHTTP(target string, timeout time.Duration) error {
 	return fmt.Errorf("%s did not become ready: %w", target, lastErr)
 }
 
-func (s *e2eStack) hostServerURL() string {
-	return fmt.Sprintf("https://127.0.0.1:%d", s.serverPort)
+// readinessTransport verifies a public TLS server against its test root, which
+// proves it serves tls_cert_file. A mini-CA server is only probed.
+func (d *deployment) readinessTransport() *http.Transport {
+	if d.publicRoot == nil {
+		return insecureTransport()
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(d.publicRoot)
+	return &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: d.alias}}
+}
+
+func (d *deployment) hostURL() string {
+	return fmt.Sprintf("https://127.0.0.1:%d", d.serverPort)
+}
+
+func (d *deployment) hostPath(parts ...string) string {
+	return filepath.Join(append([]string{d.hostDir}, parts...)...)
+}
+
+func (d *deployment) containerPath(parts ...string) string {
+	return strings.Join(append([]string{"/e2e", d.dir}, parts...), "/")
 }
 
 func (s *e2eStack) run(args ...string) (string, error) {
@@ -359,23 +523,13 @@ func (s *e2eStack) exec(container string, args ...string) (string, error) {
 	return s.run(command...)
 }
 
-func (s *e2eStack) startClientDaemon() error {
-	if out, err := s.removeContainer(s.clientName); err != nil {
+// startClientDaemon replaces the bootstrap client container of d with one
+// that runs sigilc serve against the enrolled identity.
+func (s *e2eStack) startClientDaemon(d *deployment) error {
+	if out, err := s.removeContainer(d.clientContainer); err != nil {
 		return fmt.Errorf("remove bootstrap client: %w\n%s", err, out)
 	}
-	args := []string{
-		"run", "-d",
-		"--name", s.clientName,
-		"--network", s.network,
-		"--network-alias", "sigilc",
-		"-e", "SIGILC_CONFIG=/e2e/client-data/client.yaml",
-		"-v", bindMount(s.tempDir, "/e2e", false),
-		s.clientImage,
-	}
-	if out, err := s.run(args...); err != nil {
-		return fmt.Errorf("start sigilc daemon container: %w\n%s", err, out)
-	}
-	return nil
+	return s.runClient(d, false)
 }
 
 func (s *e2eStack) removeContainer(name string) (string, error) {
@@ -409,12 +563,9 @@ func (s *e2eStack) cleanup() {
 	if s == nil {
 		return
 	}
-	if s.runtime.name == "wslc" {
-		_, _ = s.removeContainer(s.clientName)
-		_, _ = s.removeContainer(s.serverName)
-	} else {
-		_, _ = s.removeContainer(s.clientName)
-		_, _ = s.removeContainer(s.serverName)
+	for _, d := range s.deployments() {
+		_, _ = s.removeContainer(d.clientContainer)
+		_, _ = s.removeContainer(d.serverContainer)
 	}
 	s.removeNetwork()
 	_, _ = s.run("rmi", "-f", s.clientImage)
