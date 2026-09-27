@@ -92,11 +92,53 @@ When upgrading from an earlier build:
 - The first start rewrites every output. A non-administrator consumer that relied on the directory's inherited ACL loses access to key files until `owner` is set for it.
 - Files that an earlier build wrote with a read-only `mode` carry the read-only attribute, which makes replacing them fail. Clear it once with `attrib -r <file>`.
 
+## DNS-01 validation
+
+Each certificate names a DNS provider from `dns_providers`. Besides lego's built-in providers, the `exec` type runs your own program to create and remove the challenge record:
+
+```yaml
+acme:
+  dns_resolvers: ["10.0.0.53"]   # optional; see below
+dns_providers:
+  internal:
+    type: exec
+    command: ["/usr/local/bin/sigil-dns-hook", "--zone", "example.com"]
+certificates:
+  - name: api-prod
+    dns_provider: internal
+    # ...
+```
+
+`command` is an argument list; its first item must be an absolute path. `sigils` runs it as `command... present <fqdn> <value>` before validation and `command... cleanup <fqdn> <value>` afterwards:
+
+- `<fqdn>` is the TXT record name, after following CNAMEs, with a trailing dot. `<value>` is the TXT value. Exit status 0 means success.
+- The value can start with `-`, so read the last three arguments by position. Do not parse them with getopt, argparse, or a PowerShell `param()` block: a value starting with `-` would be taken as an option, and PowerShell would silently bind an empty string. In PowerShell, use `$action, $fqdn, $value = $args[-3..-1]`.
+- Each run times out after 2 minutes. The hook runs as the `sigils` service account with its full environment, including any credentials referenced from `server.yaml`. Its working directory is the service's (`System32` for a Windows service, `/` under systemd), so use absolute paths.
+- Different certificates can run the hook at the same time. Several domains of one certificate are handled without waiting between them.
+- Background processes started by the hook must redirect their output; otherwise the hook fails 5 seconds after it exits.
+- On failure, the error names only the action, the record, and the exit status or timeout. The hook's output goes to the service log, truncated.
+
+On Windows, run a PowerShell script through its full path, for example `command: ['C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', 'C:\sigil\hook.ps1']`.
+
+Other DNS-01 settings:
+
+- `skip_propagation_check: true` on a provider skips lego's check that the TXT record is visible on the zone's authoritative nameservers. Use it with DNS servers that cannot answer that check; lego still waits one 4-second polling interval.
+- `acme.dns_resolvers` sets the resolvers lego uses for zone lookups, CNAME following, and the propagation check. It applies to the whole process, so changing it requires a restart. When it is empty, lego uses the system resolvers, and on Windows it falls back to Google Public DNS.
+- Certificates that share a domain are issued in parallel and use the same `_acme-challenge` record. A provider may reject the second record, and one certificate's cleanup removes the record for both, so one of them fails and is retried after its backoff. Avoid overlapping domains across certificates.
+- To use a private ACME CA, set `LEGO_CA_CERTIFICATES` for `sigils` to the path of the CA's root certificate. lego panics if that file cannot be read.
+
 ## Runtime reload and renewal
 
-`sigils reload` validates `server.yaml` and applies supported changes through the local server IPC endpoint. ACME settings, DNS providers, certificate definitions, and client push routing can be updated without restarting the daemon. Changes to `server.listen`, `server.public_url`, `server.data_dir`, `server.ipc_socket`, `server.tls_cert_file`, or `server.tls_key_file` are rejected with restart guidance because the listener or TLS identity was fixed at startup; the active runtime configuration remains unchanged.
+`sigils reload` validates `server.yaml` and applies supported changes through the local server IPC endpoint. ACME settings, DNS providers, certificate definitions, and client push routing can be updated without restarting the daemon. Changes to `server.listen`, `server.public_url`, `server.data_dir`, `server.ipc_socket`, `server.tls_cert_file`, `server.tls_key_file`, or `acme.dns_resolvers` are rejected with restart guidance: the listener and TLS identity are fixed at startup, and lego keeps the DNS resolvers in process-wide state. The active runtime configuration remains unchanged.
 
-Reload waits for any in-flight issuance to finish, publishes one configuration generation, clears obsolete retry backoff, and immediately checks the new certificate definitions. Stored certificate material is tied to its CA directory, domains, and key type, so stale same-name material is not distributed while a replacement is being issued. Read-only IPC responses expose metadata only and never include certificate private keys, push tokens, or enrollment-token hashes.
+`sigils` issues certificates in parallel, at most four at a time and at most one issuance per certificate at a time:
+
+- Reload does not wait for in-flight issuance. It clears retry backoff, publishes the new configuration, and immediately checks the certificate definitions.
+- An issuance that started before a reload is discarded if the certificate's CA directory, domains, or key type changed meanwhile, and the certificate is issued again under the new configuration. Stored certificate material is tied to those same settings, so stale same-name material is never distributed.
+- A failed issuance is retried after 5 minutes, doubling up to 24 hours. The backoff is stored in the database and survives a restart, so after fixing the cause (for example DNS credentials) run `sigils reload` or `sigils cert renew <name>` instead of restarting.
+- `sigils cert list` shows each configured certificate's state: `issuing`, `backoff`, `valid`, or `pending`. `sigils cert show <name>` adds the failure count, the last error, and the next attempt.
+
+Read-only IPC responses expose metadata only and never include certificate private keys, push tokens, or enrollment-token hashes.
 
 `sigilc` automatically renews its mTLS identity before expiry. `client.identity_renew_before` defaults to 30 days and accepts values from 1 hour through 89 days.
 
