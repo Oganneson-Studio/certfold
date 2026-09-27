@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-
-	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
 type ipcHandlers struct {
@@ -61,20 +59,6 @@ func (h *ipcHandlers) listCerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, certificateInfos(cfg, recs, statuses, h.deps.Certificates.Issuing, time.Now()))
-}
-
-func (h *ipcHandlers) upsertCert(w http.ResponseWriter, r *http.Request) {
-	var rec store.CertRecord
-	if err := readJSON(r, &rec); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	rec.UpdatedAt = time.Now().UTC()
-	if err := h.deps.DB.Certs.Upsert(r.Context(), &rec, nil); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *ipcHandlers) renewCert(w http.ResponseWriter, r *http.Request) {

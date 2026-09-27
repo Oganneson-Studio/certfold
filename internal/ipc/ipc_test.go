@@ -220,15 +220,17 @@ func TestReadEndpointsReturnEmptyArrays(t *testing.T) {
 	}
 }
 
-func TestUpsertAndListCerts(t *testing.T) {
+// TestCertificatesCannotBeWrittenOverIPC guards the removal of the route the
+// E2E stack once seeded its certificate through: certificates reach the store
+// only by issuance.
+func TestCertificatesCannotBeWrittenOverIPC(t *testing.T) {
 	db := mustOpenDB(t)
 	spec := config.CertificateSpec{Name: "api-prod", CA: "le", Domains: []string{"api.example.com"}, KeyType: "ec256"}
 	cfg := testCertConfig(spec)
-	h := &ipcHandlers{deps: ServerDeps{DB: db, Certificates: certDeps(cfg)}}
-	ts := httptest.NewServer(buildIPCRouter(h))
-	defer ts.Close()
+	router := buildIPCRouter(&ipcHandlers{deps: ServerDeps{DB: db, Certificates: certDeps(cfg)}})
 
-	// The E2E stack seeds its certificate by posting a raw store.CertRecord.
+	// The seeding request: a raw store.CertRecord that matches the running
+	// configuration.
 	body, err := json.Marshal(&store.CertRecord{
 		Name:            "api-prod",
 		CA:              "le",
@@ -240,52 +242,41 @@ func TestUpsertAndListCerts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := ts.Client().Post(ts.URL+"/ipc/v1/certs", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNoContent)
-	}
-
-	certs, err := newTestClient(ts).ListCerts(context.Background())
-	if err != nil {
-		t.Fatalf("ListCerts: %v", err)
-	}
-	if len(certs) != 1 {
-		t.Fatalf("got %d certificates, want 1", len(certs))
-	}
-	if certs[0].Name != "api-prod" || certs[0].State != CertStateValid || certs[0].Fingerprint != "sha256:AA" {
-		t.Errorf("expected the seeded api-prod to be valid, got %+v", *certs[0])
-	}
-}
-
-func TestRequestBodyIsLimited(t *testing.T) {
-	db := mustOpenDB(t)
-	router := buildIPCRouter(&ipcHandlers{deps: ServerDeps{DB: db}})
-
-	// A well-formed record that is larger than the limit must not be read.
-	body, err := json.Marshal(&store.CertRecord{
-		Name:         "api-prod",
-		CA:           "le",
-		Domains:      []string{"api.example.com"},
-		FullchainPEM: strings.Repeat("a", maxRequestBody),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/ipc/v1/certs", bytes.NewReader(body)))
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
 	}
 	stored, err := db.Certs.List(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(stored) != 0 {
-		t.Fatalf("oversized request was stored: %d records", len(stored))
+		t.Fatalf("the request stored %d certificate records", len(stored))
+	}
+}
+
+func TestRequestBodyIsLimited(t *testing.T) {
+	created := false
+	router := buildIPCRouter(&ipcHandlers{deps: ServerDeps{Tokens: &TokenControlDeps{
+		Create: func(context.Context, string, time.Duration) (CreateTokenResponse, error) {
+			created = true
+			return CreateTokenResponse{}, nil
+		},
+	}}})
+
+	// A well-formed request that is larger than the limit must not be read.
+	body, err := json.Marshal(CreateTokenRequest{Name: strings.Repeat("a", maxRequestBody), TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/ipc/v1/tokens", bytes.NewReader(body)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if created {
+		t.Fatal("the oversized request reached the daemon")
 	}
 }
 

@@ -6,12 +6,15 @@
 package e2e
 
 import (
+	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -48,13 +51,24 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func TestEnrollFetchAndRevoke(t *testing.T) {
+func TestEnrollFetchRenewAndRevoke(t *testing.T) {
 	d := stack.miniCA
-	enrollAndFetch(t, d)
+	issued := enrollAndFetch(t, d)
 
 	status := mustExec(t, d.clientContainer, "sigilc", "status")
 	if !strings.Contains(status, "Certificates : 1") {
 		t.Fatalf("client status did not report fetched certificate:\n%s", status)
+	}
+
+	// A manual renewal issues a new certificate, which the next fetch writes.
+	fingerprint := certFingerprint(t, d)
+	mustExec(t, d.serverContainer, "sigils", "cert", "renew", "test-cert")
+	if renewed := certFingerprint(t, d); renewed == fingerprint {
+		t.Fatalf("cert list still shows fingerprint %s after renewal", fingerprint)
+	}
+	mustExec(t, d.clientContainer, "sigilc", "fetch", "--cert", "test-cert")
+	if renewed := verifyOutput(t, d); renewed.SerialNumber.Cmp(issued.SerialNumber) == 0 {
+		t.Fatalf("client output still holds serial %s after renewal and fetch", issued.SerialNumber)
 	}
 
 	mustExec(t, d.serverContainer, "sigils", "client", "remove", d.clientName)
@@ -74,9 +88,30 @@ func TestPublicTLSEnrollAndFetch(t *testing.T) {
 	enrollAndFetch(t, stack.publicTLS)
 }
 
+// TestIssuanceUsesDNSResolvers checks that the servers looked up every
+// challenge name through acme.dns_resolvers. Only lego sends CNAME queries,
+// which follow CNAMEs of the name; pebble queries TXT records alone. The first
+// issuance always solves a challenge, while a later one may reuse the
+// authorization.
+func TestIssuanceUsesDNSResolvers(t *testing.T) {
+	const typeCNAME = 5
+	for _, d := range stack.deployments() {
+		for _, cert := range d.certs {
+			name := "_acme-challenge." + cert.domain
+			types, err := stack.dnsQueryTypes(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(types, typeCNAME) {
+				t.Errorf("%s: challtestsrv received no CNAME query for %s, only query types %v", d.alias, name, types)
+			}
+		}
+	}
+}
+
 // enrollAndFetch enrolls the client of d, starts its daemon, and checks that a
-// fetch writes the seeded certificate.
-func enrollAndFetch(t *testing.T, d *deployment) {
+// fetch writes test-cert as pebble issued it. It returns the certificate.
+func enrollAndFetch(t *testing.T, d *deployment) *x509.Certificate {
 	t.Helper()
 	token := createToken(t, d, d.clientName, "10m")
 	out := mustExec(t, d.clientContainer, "sigilc", "enroll", "--token", token)
@@ -90,23 +125,78 @@ func enrollAndFetch(t *testing.T, d *deployment) {
 	waitForClientDaemon(t, d)
 	mustExec(t, d.clientContainer, "sigilc", "fetch", "--cert", "test-cert")
 
-	certPath := d.hostPath("cert-output", "test-cert", "fullchain.pem")
-	waitForFile(t, certPath, certPollTimeout)
-	raw, err := os.ReadFile(certPath)
+	waitForFile(t, d.hostPath("cert-output", "test-cert", "fullchain.pem"), certPollTimeout)
+	return verifyOutput(t, d)
+}
+
+// verifyOutput checks the test-cert output of the client of d: a chain from
+// the root pebble issues from to a certificate for test-cert's domain, and
+// the key of that certificate. It returns the certificate.
+func verifyOutput(t *testing.T, d *deployment) *x509.Certificate {
+	t.Helper()
+	chainPEM, err := os.ReadFile(d.hostPath("cert-output", "test-cert", "fullchain.pem"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	block, _ := pem.Decode(raw)
-	if block == nil {
-		t.Fatalf("output is not PEM: %q", raw)
+	var chain []*x509.Certificate
+	for rest := chainPEM; ; {
+		var block *pem.Block
+		if block, rest = pem.Decode(rest); block == nil {
+			break
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			t.Fatalf("parse output certificate: %v", err)
+		}
+		chain = append(chain, cert)
 	}
-	cert, err := x509.ParseCertificate(block.Bytes)
+	if len(chain) == 0 {
+		t.Fatalf("output is not PEM: %q", chainPEM)
+	}
+	roots, err := stack.pebbleIssuingRoots()
 	if err != nil {
-		t.Fatalf("parse output certificate: %v", err)
+		t.Fatal(err)
 	}
-	if err := cert.VerifyHostname("test.example.com"); err != nil {
-		t.Fatalf("certificate SAN verification: %v", err)
+	intermediates := x509.NewCertPool()
+	for _, cert := range chain[1:] {
+		intermediates.AddCert(cert)
 	}
+	leaf, domain := chain[0], d.certs[0].domain
+	if _, err := leaf.Verify(x509.VerifyOptions{
+		DNSName:       domain,
+		Roots:         roots,
+		Intermediates: intermediates,
+		// pebble does not backdate certificates, and the host clock may lag
+		// the clock of the containers.
+		CurrentTime: leaf.NotBefore,
+	}); err != nil {
+		t.Fatalf("output is not a certificate pebble issued for %s: %v", domain, err)
+	}
+	// Read in the container: on Linux the key output belongs to the
+	// container's root and only it can read the file.
+	keyPEM := mustExec(t, d.clientContainer, "cat", d.containerPath("cert-output", "test-cert", "key.pem"))
+	if _, err := tls.X509KeyPair(chainPEM, []byte(keyPEM)); err != nil {
+		t.Fatalf("key output does not belong to the certificate output: %v", err)
+	}
+	return leaf
+}
+
+// certFingerprint returns the fingerprint of test-cert that the server of d
+// lists.
+func certFingerprint(t *testing.T, d *deployment) string {
+	t.Helper()
+	out := mustExec(t, d.serverContainer, "sigils", "--json", "cert", "list")
+	var certs []certState
+	if err := json.Unmarshal([]byte(out), &certs); err != nil {
+		t.Fatalf("parse cert list: %v\n%s", err, out)
+	}
+	for _, cert := range certs {
+		if cert.Name == "test-cert" && cert.Fingerprint != "" {
+			return cert.Fingerprint
+		}
+	}
+	t.Fatalf("cert list has no fingerprint for test-cert:\n%s", out)
+	return ""
 }
 
 func TestExpiredTokenIsRejected(t *testing.T) {
