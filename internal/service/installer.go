@@ -72,6 +72,16 @@ func buildServiceConfig(cfg Config) *ksvc.Config {
 		sc.Option = ksvc.KeyValue{
 			"KeepAlive": true,
 		}
+	case "windows":
+		// Match systemd's Restart=on-failure. Windows repeats the only
+		// recovery action for every later failure, so a crash or a failed
+		// start is always retried; a normal stop exits 0 and is not a failure.
+		// The reset period clears the failure count after a day without one.
+		sc.Option = ksvc.KeyValue{
+			"OnFailure":              "restart",
+			"OnFailureDelayDuration": "10s",
+			"OnFailureResetPeriod":   24 * 60 * 60,
+		}
 	}
 
 	return sc

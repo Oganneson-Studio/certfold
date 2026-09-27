@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -24,6 +25,24 @@ func TestBuildServiceConfig_Server(t *testing.T) {
 	}
 	if len(cfg.Arguments) == 0 || cfg.Arguments[0] != "serve" {
 		t.Errorf("Arguments: got %v, want first elem 'serve'", cfg.Arguments)
+	}
+}
+
+func TestBuildServiceConfig_WindowsRestartsOnFailure(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("recovery actions are a Windows service option")
+	}
+	opts := buildServiceConfig(Config{Role: RoleServer}).Option
+	if got := opts["OnFailure"]; got != "restart" {
+		t.Errorf("OnFailure: got %v, want restart", got)
+	}
+	if got, ok := opts["OnFailureDelayDuration"].(string); !ok || got != "10s" {
+		t.Errorf("OnFailureDelayDuration: got %v, want 10s", opts["OnFailureDelayDuration"])
+	}
+	// kardianos reads the reset period with an int type assertion and falls
+	// back to 10 seconds for any other type.
+	if got, ok := opts["OnFailureResetPeriod"].(int); !ok || got != 86400 {
+		t.Errorf("OnFailureResetPeriod: got %#v, want int 86400", opts["OnFailureResetPeriod"])
 	}
 }
 
