@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -32,6 +34,16 @@ func testIPCSocket(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return filepath.Join(dir, "s.sock")
+}
+
+// skipWithoutPipeAccess skips the test when err shows that this process may
+// not open the sigils pipe, which admits only SYSTEM and elevated
+// administrators.
+func skipWithoutPipeAccess(t *testing.T, err error) {
+	t.Helper()
+	if runtime.GOOS == "windows" && errors.Is(err, os.ErrPermission) {
+		t.Skip("the sigils pipe admits only SYSTEM and elevated administrators")
+	}
 }
 
 // startDaemon runs the sigils daemon on a loopback port with a configuration
@@ -88,9 +100,7 @@ certificates: []
 		if err == nil {
 			return socket, listen, stop
 		}
-		if runtime.GOOS == "windows" && errors.Is(err, os.ErrPermission) {
-			t.Skip("the sigils pipe admits only SYSTEM and elevated administrators")
-		}
+		skipWithoutPipeAccess(t, err)
 		select {
 		case <-exited:
 			t.Fatalf("daemon exited before serving IPC: %v", runErr)
@@ -198,5 +208,33 @@ func TestTokenCreateIssuesTokenThroughDaemon(t *testing.T) {
 				t.Fatalf("token is bound to %q, want %q", payload.ServerURL, wantURL)
 			}
 		})
+	}
+}
+
+func TestTokenCreateRefusesAnswerOfOutdatedDaemon(t *testing.T) {
+	socket := testIPCSocket(t)
+	l, err := ipc.Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A daemon started before the upgrade still answers with a bare token ID.
+	outdated := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"token":"0123456789abcdef"}`)
+	})}
+	go func() { _ = outdated.Serve(l) }()
+	t.Cleanup(func() { _ = outdated.Close() })
+	if _, err := ipc.NewClient(socket); err != nil {
+		skipWithoutPipeAccess(t, err)
+		t.Fatal(err)
+	}
+
+	stdout, _, err := tokenCreate(socket, "--name", "web-1")
+	if err == nil || !strings.Contains(err.Error(), "restart the sigils service") {
+		t.Fatalf("token create error = %v, want a request to restart the daemon", err)
+	}
+	if strings.Contains(stdout, "Token:") {
+		t.Fatalf("printed the answer of an outdated daemon as a token:\n%s", stdout)
 	}
 }
