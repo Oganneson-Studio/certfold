@@ -1,9 +1,14 @@
 package config
 
 import (
+	"math/rand/v2"
+	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestExpandEnv(t *testing.T) {
@@ -277,6 +282,116 @@ func TestEnvExpansionKeepsLongValues(t *testing.T) {
 	}
 	if got := cfg.ACME.CAs["zerossl"].EABHMAC; got != long {
 		t.Fatalf("eab_hmac = %q, want %q", got, long)
+	}
+}
+
+// Environment values are inserted verbatim. Nothing is trimmed, although the
+// same text written literally in a plain scalar would lose its outer spaces.
+func TestEnvValuesAreNotTrimmed(t *testing.T) {
+	const value = "  spaced secret \n"
+	t.Setenv("SIGIL_TEST_VALUE", value)
+	src := strings.Replace(validServerYAML, `eab_hmac: "h"`, `eab_hmac: ${SIGIL_TEST_VALUE}`, 1)
+	cfg, err := ParseServer([]byte(src))
+	if err != nil {
+		t.Fatalf("ParseServer: %v", err)
+	}
+	if got := cfg.ACME.CAs["zerossl"].EABHMAC; got != value {
+		t.Fatalf("eab_hmac = %q, want %q", got, value)
+	}
+}
+
+func TestEnvExpansionLeavesKeysAlone(t *testing.T) {
+	src := strings.Replace(validServerYAML, "dns_providers:\n", `dns_providers:
+  "p${SIGIL_TEST_UNSET_KEY}":
+    type: route53
+`, 1)
+	cfg, err := ParseServer([]byte(src))
+	if err != nil {
+		t.Fatalf("a mapping key was expanded: %v", err)
+	}
+	if _, ok := cfg.DNSProviders["p${SIGIL_TEST_UNSET_KEY}"]; !ok {
+		t.Fatalf("dns provider keys = %v", cfg.DNSProviders)
+	}
+}
+
+// yaml.v3 does not re-emit every block scalar exactly, so decodeWithEnv must
+// keep these values even when a document has no environment references.
+func TestDecodeWithEnvKeepsBlockScalars(t *testing.T) {
+	for raw, want := range map[string]string{
+		"s: |\n\n  a\n":          "\na\n",
+		"s: |+\n  keep\n\n# c\n": "keep\n\n",
+	} {
+		var got struct {
+			S string `yaml:"s"`
+		}
+		if err := decodeWithEnv([]byte(raw), &got); err != nil {
+			t.Fatalf("decodeWithEnv(%q): %v", raw, err)
+		}
+		if got.S != want {
+			t.Errorf("decodeWithEnv(%q) = %q, want %q", raw, got.S, want)
+		}
+	}
+}
+
+// decodeWithEnv encodes the expanded tree again for its strict decode. For
+// random environment values in every scalar style, that must decode exactly
+// what decoding the expanded tree directly gives.
+func TestDecodeWithEnvMatchesExpandedTree(t *testing.T) {
+	const iterations = 20000
+	templates := []string{
+		"s: ${SIGIL_TEST_FUZZ}\n",
+		"s: \"${SIGIL_TEST_FUZZ}\"\n",
+		"s: '${SIGIL_TEST_FUZZ}'\n",
+		"s: |\n  ${SIGIL_TEST_FUZZ}\n",
+		"s: >\n  ${SIGIL_TEST_FUZZ}\n",
+		"s: |-\n  ${SIGIL_TEST_FUZZ}\n",
+		"s: >-\n  ${SIGIL_TEST_FUZZ}\n",
+		"s: |+\n  ${SIGIL_TEST_FUZZ}\n\n",
+		"m:\n  k: ${SIGIL_TEST_FUZZ}\n",
+		"l:\n  - ${SIGIL_TEST_FUZZ}\n",
+	}
+	// Blanks, every YAML line break (NEL, LS and PS are added by code point),
+	// YAML indicator characters, and a few characters that resolve to numbers
+	// or null.
+	alphabet := append([]rune("ab01.~ \t\n\r:#-?[]{},&*!|>'\"%@`\\$"), 0x85, 0x2028, 0x2029)
+	rng := rand.New(rand.NewPCG(1, 2)) // fixed seed: failures are reproducible
+	t.Setenv("SIGIL_TEST_FUZZ", "x")   // restores the variable after the test
+
+	failures := 0
+	for i := range iterations {
+		runes := make([]rune, 1+rng.IntN(12))
+		for j := range runes {
+			runes[j] = alphabet[rng.IntN(len(alphabet))]
+		}
+		value := string(runes)
+		if err := os.Setenv("SIGIL_TEST_FUZZ", value); err != nil {
+			t.Fatal(err)
+		}
+		raw := []byte(templates[i%len(templates)])
+
+		var doc yaml.Node
+		if err := yaml.Unmarshal(raw, &doc); err != nil {
+			t.Fatal(err)
+		}
+		if err := expandEnvNode(&doc, ""); err != nil {
+			t.Fatal(err)
+		}
+		var want map[string]any
+		if err := doc.Decode(&want); err != nil {
+			t.Fatalf("decode expanded tree for %q in %q: %v", value, raw, err)
+		}
+
+		var got map[string]any
+		err := decodeWithEnv(raw, &got)
+		if err != nil || !reflect.DeepEqual(got, want) {
+			failures++
+			if failures <= 5 {
+				t.Errorf("value %q in %q: decodeWithEnv = %#v (err %v), want %#v", value, raw, got, err, want)
+			}
+		}
+	}
+	if failures > 0 {
+		t.Fatalf("%d of %d values changed", failures, iterations)
 	}
 }
 

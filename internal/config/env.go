@@ -22,8 +22,10 @@ func decodeWithEnv(raw []byte, out any) error {
 		return fmt.Errorf("expand env: %w", err)
 	}
 	// yaml.v3 enforces KnownFields only while decoding a byte stream, so the
-	// expanded tree is encoded again. Line numbers in decode errors refer to
-	// that re-encoded document, which does not keep blank lines.
+	// expanded tree is encoded again. Line numbers in decode errors therefore
+	// refer to that normalized document, not to raw: blank lines are dropped
+	// and block scalars are written on one line.
+	quoteStringScalars(&doc)
 	expanded, err := yaml.Marshal(&doc)
 	if err != nil {
 		return fmt.Errorf("encode expanded yaml: %w", err)
@@ -36,11 +38,28 @@ func decodeWithEnv(raw []byte, out any) error {
 	return nil
 }
 
+// quoteStringScalars switches block scalars, and scalars whose value contains
+// a line break, to double-quoted style. yaml.v3 does not re-emit those exactly
+// (leading or only line breaks, tab-indented lines, keep chomping), while a
+// double-quoted scalar escapes every character. Only the presentation
+// changes: all of these scalars are strings.
+func quoteStringScalars(n *yaml.Node) {
+	if n.Kind == yaml.ScalarNode &&
+		(n.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 ||
+			strings.ContainsAny(n.Value, "\n\r\u0085\u2028\u2029")) {
+		n.Style = n.Style&yaml.TaggedStyle | yaml.DoubleQuotedStyle
+	}
+	for _, child := range n.Content {
+		quoteStringScalars(child)
+	}
+}
+
 // expandEnvNode expands environment references in every scalar value under n,
-// in place. Mapping keys are left alone, and aliases are skipped because the
-// node they refer to is expanded where it is defined. Errors name the YAML
-// path of the value, such as dns_providers.cf.api_token or
-// certificates[0].subscribers[1].
+// in place. Values are inserted verbatim, so leading and trailing spaces and
+// line breaks are kept. Mapping keys are never expanded, and aliases are
+// skipped because the node they refer to is expanded where it is defined.
+// Errors name the YAML path of the value, such as dns_providers.cf.api_token
+// or certificates[0].subscribers[1].
 func expandEnvNode(n *yaml.Node, path string) error {
 	switch n.Kind {
 	case yaml.DocumentNode:
