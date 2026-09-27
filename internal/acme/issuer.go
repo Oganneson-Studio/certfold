@@ -7,8 +7,10 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"database/sql"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -89,9 +91,15 @@ type Result struct {
 	NotAfter    time.Time
 }
 
+// accountStore is the subset of store.AccountRepo used by Issuer.
+type accountStore interface {
+	Get(ctx context.Context, ca string, tx *sql.Tx) (*store.AccountRecord, error)
+	Upsert(ctx context.Context, rec *store.AccountRecord, tx *sql.Tx) error
+}
+
 // Issuer wraps lego to issue/renew certificates per CertificateSpec.
 type Issuer struct {
-	accounts *store.AccountRepo
+	accounts accountStore
 	// accountLocks maps a CA name to the *sync.Mutex that serializes the
 	// initialization of its ACME account; see accountClient.
 	accountLocks sync.Map
@@ -188,15 +196,16 @@ func (i *Issuer) accountClient(ctx context.Context, cfg *config.ServerConfig, sp
 		return nil, fmt.Errorf("account key: %w", err)
 	}
 
+	// Load persisted registration if present.
+	reg, err := i.loadRegistration(ctx, spec.CA, caEntry.Directory, cfg.ACME.Email)
+	if err != nil {
+		return nil, fmt.Errorf("account registration: %w", err)
+	}
+
 	u := &legoUser{
 		email: cfg.ACME.Email,
 		key:   userKey,
-	}
-
-	// Load persisted registration if present.
-	reg, err := i.loadRegistration(ctx, spec.CA, caEntry.Directory, cfg.ACME.Email)
-	if err == nil {
-		u.reg = reg
+		reg:   reg,
 	}
 
 	legoCfg := lego.NewConfig(u)
@@ -217,9 +226,19 @@ func (i *Issuer) accountClient(ctx context.Context, cfg *config.ServerConfig, sp
 	return client, nil
 }
 
+// loadOrCreateAccountKey returns the stored account key of ca, or creates and
+// stores a new one, replacing the whole record, when the store has no record
+// for ca or its record is for another directory or email. Any other error of
+// the store is returned without writing: taking it for a missing account
+// would throw away a working one and register another.
 func (i *Issuer) loadOrCreateAccountKey(ctx context.Context, ca, directory, email string) (*ecdsa.PrivateKey, error) {
 	rec, err := i.accounts.Get(ctx, ca, nil)
-	if err == nil && rec.Directory == directory && rec.Email == email && rec.KeyPEM != "" {
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// No account yet: create one below.
+	case err != nil:
+		return nil, err
+	case rec.Directory == directory && rec.Email == email && rec.KeyPEM != "":
 		return parseECDSAKey([]byte(rec.KeyPEM))
 	}
 	// Generate a new key.
@@ -244,14 +263,24 @@ func (i *Issuer) loadOrCreateAccountKey(ctx context.Context, ca, directory, emai
 	return key, nil
 }
 
+// loadRegistration returns the stored registration of ca's account, or nil
+// when the store has none for directory and email. Like
+// loadOrCreateAccountKey, it returns other errors rather than report no
+// registration, which would register the account again.
 func (i *Issuer) loadRegistration(ctx context.Context, ca, directory, email string) (*registration.Resource, error) {
 	rec, err := i.accounts.Get(ctx, ca, nil)
-	if err != nil || rec.Directory != directory || rec.Email != email || rec.RegistrationJSON == "" {
-		return nil, fmt.Errorf("no registration")
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if rec.Directory != directory || rec.Email != email || rec.RegistrationJSON == "" {
+		return nil, nil
 	}
 	var reg registration.Resource
 	if err := json.Unmarshal([]byte(rec.RegistrationJSON), &reg); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse stored registration: %w", err)
 	}
 	return &reg, nil
 }
@@ -279,9 +308,12 @@ func (i *Issuer) register(ctx context.Context, client *lego.Client, u *legoUser,
 	if err != nil {
 		return err
 	}
-	rec, _ := i.accounts.Get(ctx, ca, nil)
-	if rec == nil {
-		rec = &store.AccountRecord{CA: ca, Directory: caEntry.Directory, Email: email}
+	// Upsert replaces every column, so start from the stored record, which
+	// holds the key loadOrCreateAccountKey stored under the same lock; a new
+	// record would store the registration without its key.
+	rec, err := i.accounts.Get(ctx, ca, nil)
+	if err != nil {
+		return fmt.Errorf("load account: %w", err)
 	}
 	rec.Directory = caEntry.Directory
 	rec.Email = email

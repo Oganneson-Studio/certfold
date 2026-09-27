@@ -9,9 +9,11 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -689,6 +691,85 @@ func TestStalledCADoesNotDelayAccountSetupForAnotherCA(t *testing.T) {
 	if len(ok.accounts) != 1 || len(ok.orderKIDs) != 1 {
 		t.Fatalf("CA ok: %d accounts and %d verified orders, want 1 and 1; Issue error: %v",
 			len(ok.accounts), len(ok.orderKIDs), okErr)
+	}
+}
+
+// errStoreDown stands for a database error other than a missing record.
+var errStoreDown = errors.New("database unavailable")
+
+// failingAccounts is an account store whose failAt-th Get fails with
+// errStoreDown. It keeps the stored record as it was at that moment.
+type failingAccounts struct {
+	*store.AccountRepo
+	failAt, gets int
+	atFailure    *store.AccountRecord
+}
+
+func (s *failingAccounts) Get(ctx context.Context, ca string, tx *sql.Tx) (*store.AccountRecord, error) {
+	s.gets++
+	if s.gets != s.failAt {
+		return s.AccountRepo.Get(ctx, ca, tx)
+	}
+	s.atFailure, _ = s.AccountRepo.Get(ctx, ca, tx)
+	return nil, errStoreDown
+}
+
+func TestAccountStoreErrorsDoNotReplaceTheAccount(t *testing.T) {
+	tests := []struct {
+		name       string
+		registered bool // an earlier issuance registered the account
+		failAt     int  // which Get of the issuance fails
+	}{
+		{name: "reading the key", registered: true, failAt: 1},
+		{name: "reading the registration", registered: true, failAt: 2},
+		{name: "storing the registration", failAt: 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newFakeACME(t, 1)
+			db, err := store.Open(":memory:")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			ctx := context.Background()
+			cfg := &config.ServerConfig{
+				ACME: config.ACMESection{
+					Email:     "ops@example.com",
+					DefaultCA: "fake",
+					CAs:       map[string]config.CAEntry{"fake": {Directory: server.URL + "/dir"}},
+				},
+				// Never run: every order fails before the challenge.
+				DNSProviders: map[string]config.DNSProvider{"hook": {Type: "exec", Command: []string{"/usr/local/bin/dns-hook"}}},
+			}
+			spec := config.CertificateSpec{Name: "api", Domains: []string{"api.example.com"}, CA: "fake", DNSProvider: "hook", KeyType: "ec256"}
+			if tt.registered {
+				// The fake CA fails the order, after the account is registered.
+				_, _ = NewIssuer(db.Accounts).Issue(ctx, cfg, spec)
+			}
+
+			accounts := &failingAccounts{AccountRepo: db.Accounts, failAt: tt.failAt}
+			_, err = (&Issuer{accounts: accounts}).Issue(ctx, cfg, spec)
+			if !errors.Is(err, errStoreDown) {
+				t.Fatalf("Issue error = %v, want the store's error", err)
+			}
+			if accounts.atFailure == nil {
+				t.Fatal("no account was stored when Get failed")
+			}
+			got, err := db.Accounts.Get(ctx, "fake", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if *got != *accounts.atFailure {
+				t.Errorf("stored account changed after the failed read: key replaced %v, registration %q, was %q",
+					got.KeyPEM != accounts.atFailure.KeyPEM, got.RegistrationJSON, accounts.atFailure.RegistrationJSON)
+			}
+			server.mu.Lock()
+			defer server.mu.Unlock()
+			if len(server.accounts) != 1 {
+				t.Errorf("%d accounts registered, want 1", len(server.accounts))
+			}
+		})
 	}
 }
 
