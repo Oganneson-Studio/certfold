@@ -34,9 +34,10 @@ type ServerSection struct {
 }
 
 type ACMESection struct {
-	Email     string             `yaml:"email"`
-	DefaultCA string             `yaml:"default_ca"`
-	CAs       map[string]CAEntry `yaml:"cas"`
+	Email        string             `yaml:"email"`
+	DefaultCA    string             `yaml:"default_ca"`
+	CAs          map[string]CAEntry `yaml:"cas"`
+	DNSResolvers []string           `yaml:"dns_resolvers,omitempty"`
 }
 
 type CAEntry struct {
@@ -48,8 +49,10 @@ type CAEntry struct {
 // DNSProvider is intentionally loose: each provider type accepts different
 // fields. We unmarshal into a generic map and validate per-type at load.
 type DNSProvider struct {
-	Type   string         `yaml:"type"`
-	Config map[string]any `yaml:",inline"`
+	Type                 string         `yaml:"type"`
+	Command              []string       `yaml:"command,omitempty"`
+	SkipPropagationCheck bool           `yaml:"skip_propagation_check,omitempty"`
+	Config               map[string]any `yaml:",inline"`
 }
 
 type CertificateSpec struct {
