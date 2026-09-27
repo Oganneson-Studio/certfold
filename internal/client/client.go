@@ -44,8 +44,14 @@ type Client struct {
 	cfg   *config.ClientConfig
 	http  *http.Client
 
-	pullMu   sync.Mutex
-	reloadCh chan struct{}
+	pullMu sync.Mutex
+	// rewriteAll makes the next full pull rewrite the outputs of every
+	// subscribed certificate, whatever the fingerprints in state.json say:
+	// outputs may have been added to client.yaml or removed from disk since
+	// they were last written. New and Reload set it; a full pull clears it
+	// once it has listed the subscribed certificates. Guarded by pullMu.
+	rewriteAll bool
+	reloadCh   chan struct{}
 
 	statusMu sync.RWMutex
 	status   RuntimeStatus
@@ -88,9 +94,10 @@ func New(cfg *config.ClientConfig, options ...Option) (*Client, error) {
 		return nil, err
 	}
 	c := &Client{
-		cfg:      cfg,
-		http:     httpClient,
-		reloadCh: make(chan struct{}, 1),
+		cfg:        cfg,
+		http:       httpClient,
+		rewriteAll: true,
+		reloadCh:   make(chan struct{}, 1),
 		status: RuntimeStatus{
 			Name:      cfg.Client.Name,
 			ServerURL: cfg.Client.ServerURL,
@@ -113,7 +120,7 @@ func (c *Client) Run(ctx context.Context) error {
 		return fmt.Errorf("client.push_listen: %w", err)
 	}
 
-	// First pull immediately.
+	// First pull immediately. New set rewriteAll, so it rewrites every output.
 	_ = c.pullOnce(ctx)
 
 	// Push receiver (optional).
@@ -124,7 +131,8 @@ func (c *Client) Run(ctx context.Context) error {
 	return c.pullLoop(ctx)
 }
 
-// pullLoop ticks every pull_interval ±10 % and calls pullOnce.
+// pullLoop ticks every pull_interval ±10 % and calls pullOnce. A successful
+// Reload triggers an immediate pull and restarts the interval.
 func (c *Client) pullLoop(ctx context.Context) error {
 	for {
 		interval := jitter(c.pullInterval(), jitterPct)
@@ -135,6 +143,7 @@ func (c *Client) pullLoop(ctx context.Context) error {
 			return ctx.Err()
 		case <-c.reloadCh:
 			timer.Stop()
+			_ = c.pullOnce(ctx)
 		case <-timer.C:
 			_ = c.pullOnce(ctx)
 		}
@@ -143,8 +152,9 @@ func (c *Client) pullLoop(ctx context.Context) error {
 
 // pullOnce executes one full pull cycle:
 //  1. GET /v1/certificates
-//  2. Diff against local state
-//  3. Fetch changed bundles + write outputs
+//  2. Diff against local state, or select every certificate while
+//     rewriteAll is set
+//  3. Fetch selected bundles + write outputs
 //  4. Persist updated state
 //  5. POST /v1/heartbeat
 func (c *Client) pullOnce(ctx context.Context) error {
@@ -152,7 +162,9 @@ func (c *Client) pullOnce(ctx context.Context) error {
 }
 
 // Fetch performs an immediate pull. When name is non-empty, that certificate
-// is fetched even when its fingerprint has not changed.
+// is fetched even when its fingerprint has not changed. An empty name fetches
+// the certificates whose fingerprints changed, or every subscribed
+// certificate after startup or a reload.
 func (c *Client) Fetch(ctx context.Context, name string) error {
 	c.pullMu.Lock()
 	defer c.pullMu.Unlock()
@@ -293,6 +305,9 @@ func (c *Client) fetchLocked(ctx context.Context, name string) error {
 		if len(changed) == 0 {
 			return fmt.Errorf("certificate %q is not subscribed", name)
 		}
+	} else if c.rewriteAll {
+		changed = summaries
+		c.rewriteAll = false
 	}
 
 	var errs []error
@@ -526,7 +541,9 @@ func (c *Client) Status() RuntimeStatus {
 
 // Reload applies a newly parsed client configuration. Changing the IPC or
 // push listener requires a service restart because those listeners are owned
-// by Run and the command process respectively.
+// by Run and the command process respectively. Once applied, Run pulls
+// immediately and rewrites the outputs of every subscribed certificate, so
+// outputs added to client.yaml are written without waiting for a renewal.
 func (c *Client) Reload(cfg *config.ClientConfig) error {
 	httpClient, err := buildHTTPClient(cfg)
 	if err != nil {
@@ -547,6 +564,7 @@ func (c *Client) Reload(cfg *config.ClientConfig) error {
 	c.cfg = cfg
 	c.http = httpClient
 	c.cfgMu.Unlock()
+	c.rewriteAll = true
 
 	c.statusMu.Lock()
 	c.status.Name = cfg.Client.Name

@@ -150,7 +150,9 @@ func buildTestCfg(t *testing.T, serverURL string) *config.ClientConfig {
 type fakeServer struct {
 	summaries  []proto.CertSummary
 	bundles    map[string]*proto.CertBundle
-	heartbeats int
+	heartbeats atomic.Int32
+	// pulls, when set, receives a value as each pull ends with its heartbeat.
+	pulls chan struct{}
 }
 
 func (f *fakeServer) handler() http.Handler {
@@ -174,10 +176,39 @@ func (f *fakeServer) handler() http.Handler {
 		_ = json.NewEncoder(w).Encode(b)
 	})
 	mux.HandleFunc("/v1/heartbeat", func(w http.ResponseWriter, r *http.Request) {
-		f.heartbeats++
+		f.heartbeats.Add(1)
+		if f.pulls != nil {
+			select {
+			case f.pulls <- struct{}{}:
+			default:
+			}
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	return mux
+}
+
+// waitForPull waits until the fake server has seen the heartbeat that ends a
+// pull, so every output of that pull has been written.
+func waitForPull(t *testing.T, pulls <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-pulls:
+	case <-time.After(10 * time.Second):
+		t.Fatal("pull did not complete")
+	}
+}
+
+// startRun runs c until the test ends.
+func startRun(t *testing.T, c *Client) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -224,8 +255,8 @@ func TestPullOnce_FetchAndWrite(t *testing.T) {
 	}
 
 	// Heartbeat should have been sent.
-	if fs.heartbeats != 1 {
-		t.Errorf("expected 1 heartbeat, got %d", fs.heartbeats)
+	if got := fs.heartbeats.Load(); got != 1 {
+		t.Errorf("expected 1 heartbeat, got %d", got)
 	}
 }
 
@@ -476,6 +507,119 @@ func TestFetchNamedCertificateForcesOnlyThatBundle(t *testing.T) {
 	}
 	if len(bundleRequests) != 1 || bundleRequests[0] != "/v1/certificates/b/bundle" {
 		t.Fatalf("bundle requests = %v, want only b", bundleRequests)
+	}
+}
+
+// newRewriteServer serves one certificate whose fingerprint never changes, so
+// only a forced rewrite writes its outputs again.
+func newRewriteServer() *fakeServer {
+	return &fakeServer{
+		summaries: []proto.CertSummary{{Name: "api-prod", Fingerprint: "sha256:AABB"}},
+		bundles: map[string]*proto.CertBundle{
+			"api-prod": {FullchainPEM: "-----BEGIN CERTIFICATE-----\nfoo\n-----END CERTIFICATE-----\n", KeyPEM: "key"},
+		},
+		pulls: make(chan struct{}, 8),
+	}
+}
+
+func TestRunRewritesOutputsOnFirstPull(t *testing.T) {
+	fs := newRewriteServer()
+	ts := httptest.NewServer(fs.handler())
+	t.Cleanup(ts.Close)
+	cfg := buildTestCfg(t, ts.URL)
+	outPath := filepath.Join(t.TempDir(), "cert.pem")
+	cfg.Outputs["api-prod"] = []config.OutputSpec{{Format: "pem-fullchain", Path: outPath}}
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An earlier run wrote this fingerprint; the output has since gone missing.
+	if err := c.saveState(&state{Certs: map[string]string{"api-prod": "sha256:AABB"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	startRun(t, c)
+	waitForPull(t, fs.pulls)
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatalf("first pull did not rewrite the output: %v", err)
+	}
+}
+
+func TestReloadRewritesOutputsImmediately(t *testing.T) {
+	fs := newRewriteServer()
+	ts := httptest.NewServer(fs.handler())
+	t.Cleanup(ts.Close)
+	cfg := buildTestCfg(t, ts.URL)
+	dir := t.TempDir()
+	firstPath := filepath.Join(dir, "cert.pem")
+	addedPath := filepath.Join(dir, "added.pem")
+	cfg.Outputs["api-prod"] = []config.OutputSpec{{Format: "pem-fullchain", Path: firstPath}}
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startRun(t, c)
+	waitForPull(t, fs.pulls)
+
+	// An output added to client.yaml after the certificate was written.
+	updated := *cfg
+	updated.Outputs = map[string][]config.OutputSpec{"api-prod": {
+		{Format: "pem-fullchain", Path: firstPath},
+		{Format: "pem-fullchain", Path: addedPath},
+	}}
+	if err := c.Reload(&updated); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	waitForPull(t, fs.pulls)
+	if _, err := os.Stat(addedPath); err != nil {
+		t.Fatalf("reload did not write the added output: %v", err)
+	}
+
+	// Later pulls only write certificates whose fingerprints changed.
+	if err := os.Remove(addedPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Fetch(context.Background(), ""); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if _, err := os.Stat(addedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pull without a fingerprint change rewrote the output: %v", err)
+	}
+}
+
+func TestRewriteSurvivesUnreachableServer(t *testing.T) {
+	api := newRewriteServer().handler()
+	var unavailable atomic.Bool
+	unavailable.Store(true)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if unavailable.Load() {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		api.ServeHTTP(w, r)
+	}))
+	defer ts.Close()
+
+	cfg := buildTestCfg(t, ts.URL)
+	outPath := filepath.Join(t.TempDir(), "cert.pem")
+	cfg.Outputs["api-prod"] = []config.OutputSpec{{Format: "pem-fullchain", Path: outPath}}
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.saveState(&state{Certs: map[string]string{"api-prod": "sha256:AABB"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.pullOnce(context.Background()); err == nil {
+		t.Fatal("expected the pull to fail while the server is unavailable")
+	}
+	unavailable.Store(false)
+	if err := c.pullOnce(context.Background()); err != nil {
+		t.Fatalf("pullOnce: %v", err)
+	}
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatalf("the failed pull dropped the pending rewrite: %v", err)
 	}
 }
 
