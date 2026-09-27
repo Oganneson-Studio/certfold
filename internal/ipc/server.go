@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
@@ -34,6 +35,10 @@ type ServerControlDeps struct {
 // by the sigils daemon.
 type CertificateControlDeps struct {
 	Renew func(context.Context, string) error
+	// Current returns the running configuration.
+	Current func() *config.ServerConfig
+	// Issuing reports whether an issuance of the named certificate is running or waiting for a slot.
+	Issuing func(name string) bool
 }
 
 // TokenControlDeps exposes enrollment-token operations implemented by the
