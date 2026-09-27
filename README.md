@@ -45,6 +45,8 @@ When these fields are omitted, `sigils` uses its internal mini-CA certificate. T
 
 Enrollment tokens carry the expected client name, server URL, and mini-CA certificate. `sigilc` validates TLS before sending the token or CSR, then stores its mTLS identity in a private, atomically replaced configuration file.
 
+`sigilc` verifies the server against the operating system's roots plus the Sigil mini-CA, so either kind of server certificate works. Client certificates are always issued and verified by the mini-CA.
+
 ## Basic flow
 
 ```bash
@@ -67,7 +69,28 @@ sigilc reload
 sigils --config /etc/sigil/server.yaml reload
 ```
 
+`token create` and `reload` are served by the running daemon over local IPC and fail when it is not running. `cert add` and `cert remove` edit `server.yaml` and then tell a running daemon to reload.
+
+On Windows, run the daemons as services (LocalSystem) or from an elevated prompt. The CLI only talks to a named pipe owned by SYSTEM or Administrators, so a low-privilege process cannot impersonate the daemon. `service install` registers a daemon with the system service manager, which restarts it after a failure: 10 seconds later on Windows, and through `Restart=on-failure` under systemd.
+
 For one-line installation, place platform binaries in `<data_dir>/binaries/` using names such as `sigilc-linux-amd64` and `sigilc-windows-amd64.exe`.
+
+## Environment variables in configuration
+
+Values in `server.yaml` and `client.yaml` can reference environment variables as `${VAR}` or `${VAR:-default}`. `$$` is a literal `$`, and an unset variable without a default is an error. References are expanded after the YAML is parsed, inside each scalar value:
+
+- The value is inserted verbatim. Leading and trailing spaces and line breaks are kept, and quotes, `#`, or `: ` inside it are never read as YAML.
+- Mapping keys are never expanded.
+- Inside a flow collection, quote the reference, as in `["${HOST}"]`, because `{` is a flow indicator there.
+
+## Private key outputs on Windows
+
+Outputs that contain a private key (`pem-key`, `pem-bundle`, `pkcs12`) are created with a protected ACL that grants access only to SYSTEM, Administrators, and the account running `sigilc`. `mode` is not applied on Windows and cannot widen that ACL. To let a service such as IIS or nginx read a key, set `owner` on that output to the service's account name or SID; that account gets read access.
+
+When upgrading from an earlier build:
+
+- The first start rewrites every output. A non-administrator consumer that relied on the directory's inherited ACL loses access to key files until `owner` is set for it.
+- Files that an earlier build wrote with a read-only `mode` carry the read-only attribute, which makes replacing them fail. Clear it once with `attrib -r <file>`.
 
 ## Runtime reload and renewal
 
@@ -76,6 +99,8 @@ For one-line installation, place platform binaries in `<data_dir>/binaries/` usi
 Reload waits for any in-flight issuance to finish, publishes one configuration generation, clears obsolete retry backoff, and immediately checks the new certificate definitions. Stored certificate material is tied to its CA directory, domains, and key type, so stale same-name material is not distributed while a replacement is being issued. Read-only IPC responses expose metadata only and never include certificate private keys, push tokens, or enrollment-token hashes.
 
 `sigilc` automatically renews its mTLS identity before expiry. `client.identity_renew_before` defaults to 30 days and accepts values from 1 hour through 89 days.
+
+After it starts and after `sigilc reload`, the client rewrites every subscribed output once. A certificate that could not be written is retried on later pulls.
 
 After successful certificate issuance or renewal, `sigils` sends push notifications to configured subscriber routes. Outbound push uses HTTPS with a bearer token, rejects endpoint query strings, and never follows redirects. The client push receiver is plaintext HTTP, so it is restricted to a literal loopback address and requires a bearer token of at least 32 characters; remote ingress must terminate TLS locally before forwarding to it.
 
