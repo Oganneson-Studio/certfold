@@ -9,11 +9,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
@@ -25,6 +27,26 @@ func mustOpenDB(t *testing.T) *store.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
+}
+
+// testCertConfig returns a running configuration with the given certificates
+// and the CA "le" they can reference.
+func testCertConfig(specs ...config.CertificateSpec) *config.ServerConfig {
+	return &config.ServerConfig{
+		ACME: config.ACMESection{CAs: map[string]config.CAEntry{
+			"le": {Directory: "https://acme.example.com/directory"},
+		}},
+		Certificates: specs,
+	}
+}
+
+// certDeps returns certificate deps that run cfg and report the named
+// certificates as issuing.
+func certDeps(cfg *config.ServerConfig, issuing ...string) *CertificateControlDeps {
+	return &CertificateControlDeps{
+		Current: func() *config.ServerConfig { return cfg },
+		Issuing: func(name string) bool { return slices.Contains(issuing, name) },
+	}
 }
 
 // newTestClient returns a client that reaches ts over TCP through the same
@@ -55,7 +77,7 @@ func TestClientDialsForEveryRequest(t *testing.T) {
 
 func TestListCerts_Empty(t *testing.T) {
 	db := mustOpenDB(t)
-	h := &ipcHandlers{deps: ServerDeps{DB: db}}
+	h := &ipcHandlers{deps: ServerDeps{DB: db, Certificates: certDeps(testCertConfig())}}
 	ts := httptest.NewServer(buildIPCRouter(h))
 	defer ts.Close()
 
@@ -69,9 +91,112 @@ func TestListCerts_Empty(t *testing.T) {
 	}
 }
 
+func TestListCertsReportsConfiguredCertificatesAndState(t *testing.T) {
+	db := mustOpenDB(t)
+	ctx := context.Background()
+	// The store keeps whole seconds.
+	now := time.Now().UTC().Truncate(time.Second)
+	notAfter := now.Add(60 * 24 * time.Hour)
+	issuedAt := now.Add(-30 * 24 * time.Hour)
+	certSpec := func(name string) config.CertificateSpec {
+		return config.CertificateSpec{Name: name, CA: "le", Domains: []string{name + ".example.com"}, KeyType: "ec256"}
+	}
+	// Not in name order, which is the order the store lists records in.
+	cfg := testCertConfig(certSpec("renewing"), certSpec("api"), certSpec("stale"), certSpec("new"), certSpec("failing"), certSpec("retry"))
+
+	for _, spec := range []config.CertificateSpec{
+		certSpec("renewing"),
+		certSpec("api"),
+		certSpec("failing"),
+		// Issued before the domains changed.
+		{Name: "stale", CA: "le", Domains: []string{"old.example.com"}, KeyType: "ec256"},
+		// No longer configured.
+		certSpec("removed"),
+	} {
+		if err := db.Certs.Upsert(ctx, &store.CertRecord{
+			Name:            spec.Name,
+			CA:              spec.CA,
+			Domains:         spec.Domains,
+			SpecFingerprint: config.CertificateSpecFingerprint(cfg, spec),
+			FullchainPEM:    "fullchain",
+			KeyPEM:          "key",
+			NotAfter:        notAfter,
+			Fingerprint:     "sha256:" + spec.Name,
+			IssuedAt:        issuedAt,
+			UpdatedAt:       issuedAt,
+		}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, status := range []*store.IssuanceStatus{
+		{Name: "renewing", Failures: 1, LastError: "order failed", LastAttemptAt: now.Add(-time.Minute), NextAttemptAt: now.Add(4 * time.Minute)},
+		{Name: "failing", Failures: 3, LastError: "rate limited", LastAttemptAt: now.Add(-5 * time.Minute), NextAttemptAt: now.Add(15 * time.Minute)},
+		// The backoff has expired; the failures and the error remain.
+		{Name: "retry", Failures: 2, LastError: "dns timeout", LastAttemptAt: now.Add(-20 * time.Minute), NextAttemptAt: now.Add(-10 * time.Minute)},
+		{Name: "removed", Failures: 5, LastError: "removed", LastAttemptAt: now, NextAttemptAt: now.Add(time.Hour)},
+	} {
+		if err := db.Issuance.Upsert(ctx, status, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	want := []*CertificateInfo{
+		// Issuing wins over a backoff and a stored certificate.
+		{Name: "renewing", CA: "le", Domains: []string{"renewing.example.com"},
+			NotAfter: notAfter, Fingerprint: "sha256:renewing", IssuedAt: issuedAt, UpdatedAt: issuedAt,
+			State: CertStateIssuing, Failures: 1, LastError: "order failed",
+			LastAttemptAt: now.Add(-time.Minute), NextAttemptAt: now.Add(4 * time.Minute)},
+		{Name: "api", CA: "le", Domains: []string{"api.example.com"},
+			NotAfter: notAfter, Fingerprint: "sha256:api", IssuedAt: issuedAt, UpdatedAt: issuedAt,
+			State: CertStateValid},
+		// Material issued for other domains is not reported.
+		{Name: "stale", CA: "le", Domains: []string{"stale.example.com"}, State: CertStatePending},
+		{Name: "new", CA: "le", Domains: []string{"new.example.com"}, State: CertStatePending},
+		// A backoff wins over a stored certificate.
+		{Name: "failing", CA: "le", Domains: []string{"failing.example.com"},
+			NotAfter: notAfter, Fingerprint: "sha256:failing", IssuedAt: issuedAt, UpdatedAt: issuedAt,
+			State: CertStateBackoff, Failures: 3, LastError: "rate limited",
+			LastAttemptAt: now.Add(-5 * time.Minute), NextAttemptAt: now.Add(15 * time.Minute)},
+		{Name: "retry", CA: "le", Domains: []string{"retry.example.com"},
+			State: CertStatePending, Failures: 2, LastError: "dns timeout",
+			LastAttemptAt: now.Add(-20 * time.Minute), NextAttemptAt: now.Add(-10 * time.Minute)},
+	}
+
+	h := &ipcHandlers{deps: ServerDeps{DB: db, Certificates: certDeps(cfg, "renewing")}}
+	ts := httptest.NewServer(buildIPCRouter(h))
+	defer ts.Close()
+
+	got, err := newTestClient(ts).ListCerts(ctx)
+	if err != nil {
+		t.Fatalf("ListCerts: %v", err)
+	}
+	if len(got) != len(want) {
+		raw, _ := json.Marshal(got)
+		t.Fatalf("got %d certificates, want %d: %s", len(got), len(want), raw)
+	}
+	for i := range want {
+		gotJSON, _ := json.Marshal(got[i])
+		wantJSON, _ := json.Marshal(want[i])
+		if !bytes.Equal(gotJSON, wantJSON) {
+			t.Errorf("certificate %d:\n got %s\nwant %s", i, gotJSON, wantJSON)
+		}
+	}
+}
+
+func TestListCertsRejectsUnavailableStatus(t *testing.T) {
+	h := &ipcHandlers{deps: ServerDeps{DB: mustOpenDB(t), Certificates: &CertificateControlDeps{}}}
+	ts := httptest.NewServer(buildIPCRouter(h))
+	defer ts.Close()
+
+	_, err := newTestClient(ts).ListCerts(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "501") {
+		t.Fatalf("ListCerts error = %v", err)
+	}
+}
+
 func TestReadEndpointsReturnEmptyArrays(t *testing.T) {
 	db := mustOpenDB(t)
-	h := &ipcHandlers{deps: ServerDeps{DB: db}}
+	h := &ipcHandlers{deps: ServerDeps{DB: db, Certificates: certDeps(testCertConfig())}}
 	ts := httptest.NewServer(buildIPCRouter(h))
 	defer ts.Close()
 
@@ -97,16 +222,20 @@ func TestReadEndpointsReturnEmptyArrays(t *testing.T) {
 
 func TestUpsertAndListCerts(t *testing.T) {
 	db := mustOpenDB(t)
-	h := &ipcHandlers{deps: ServerDeps{DB: db}}
+	spec := config.CertificateSpec{Name: "api-prod", CA: "le", Domains: []string{"api.example.com"}, KeyType: "ec256"}
+	cfg := testCertConfig(spec)
+	h := &ipcHandlers{deps: ServerDeps{DB: db, Certificates: certDeps(cfg)}}
 	ts := httptest.NewServer(buildIPCRouter(h))
 	defer ts.Close()
 
 	// The E2E stack seeds its certificate by posting a raw store.CertRecord.
 	body, err := json.Marshal(&store.CertRecord{
-		Name:     "api-prod",
-		CA:       "le",
-		Domains:  []string{"api.example.com"},
-		NotAfter: time.Now().Add(90 * 24 * time.Hour),
+		Name:            "api-prod",
+		CA:              "le",
+		Domains:         []string{"api.example.com"},
+		SpecFingerprint: config.CertificateSpecFingerprint(cfg, spec),
+		NotAfter:        time.Now().Add(90 * 24 * time.Hour),
+		Fingerprint:     "sha256:AA",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -124,8 +253,11 @@ func TestUpsertAndListCerts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListCerts: %v", err)
 	}
-	if len(certs) != 1 || certs[0].Name != "api-prod" {
-		t.Errorf("expected [api-prod], got %v", certs)
+	if len(certs) != 1 {
+		t.Fatalf("got %d certificates, want 1", len(certs))
+	}
+	if certs[0].Name != "api-prod" || certs[0].State != CertStateValid || certs[0].Fingerprint != "sha256:AA" {
+		t.Errorf("expected the seeded api-prod to be valid, got %+v", *certs[0])
 	}
 }
 
@@ -341,13 +473,18 @@ func TestDeleteToken(t *testing.T) {
 func TestReadEndpointsDoNotExposeStoredSecrets(t *testing.T) {
 	db := mustOpenDB(t)
 	ctx := context.Background()
+	spec := config.CertificateSpec{Name: "api-prod", CA: "le", Domains: []string{"api.example.com"}, KeyType: "ec256"}
+	cfg := testCertConfig(spec)
+	// The record matches the running configuration, so it is listed.
 	if err := db.Certs.Upsert(ctx, &store.CertRecord{
-		Name:         "api-prod",
-		CA:           "le",
-		Domains:      []string{"api.example.com"},
-		FullchainPEM: "sentinel-fullchain-pem",
-		KeyPEM:       "sentinel-private-key-pem",
-		UpdatedAt:    time.Now(),
+		Name:            "api-prod",
+		CA:              "le",
+		Domains:         []string{"api.example.com"},
+		SpecFingerprint: config.CertificateSpecFingerprint(cfg, spec),
+		FullchainPEM:    "sentinel-fullchain-pem",
+		KeyPEM:          "sentinel-private-key-pem",
+		Fingerprint:     "sha256:cc",
+		UpdatedAt:       time.Now(),
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +508,7 @@ func TestReadEndpointsDoNotExposeStoredSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := &ipcHandlers{deps: ServerDeps{DB: db}}
+	h := &ipcHandlers{deps: ServerDeps{DB: db, Certificates: certDeps(cfg)}}
 	ts := httptest.NewServer(buildIPCRouter(h))
 	defer ts.Close()
 
@@ -380,12 +517,15 @@ func TestReadEndpointsDoNotExposeStoredSecrets(t *testing.T) {
 		path            string
 		forbiddenFields []string
 		forbiddenValues []string
+		// listedValues show that the record holding the secrets was read.
+		listedValues []string
 	}{
 		{
 			name:            "certificates",
 			path:            "/ipc/v1/certs",
 			forbiddenFields: []string{"keypem", "fullchainpem"},
 			forbiddenValues: []string{"sentinel-private-key-pem", "sentinel-fullchain-pem"},
+			listedValues:    []string{"sha256:cc"},
 		},
 		{
 			name:            "clients",
@@ -426,6 +566,11 @@ func TestReadEndpointsDoNotExposeStoredSecrets(t *testing.T) {
 			for _, value := range tt.forbiddenValues {
 				if strings.Contains(lowerBody, value) {
 					t.Fatalf("response exposed forbidden value %q: %s", value, body)
+				}
+			}
+			for _, value := range tt.listedValues {
+				if !strings.Contains(lowerBody, value) {
+					t.Fatalf("response lacks %q of the stored record: %s", value, body)
 				}
 			}
 		})
@@ -503,7 +648,7 @@ func TestServe(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	served := make(chan error, 1)
-	go func() { served <- Serve(ctx, l, ServerDeps{DB: db}) }()
+	go func() { served <- Serve(ctx, l, ServerDeps{DB: db, Certificates: certDeps(testCertConfig())}) }()
 
 	c := newClient(func() (net.Conn, error) { return net.Dial("tcp", l.Addr().String()) })
 	certs, err := c.ListCerts(ctx)

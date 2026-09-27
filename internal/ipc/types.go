@@ -3,6 +3,7 @@ package ipc
 import (
 	"time"
 
+	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
@@ -92,21 +93,51 @@ type FetchClientRequest struct {
 	Name string `json:"name,omitempty"`
 }
 
-func certificateInfos(records []*store.CertRecord) []*CertificateInfo {
-	out := make([]*CertificateInfo, 0, len(records))
+// certificateInfos lists the certificates of cfg in configuration order.
+// Stored material is reported only when its spec fingerprint matches the
+// running configuration, so it is the material clients can fetch. Records of
+// certificates that are no longer configured are left out.
+func certificateInfos(cfg *config.ServerConfig, records []*store.CertRecord, statuses []*store.IssuanceStatus, issuing func(string) bool, now time.Time) []*CertificateInfo {
+	stored := make(map[string]*store.CertRecord, len(records))
 	for _, record := range records {
-		if record == nil {
-			continue
+		stored[record.Name] = record
+	}
+	attempts := make(map[string]*store.IssuanceStatus, len(statuses))
+	for _, status := range statuses {
+		attempts[status.Name] = status
+	}
+	out := make([]*CertificateInfo, 0, len(cfg.Certificates))
+	for _, spec := range cfg.Certificates {
+		info := &CertificateInfo{
+			Name:    spec.Name,
+			CA:      spec.CA,
+			Domains: append([]string{}, spec.Domains...),
 		}
-		out = append(out, &CertificateInfo{
-			Name:        record.Name,
-			CA:          record.CA,
-			Domains:     append([]string{}, record.Domains...),
-			NotAfter:    record.NotAfter,
-			Fingerprint: record.Fingerprint,
-			IssuedAt:    record.IssuedAt,
-			UpdatedAt:   record.UpdatedAt,
-		})
+		record := stored[spec.Name]
+		matched := record != nil && record.SpecFingerprint == config.CertificateSpecFingerprint(cfg, spec)
+		if matched {
+			info.NotAfter = record.NotAfter
+			info.Fingerprint = record.Fingerprint
+			info.IssuedAt = record.IssuedAt
+			info.UpdatedAt = record.UpdatedAt
+		}
+		if status := attempts[spec.Name]; status != nil {
+			info.Failures = status.Failures
+			info.LastError = status.LastError
+			info.LastAttemptAt = status.LastAttemptAt
+			info.NextAttemptAt = status.NextAttemptAt
+		}
+		switch {
+		case issuing(spec.Name):
+			info.State = CertStateIssuing
+		case info.NextAttemptAt.After(now):
+			info.State = CertStateBackoff
+		case matched:
+			info.State = CertStateValid
+		default:
+			info.State = CertStatePending
+		}
+		out = append(out, info)
 	}
 	return out
 }
