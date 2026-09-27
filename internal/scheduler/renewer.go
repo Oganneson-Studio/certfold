@@ -427,6 +427,7 @@ func retryDelay(failures int) time.Duration {
 // lastError prepares an issuance error for storage. It can quote responses of
 // the ACME CA and the DNS provider API, and the CLI prints it to a terminal as
 // is, so control characters become spaces and the length is bounded.
+// strings.Map also turns invalid UTF-8 into U+FFFD.
 func lastError(err error) string {
 	msg := strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {

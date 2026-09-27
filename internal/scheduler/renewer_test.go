@@ -1460,6 +1460,11 @@ func TestLastErrorIsSanitized(t *testing.T) {
 	if got := lastError(errors.New("short")); got != "short" {
 		t.Fatalf("lastError(short) = %q", got)
 	}
+	// Invalid UTF-8 becomes U+FFFD: an 8-bit terminal takes a bare 0x9B byte
+	// for CSI.
+	if got, want := lastError(errors.New("a\xffb\x9b[2Jc\xc2")), "a\uFFFDb\uFFFD[2Jc\uFFFD"; got != want {
+		t.Fatalf("lastError(invalid UTF-8) = %q, want %q", got, want)
+	}
 }
 
 // TestNoopNotifier: NoopNotifier returns no error.
