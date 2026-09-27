@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"gopkg.in/yaml.v3"
@@ -44,6 +45,7 @@ func AddCertificateSpec(path string, spec CertificateSpec) (CertificateSpec, err
 	if err := item.Encode(spec); err != nil {
 		return CertificateSpec{}, fmt.Errorf("encode certificate %q: %w", spec.Name, err)
 	}
+	escapeDollarSigns(&item)
 	seq.Content = append(seq.Content, &item)
 
 	if err := validateAndWriteServerConfig(path, doc); err != nil {
@@ -82,6 +84,18 @@ func RemoveCertificateSpec(path, name string) error {
 	}
 	seq.Content = append(seq.Content[:index], seq.Content[index+1:]...)
 	return validateAndWriteServerConfig(path, doc)
+}
+
+// escapeDollarSigns doubles every '$' in the scalars under n, so values taken
+// from the command line load back unchanged instead of being expanded as
+// environment references.
+func escapeDollarSigns(n *yaml.Node) {
+	if n.Kind == yaml.ScalarNode {
+		n.Value = strings.ReplaceAll(n.Value, "$", "$$")
+	}
+	for _, child := range n.Content {
+		escapeDollarSigns(child)
+	}
 }
 
 func loadServerConfigDocument(path string) (*ServerConfig, *yaml.Node, error) {
