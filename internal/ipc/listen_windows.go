@@ -35,8 +35,10 @@ func Listen(path string) (net.Listener, error) {
 		return nil, fmt.Errorf("ipc listen pipe %s: %w", path, err)
 	}
 	// IsMember counts enabled groups only, so the deny-only Administrators
-	// group of a non-elevated token does not qualify.
-	admin, err := windows.GetCurrentProcessToken().IsMember(admins)
+	// group of a non-elevated token does not qualify. The zero token is what
+	// CheckTokenMembership documents for the caller: it checks the thread's
+	// impersonation token, or a copy of the process token when there is none.
+	admin, err := windows.Token(0).IsMember(admins)
 	if err != nil {
 		return nil, fmt.Errorf("ipc listen pipe %s: %w", path, err)
 	}
