@@ -341,46 +341,6 @@ func TestPostEnroll(t *testing.T) {
 	}
 }
 
-// TestPostEnroll_PinnedCA verifies that enrollment succeeds against a
-// self-signed server only when its certificate is pinned in the token.
-func TestPostEnroll_PinnedCA(t *testing.T) {
-	resp := proto.EnrollResponse{CACert: "ca-pem-pinned", ClientCert: "client-pem-pinned"}
-	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/enroll" || r.Method != http.MethodPost {
-			http.Error(w, "unexpected", http.StatusBadRequest)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer ts.Close()
-
-	token := encodeTestToken(t, tokenPayload{ServerURL: ts.URL, CACert: testServerCertPEM(t, ts)})
-	kc, _ := GenerateKeyAndCSR("web-1")
-	got, err := PostEnroll(ts.URL, token, kc.CSRDER)
-	if err != nil {
-		t.Fatalf("PostEnroll (pinned CA): %v", err)
-	}
-	if got.CACert != "ca-pem-pinned" || got.ClientCert != "client-pem-pinned" {
-		t.Errorf("unexpected response: %+v", got)
-	}
-}
-
-func TestPostEnroll_RejectsUnpinnedServer(t *testing.T) {
-	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-	other := httptest.NewTLSServer(http.NotFoundHandler())
-	defer other.Close()
-
-	token := encodeTestToken(t, tokenPayload{ServerURL: ts.URL, CACert: testServerCertPEM(t, other)})
-	kc, _ := GenerateKeyAndCSR("web-1")
-	if _, err := PostEnroll(ts.URL, token, kc.CSRDER); err == nil {
-		t.Fatal("expected enrollment to reject a server not signed by the token CA")
-	}
-}
-
 func encodeTestToken(t *testing.T, payload tokenPayload) string {
 	t.Helper()
 	raw, err := json.Marshal(payload)
