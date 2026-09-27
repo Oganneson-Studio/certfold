@@ -7,14 +7,13 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -24,9 +23,6 @@ import (
 	"runtime"
 	"strings"
 	"time"
-
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
 const startupTimeout = 2 * time.Minute
@@ -42,11 +38,24 @@ type e2eStack struct {
 	network     string
 	serverImage string
 	clientImage string
+	pebbleImage string
 	// mountDir is the host directory every container mounts at /e2e. It is
 	// the same in every run, because a WSLC session can mount only 15
 	// distinct host paths; each run keeps its files in its own runDir in it.
 	mountDir string
 	runDir   string
+	// Both servers issue their certificates from pebble, an ACME test CA.
+	// Their exec DNS provider sets the challenge records in challtestsrv,
+	// which answers the DNS lookups of pebble and of the servers. The host
+	// reaches both through ports published on 127.0.0.1.
+	pebbleContainer       string
+	challtestsrvContainer string
+	pebblePort            int // ACME API
+	pebbleAdminPort       int // management API, which serves pebble's issuing root
+	challtestsrvPort      int // management API
+	// pebbleTLSRoot signs the certificate pebble serves. The certificates
+	// pebble issues chain to another root, which it generates at startup.
+	pebbleTLSRoot *x509.Certificate
 	// miniCA's server presents its default mini-CA certificate. publicTLS's
 	// server presents server.tls_cert_file, signed by a test root that its
 	// client trusts through the system roots, as it would a public CA.
@@ -66,6 +75,17 @@ type deployment struct {
 	serverPort      int
 	// publicRoot signs the server's tls_cert_file; nil for a mini-CA server.
 	publicRoot *x509.Certificate
+	// certs are the certificates the server issues; the client subscribes to
+	// the first, test-cert. Each has a domain of its own: challtestsrv's
+	// clear-txt removes every value of a name, so issuances for one domain
+	// running at once would remove each other's challenge record.
+	certs []certificate
+}
+
+// certificate is a certificate in a server's configuration.
+type certificate struct {
+	name   string
+	domain string
 }
 
 var stack *e2eStack
@@ -130,21 +150,28 @@ func newE2EStack(rt containerRuntime) (*e2eStack, error) {
 	}
 	suffix := fmt.Sprintf("%d-%d", os.Getpid(), time.Now().Unix())
 	s := &e2eStack{
-		runtime:     rt,
-		rootDir:     rootDir,
-		mountDir:    mountDir,
-		runDir:      runDir,
-		network:     "sigil-e2e-" + suffix,
-		serverImage: "sigil-e2e-sigils:" + suffix,
-		clientImage: "sigil-e2e-sigilc:" + suffix,
+		runtime:               rt,
+		rootDir:               rootDir,
+		mountDir:              mountDir,
+		runDir:                runDir,
+		network:               "sigil-e2e-" + suffix,
+		serverImage:           "sigil-e2e-sigils:" + suffix,
+		clientImage:           "sigil-e2e-sigilc:" + suffix,
+		pebbleImage:           "sigil-e2e-pebble:" + suffix,
+		pebbleContainer:       "sigil-e2e-pebble-" + suffix,
+		challtestsrvContainer: "sigil-e2e-challtestsrv-" + suffix,
 	}
-	ports, err := availablePorts(2)
+	ports, err := availablePorts(5)
 	if err != nil {
 		return fail(err)
 	}
+	s.pebblePort, s.pebbleAdminPort, s.challtestsrvPort = ports[2], ports[3], ports[4]
 	if s.miniCA, err = s.newDeployment("minica", "sigils", "web-1", suffix, ports[0]); err != nil {
 		return fail(err)
 	}
+	// No client subscribes to test-cert-2. It makes the first tick of the
+	// mini-CA server issue two certificates at once for a new ACME account.
+	s.miniCA.certs = append(s.miniCA.certs, certificate{name: "test-cert-2", domain: "second.sigils.example.com"})
 	if s.publicTLS, err = s.newDeployment("public", "sigils-public", "web-public", suffix, ports[1]); err != nil {
 		return fail(err)
 	}
@@ -163,6 +190,7 @@ func (s *e2eStack) newDeployment(dir, alias, clientName, suffix string, port int
 		serverContainer: "sigil-e2e-" + alias + "-" + suffix,
 		clientContainer: "sigil-e2e-" + clientName + "-" + suffix,
 		serverPort:      port,
+		certs:           []certificate{{name: "test-cert", domain: alias + ".example.com"}},
 	}
 	for _, sub := range []string{"server-data", "client-data", "cert-output"} {
 		if err := os.MkdirAll(d.hostPath(sub), 0o700); err != nil {
@@ -188,6 +216,13 @@ func (s *e2eStack) start() error {
 	if out, err := s.runInRoot("build", "-f", "test/e2e/Dockerfile.sigilc", "-t", s.clientImage, "."); err != nil {
 		return fmt.Errorf("build sigilc: %w\n%s", err, out)
 	}
+	fmt.Printf("E2E: building pebble with %s\n", s.runtime.name)
+	if out, err := s.runInRoot("build", "-f", "test/e2e/Dockerfile.pebble", "-t", s.pebbleImage, "."); err != nil {
+		return fmt.Errorf("build pebble: %w\n%s", err, out)
+	}
+	if err := s.startACME(); err != nil {
+		return err
+	}
 	for _, d := range s.deployments() {
 		if err := s.startServer(d); err != nil {
 			return err
@@ -195,6 +230,55 @@ func (s *e2eStack) start() error {
 		if err := s.runClient(d, true); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// startACME starts challtestsrv and pebble and waits until the host reaches
+// both. A server started before them would fail its first issuance and wait
+// out the retry backoff.
+func (s *e2eStack) startACME() error {
+	// challtestsrv serves only DNS on port 8053 and its management API.
+	args := []string{
+		"run", "-d",
+		"--name", s.challtestsrvContainer,
+		"--network", s.network,
+		"--network-alias", "challtestsrv",
+		"-p", fmt.Sprintf("127.0.0.1:%d:8055", s.challtestsrvPort),
+		"--entrypoint", "pebble-challtestsrv",
+		s.pebbleImage,
+		"-http01=", "-https01=", "-tlsalpn01=", "-doh=", "-defaultIPv6=",
+	}
+	if out, err := s.run(args...); err != nil {
+		return fmt.Errorf("start challtestsrv: %w\n%s", err, out)
+	}
+	args = []string{
+		"run", "-d",
+		"--name", s.pebbleContainer,
+		"--network", s.network,
+		"--network-alias", "pebble",
+		"-p", fmt.Sprintf("127.0.0.1:%d:14000", s.pebblePort),
+		"-p", fmt.Sprintf("127.0.0.1:%d:15000", s.pebbleAdminPort),
+		// Validate challenges without a random delay, and accept every
+		// valid nonce, so issuance takes seconds.
+		"-e", "PEBBLE_VA_NOSLEEP=1",
+		"-e", "PEBBLE_WFE_NONCEREJECT=0",
+		"-v", bindMount(s.mountDir, "/e2e", false),
+		s.pebbleImage,
+		"-config", s.containerPath("pebble", "pebble-config.json"),
+		"-dnsserver", "challtestsrv:8053",
+	}
+	if out, err := s.run(args...); err != nil {
+		return fmt.Errorf("start pebble: %w\n%s", err, out)
+	}
+	// Any response, such as 404 for "/", means the management API is up.
+	challtestsrv := fmt.Sprintf("http://127.0.0.1:%d/", s.challtestsrvPort)
+	if err := waitForHTTP(challtestsrv, &http.Transport{}, startupTimeout); err != nil {
+		return fmt.Errorf("wait for challtestsrv: %w\n%s", err, s.logs(s.challtestsrvContainer))
+	}
+	pebble := fmt.Sprintf("https://127.0.0.1:%d/dir", s.pebblePort)
+	if err := waitForHTTP(pebble, s.pebbleTransport(), startupTimeout); err != nil {
+		return fmt.Errorf("wait for pebble: %w\n%s", err, s.logs(s.pebbleContainer))
 	}
 	return nil
 }
@@ -207,6 +291,9 @@ func (s *e2eStack) startServer(d *deployment) error {
 		"--network-alias", d.alias,
 		"-p", fmt.Sprintf("127.0.0.1:%d:18443", d.serverPort),
 		"-e", "SIGILS_CONFIG=" + d.containerPath("server.yaml"),
+		// lego trusts pebble's certificate through this root, the way a
+		// server trusts any private ACME CA.
+		"-e", "LEGO_CA_CERTIFICATES=" + s.containerPath("pebble", "root.pem"),
 		"-v", bindMount(s.mountDir, "/e2e", false),
 		s.serverImage,
 	}
@@ -216,16 +303,50 @@ func (s *e2eStack) startServer(d *deployment) error {
 	if err := waitForHTTP(d.hostURL()+"/install.sh", d.readinessTransport(), startupTimeout); err != nil {
 		return fmt.Errorf("wait for %s: %w\n%s", d.alias, err, s.logs(d.serverContainer))
 	}
-	if out, err := s.exec(d.serverContainer,
-		"curl", "--fail", "--silent", "--show-error",
-		"--unix-socket", "/var/run/sigil/sigils.sock",
-		"-H", "Content-Type: application/json",
-		"--data-binary", "@"+s.containerPath("seed-cert.json"),
-		"http://localhost/ipc/v1/certs",
-	); err != nil {
-		return fmt.Errorf("seed certificate on %s: %w\n%s", d.alias, err, out)
+	return s.waitForIssuance(d)
+}
+
+// certState is the part of an entry of `sigils --json cert list` that the
+// tests read.
+type certState struct {
+	Name      string `json:"name"`
+	State     string `json:"state"`
+	LastError string `json:"last_error"`
+}
+
+// waitForIssuance waits until the server of d has issued all its
+// certificates. A certificate in retry backoff fails at once: its next
+// attempt is minutes away.
+func (s *e2eStack) waitForIssuance(d *deployment) error {
+	deadline := time.Now().Add(startupTimeout)
+	var last string
+	for time.Now().Before(deadline) {
+		// The command fails until the server's IPC endpoint is up.
+		out, err := s.exec(d.serverContainer, "sigils", "--json", "cert", "list")
+		last = out
+		if err == nil {
+			var certs []certState
+			if err := json.Unmarshal([]byte(out), &certs); err != nil {
+				return fmt.Errorf("parse cert list of %s: %w\n%s", d.alias, err, out)
+			}
+			valid := 0
+			for _, cert := range certs {
+				switch cert.State {
+				case "backoff":
+					return fmt.Errorf("%s: certificate %s is in retry backoff: %s\nserver logs:\n%s",
+						d.alias, cert.Name, cert.LastError, s.logs(d.serverContainer))
+				case "valid":
+					valid++
+				}
+			}
+			if len(certs) == len(d.certs) && valid == len(certs) {
+				return nil
+			}
+		}
+		time.Sleep(time.Second)
 	}
-	return nil
+	return fmt.Errorf("%s did not issue its certificates within %s; last cert list:\n%s\nserver logs:\n%s",
+		d.alias, startupTimeout, last, s.logs(d.serverContainer))
 }
 
 // runClient starts the client container of d. A bootstrap container idles so
@@ -253,34 +374,74 @@ func (s *e2eStack) runClient(d *deployment, bootstrap bool) error {
 	return nil
 }
 
+// dnsHook is the program of the servers' exec DNS provider, run as
+// /bin/sh dns-hook.sh present|cleanup <fqdn> <value>. It sets and clears
+// the challenge record in challtestsrv.
+const dnsHook = `set -eu
+case "$1" in
+present) body="{\"host\":\"$2\",\"value\":\"$3\"}"; url=http://challtestsrv:8055/set-txt ;;
+cleanup) body="{\"host\":\"$2\"}"; url=http://challtestsrv:8055/clear-txt ;;
+*) exit 2 ;;
+esac
+exec curl -fsS --max-time 10 -X POST --data-binary "$body" "$url"
+`
+
 func (s *e2eStack) writeFixtures() error {
-	record, err := seededCertificate()
-	if err != nil {
+	pebbleDir := filepath.Join(s.runDir, "pebble")
+	var err error
+	if s.pebbleTLSRoot, err = writePublicTLS(pebbleDir, "pebble"); err != nil {
 		return err
 	}
-	raw, err := json.Marshal(record)
-	if err != nil {
+	// A Retry-After of one second keeps lego's polling short. pebble's VA
+	// builds addresses from httpPort and tlsPort even though DNS-01 uses
+	// neither; the values are those of pebble's own test configuration.
+	pebbleConfig := fmt.Sprintf(`{
+  "pebble": {
+    "listenAddress": "0.0.0.0:14000",
+    "managementListenAddress": "0.0.0.0:15000",
+    "certificate": %q,
+    "privateKey": %q,
+    "httpPort": 5002,
+    "tlsPort": 5001,
+    "retryAfter": {"authz": 1, "order": 1}
+  }
+}
+`, s.containerPath("pebble", "server.pem"), s.containerPath("pebble", "server-key.pem"))
+	if err := os.WriteFile(filepath.Join(pebbleDir, "pebble-config.json"), []byte(pebbleConfig), 0o600); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(s.runDir, "seed-cert.json"), raw, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(s.runDir, "dns-hook.sh"), []byte(dnsHook), 0o600); err != nil {
 		return err
 	}
 	if s.publicTLS.publicRoot, err = writePublicTLS(s.publicTLS.hostPath("tls"), s.publicTLS.alias); err != nil {
 		return err
 	}
 	for _, d := range s.deployments() {
-		if err := d.writeConfigs(); err != nil {
+		if err := d.writeConfigs(s.containerPath("dns-hook.sh")); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (d *deployment) writeConfigs() error {
+func (d *deployment) writeConfigs(dnsHookPath string) error {
 	tlsFiles := ""
 	if d.publicRoot != nil {
 		tlsFiles = fmt.Sprintf("  tls_cert_file: %q\n  tls_key_file: %q\n",
 			d.containerPath("tls", "server.pem"), d.containerPath("tls", "server-key.pem"))
+	}
+	var certs strings.Builder
+	for i, cert := range d.certs {
+		fmt.Fprintf(&certs, `  - name: %s
+    domains: [%q]
+    ca: pebble
+    dns_provider: challtestsrv
+    key_type: ec256
+    renew_days_before: 30
+`, cert.name, cert.domain)
+		if i == 0 {
+			fmt.Fprintf(&certs, "    subscribers: [%q]\n", d.clientName)
+		}
 	}
 	serverConfig := fmt.Sprintf(`server:
   listen: ":18443"
@@ -289,24 +450,21 @@ func (d *deployment) writeConfigs() error {
 %s
 acme:
   email: "test@example.com"
-  default_ca: test
+  default_ca: pebble
+  dns_resolvers: ["challtestsrv:8053"]
   cas:
-    test:
-      directory: "https://127.0.0.1:18443/directory"
+    pebble:
+      directory: "https://pebble:14000/dir"
 
 dns_providers:
-  test:
-    type: route53
+  challtestsrv:
+    type: exec
+    command: ["/bin/sh", %q]
+    # challtestsrv answers SOA queries with NOTIMP, which fails the check.
+    skip_propagation_check: true
 
 certificates:
-  - name: test-cert
-    domains: ["test.example.com"]
-    ca: test
-    dns_provider: test
-    key_type: ec256
-    renew_days_before: 30
-    subscribers: [%q]
-`, d.containerPath("server-data"), d.alias, tlsFiles, d.clientName)
+%s`, d.containerPath("server-data"), d.alias, tlsFiles, dnsHookPath, certs.String())
 	clientConfig := fmt.Sprintf(`client:
   name: %s
   server_url: "https://%s:18443"
@@ -330,7 +488,8 @@ outputs:
 
 // writePublicTLS writes a test root to dir/root.pem and a certificate for host
 // signed by it to dir/server.pem and dir/server-key.pem. The root stands in
-// for a publicly trusted CA.
+// for a CA the connecting side trusts: a public CA, or the private CA of an
+// ACME server.
 func writePublicTLS(dir, host string) (*x509.Certificate, error) {
 	now := time.Now().UTC()
 	root, rootKey, err := issueCertificate(&x509.Certificate{
@@ -374,46 +533,6 @@ func writePublicTLS(dir, host string) (*x509.Certificate, error) {
 		}
 	}
 	return root, nil
-}
-
-func seededCertificate() (*store.CertRecord, error) {
-	now := time.Now().UTC()
-	cert, key, err := issueCertificate(&x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "test.example.com"},
-		DNSNames:     []string{"test.example.com"},
-		NotBefore:    now.Add(-time.Hour),
-		NotAfter:     now.Add(90 * 24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-	certPEM := certificatePEM(cert)
-	keyPEM, err := privateKeyPEM(key)
-	if err != nil {
-		return nil, err
-	}
-	sum := sha256.Sum256(certPEM)
-	cfg := &config.ServerConfig{ACME: config.ACMESection{CAs: map[string]config.CAEntry{
-		"test": {Directory: "https://127.0.0.1:18443/directory"},
-	}}}
-	spec := config.CertificateSpec{
-		Name: "test-cert", CA: "test", Domains: []string{"test.example.com"}, KeyType: "ec256",
-	}
-	return &store.CertRecord{
-		Name:            "test-cert",
-		CA:              "test",
-		Domains:         []string{"test.example.com"},
-		SpecFingerprint: config.CertificateSpecFingerprint(cfg, spec),
-		FullchainPEM:    string(certPEM),
-		KeyPEM:          string(keyPEM),
-		NotAfter:        cert.NotAfter,
-		Fingerprint:     "sha256:" + hex.EncodeToString(sum[:]),
-		IssuedAt:        now,
-		UpdatedAt:       now,
-	}, nil
 }
 
 // issueCertificate creates a certificate from template for a new P-256 key,
@@ -498,9 +617,71 @@ func (d *deployment) readinessTransport() *http.Transport {
 	if d.publicRoot == nil {
 		return insecureTransport()
 	}
+	return verifyingTransport(d.publicRoot, d.alias)
+}
+
+// pebbleTransport verifies pebble's certificate against the test root that
+// signs it. pebble serves its ACME and management APIs with it.
+func (s *e2eStack) pebbleTransport() *http.Transport {
+	return verifyingTransport(s.pebbleTLSRoot, "pebble")
+}
+
+// verifyingTransport verifies the certificate of a server for serverName
+// against root alone.
+func verifyingTransport(root *x509.Certificate, serverName string) *http.Transport {
 	roots := x509.NewCertPool()
-	roots.AddCert(d.publicRoot)
-	return &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: d.alias}}
+	roots.AddCert(root)
+	return &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: serverName}}
+}
+
+// pebbleIssuingRoots returns the root pebble generated at startup, to which
+// every certificate it issues chains.
+func (s *e2eStack) pebbleIssuingRoots() (*x509.CertPool, error) {
+	client := &http.Client{Timeout: 10 * time.Second, Transport: s.pebbleTransport()}
+	resp, err := client.Get(fmt.Sprintf("https://127.0.0.1:%d/roots/0", s.pebbleAdminPort))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	roots := x509.NewCertPool()
+	if resp.StatusCode != http.StatusOK || !roots.AppendCertsFromPEM(body) {
+		return nil, fmt.Errorf("get pebble root: status %d: %q", resp.StatusCode, body)
+	}
+	return roots, nil
+}
+
+// dnsQueryTypes returns the type of every DNS query challtestsrv received for
+// name, which is written without the trailing dot.
+func (s *e2eStack) dnsQueryTypes(name string) ([]uint16, error) {
+	body, err := json.Marshal(map[string]string{"host": name})
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	target := fmt.Sprintf("http://127.0.0.1:%d/dns-request-history", s.challtestsrvPort)
+	resp, err := client.Post(target, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get DNS request history of %s: status %d", name, resp.StatusCode)
+	}
+	var history []struct {
+		Question struct{ Qtype uint16 }
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&history); err != nil {
+		return nil, fmt.Errorf("parse DNS request history of %s: %w", name, err)
+	}
+	types := make([]uint16, 0, len(history))
+	for _, event := range history {
+		types = append(types, event.Question.Qtype)
+	}
+	return types, nil
 }
 
 func (d *deployment) hostURL() string {
@@ -586,8 +767,11 @@ func (s *e2eStack) cleanup() {
 		_, _ = s.removeContainer(d.clientContainer)
 		_, _ = s.removeContainer(d.serverContainer)
 	}
+	_, _ = s.removeContainer(s.pebbleContainer)
+	_, _ = s.removeContainer(s.challtestsrvContainer)
 	s.removeNetwork()
 	_, _ = s.run("rmi", "-f", s.clientImage)
 	_, _ = s.run("rmi", "-f", s.serverImage)
+	_, _ = s.run("rmi", "-f", s.pebbleImage)
 	_ = os.RemoveAll(s.runDir)
 }
