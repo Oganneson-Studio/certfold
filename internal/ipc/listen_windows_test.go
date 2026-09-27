@@ -147,4 +147,10 @@ func TestDialRefusesPipeOwnedByAnotherAccount(t *testing.T) {
 	if !strings.Contains(err.Error(), "rather than LocalSystem or Administrators") {
 		t.Fatalf("Dial error = %v, want an owner error", err)
 	}
+
+	// Commands report the refusal through NewClient, which names the
+	// operation once.
+	if _, err := NewClient(name); err == nil || strings.Count(err.Error(), "ipc dial") != 1 {
+		t.Fatalf("NewClient error = %v, want the owner error with one ipc dial prefix", err)
+	}
 }

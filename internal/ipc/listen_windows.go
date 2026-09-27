@@ -72,7 +72,7 @@ func Dial(path string) (net.Conn, error) {
 	}
 	if err := checkPipeConn(conn); err != nil {
 		_ = conn.Close()
-		return nil, fmt.Errorf("ipc dial %s: %w", path, err)
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return conn, nil
 }
