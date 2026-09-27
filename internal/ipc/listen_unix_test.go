@@ -44,6 +44,36 @@ func TestListenRefusesSocketOfRunningDaemon(t *testing.T) {
 	conn.Close()
 }
 
+func TestListenKeepsPathThatIsNotSocket(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		create func(path string) error
+	}{
+		{name: "regular file", create: func(path string) error { return os.WriteFile(path, []byte("keep"), 0o600) }},
+		{name: "empty directory", create: func(path string) error { return os.Mkdir(path, 0o700) }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := testSocketPath(t)
+			if err := tt.create(path); err != nil {
+				t.Fatal(err)
+			}
+			if l, err := Listen(path); err == nil {
+				l.Close()
+				t.Fatal("Listen replaced a path that is not a socket")
+			} else if !strings.Contains(err.Error(), "not a socket") {
+				t.Fatalf("Listen error = %v, want a not a socket error", err)
+			}
+			info, err := os.Lstat(path)
+			if err != nil {
+				t.Fatalf("the existing path is gone: %v", err)
+			}
+			if info.Mode()&os.ModeSocket != 0 {
+				t.Fatal("the existing path was replaced by a socket")
+			}
+		})
+	}
+}
+
 func TestListenReplacesStaleSocket(t *testing.T) {
 	path := testSocketPath(t)
 	// A daemon that died without closing its listener leaves the socket file

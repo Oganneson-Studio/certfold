@@ -16,7 +16,8 @@ import (
 // The socket directory is created if it doesn't exist; permissions are set to
 // 0660. If path is empty, DefaultServerSocket() is used. Listen fails while
 // another daemon answers on path; a socket file nobody answers on is left over
-// from a daemon that did not shut down cleanly and is replaced.
+// from a daemon that did not shut down cleanly and is replaced. Anything else
+// at path is left alone, so a mistyped ipc_socket cannot delete a file.
 func Listen(path string) (net.Listener, error) {
 	if path == "" {
 		path = DefaultServerSocket()
@@ -24,6 +25,9 @@ func Listen(path string) (net.Listener, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("ipc mkdir %s: %w", dir, err)
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode()&fs.ModeSocket == 0 {
+		return nil, fmt.Errorf("ipc listen %s: path exists and is not a socket", path)
 	}
 	conn, err := Dial(path)
 	if err == nil {
