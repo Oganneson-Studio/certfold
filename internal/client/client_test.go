@@ -774,7 +774,11 @@ func TestRunWaitsForInFlightPull(t *testing.T) {
 	blockNext.Store(true)
 	fetched := make(chan error, 1)
 	go func() { fetched <- c.Fetch(context.Background(), "") }()
-	<-blocked
+	select {
+	case <-blocked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Fetch did not reach the blocked list request")
+	}
 	cancel()
 	select {
 	case <-done:
