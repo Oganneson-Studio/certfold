@@ -305,14 +305,14 @@ func (h *handlers) heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
-	rec, err := h.deps.DB.Clients.Get(ctx, clientName, nil)
-	if err != nil {
+	// A single conditional write: the client may have been removed, or its
+	// identity changed, since requireActiveClient looked it up.
+	err := h.deps.DB.Clients.MarkSeen(r.Context(), clientName, ca.Fingerprint(cert.Raw), time.Now().UTC())
+	if err == sql.ErrNoRows {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	rec.LastSeen = time.Now().UTC()
-	if err := h.deps.DB.Clients.Upsert(ctx, rec, nil); err != nil {
+	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

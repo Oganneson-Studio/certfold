@@ -133,6 +133,30 @@ func (r *ClientRepo) PromotePendingIdentity(ctx context.Context, name, fingerpri
 	return nil
 }
 
+// MarkSeen records that the client name, authenticated with the certificate
+// fingerprint, was seen at the given time. It is one conditional UPDATE, so it
+// never recreates a concurrently removed client and never rewrites other
+// columns such as a concurrently staged identity. It returns sql.ErrNoRows when
+// no client has that name and active fingerprint.
+func (r *ClientRepo) MarkSeen(ctx context.Context, name, fingerprint string, at time.Time) error {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE clients
+		SET last_seen=?
+		WHERE name=? AND fingerprint=?`,
+		at.UTC().Format(time.RFC3339), name, fingerprint)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // Delete removes a client by name.
 func (r *ClientRepo) Delete(ctx context.Context, name string, tx *sql.Tx) error {
 	_, err := r.execer(tx).ExecContext(ctx, `DELETE FROM clients WHERE name=?`, name)

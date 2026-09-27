@@ -9,8 +9,10 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"database/sql"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -794,6 +796,116 @@ func TestHeartbeat_Success(t *testing.T) {
 		t.Errorf("identity fingerprint was overwritten: %s", cl.Fingerprint)
 	}
 	if cl.LastSeen.IsZero() {
+		t.Error("last seen was not updated")
+	}
+}
+
+// buildFileDeps is buildDeps on a database file, plus a second handle to the
+// same file that tests use as a concurrent writer (client removal, identity
+// renewal). busy_timeout makes the API's writes wait for that writer's
+// transaction instead of failing with SQLITE_BUSY.
+func buildFileDeps(t *testing.T) (Deps, *store.DB) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "sigils.db")
+	db, err := store.Open(path + "?_pragma=busy_timeout(10000)")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	other, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("open second db handle: %v", err)
+	}
+	t.Cleanup(func() { _ = other.Close() })
+
+	deps := buildDeps(t)
+	deps.DB = db
+	deps.EnrollServer = enroll.NewServer(db.Tokens, db.Clients, deps.MiniCA)
+	return deps, other
+}
+
+// heartbeatDuringWrite sends a heartbeat for identity while writeTx, an
+// uncommitted transaction on another handle, holds the database write lock.
+// The request's reads see the state before writeTx, so authentication passes,
+// and its write waits until writeTx commits. The commit is delayed so the
+// request has normally finished its reads by then, which places the concurrent
+// change between the request's lookup and its write. The outcome the tests
+// assert must hold for every interleaving; the delay only makes a regression
+// to a read-modify-write heartbeat observable.
+func heartbeatDuringWrite(t *testing.T, deps Deps, identity *tls.Certificate, writeTx *sql.Tx) *httptest.ResponseRecorder {
+	t.Helper()
+	body, _ := json.Marshal(proto.HeartbeatRequest{})
+	req := simulateMTLS(httptest.NewRequest(http.MethodPost, "/v1/heartbeat", bytes.NewReader(body)), identity)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		NewInsecure(deps).Handler.ServeHTTP(rec, req)
+	}()
+	time.Sleep(200 * time.Millisecond)
+	commitErr := writeTx.Commit()
+	<-done
+	if commitErr != nil {
+		t.Fatalf("commit concurrent write: %v", commitErr)
+	}
+	return rec
+}
+
+func TestHeartbeatDoesNotRecreateClientRemovedDuringRequest(t *testing.T) {
+	deps, other := buildFileDeps(t)
+	identity := makeEnrolledClientCert(t, deps, "web-1")
+	ctx := context.Background()
+
+	tx, err := other.BeginTx(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := other.Clients.Delete(ctx, "web-1", tx); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := heartbeatDuringWrite(t, deps, identity, tx)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if _, err := deps.DB.Clients.Get(ctx, "web-1", nil); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("heartbeat recreated a removed client: Get error = %v", err)
+	}
+}
+
+func TestHeartbeatKeepsIdentityStagedDuringRequest(t *testing.T) {
+	deps, other := buildFileDeps(t)
+	identity := makeEnrolledClientCert(t, deps, "web-1")
+	ctx := context.Background()
+
+	staged, err := deps.DB.Clients.Get(ctx, "web-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged.PendingFingerprint = "sha256:renewed"
+	staged.PendingNotAfter = time.Now().UTC().Add(90 * 24 * time.Hour)
+	tx, err := other.BeginTx(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := other.Clients.Upsert(ctx, staged, tx); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := heartbeatDuringWrite(t, deps, identity, tx)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+	got, err := deps.DB.Clients.Get(ctx, "web-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PendingFingerprint != "sha256:renewed" {
+		t.Fatalf("heartbeat discarded the staged identity: %+v", got)
+	}
+	if got.LastSeen.IsZero() {
 		t.Error("last seen was not updated")
 	}
 }
