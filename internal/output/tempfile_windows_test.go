@@ -26,6 +26,21 @@ func TestCreateTempGrantsConfiguredOwner(t *testing.T) {
 	}
 }
 
+// TestOwnerSDDLAliasGrantsNoGroup covers an owner written as an SDDL alias:
+// "BU" must not grant Users access to the key. Failing to resolve it is fine.
+func TestOwnerSDDLAliasGrantsNoGroup(t *testing.T) {
+	tmp, err := createTemp(outputDir(t), config.OutputSpec{Format: "pem-key", Path: "key.pem", Owner: "BU"})
+	if err != nil {
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if sddl := fileSecurity(t, tmp.Name()).String(); strings.Contains(sddl, ";;;BU)") {
+		t.Fatalf("owner BU granted Users access: %s", sddl)
+	}
+}
+
 // TestWriteReplacesInheritedReadableKey covers a key file that an earlier
 // version wrote with the directory's ACL: the next write must replace it with
 // one that only the allowed accounts can open.

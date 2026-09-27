@@ -4,6 +4,7 @@ package output
 
 import (
 	"fmt"
+	"strings"
 
 	"golang.org/x/sys/windows"
 )
@@ -32,14 +33,17 @@ func applyOwnership(path, owner, group string) error {
 }
 
 // lookupAccount resolves owner, which may be a SID string (S-1-5-...) or an
-// account name.
+// account name. StringToSid also accepts SDDL aliases such as "BU" (Users) or
+// "WD" (Everyone), so only strings starting with "S-" are parsed as SIDs.
 func lookupAccount(owner string) (*windows.SID, error) {
-	sid, err := windows.StringToSid(owner)
-	if err == nil {
+	if strings.HasPrefix(owner, "S-") {
+		sid, err := windows.StringToSid(owner)
+		if err != nil {
+			return nil, fmt.Errorf("parse SID %q: %w", owner, err)
+		}
 		return sid, nil
 	}
-	// Fall back to account name lookup.
-	sid, _, _, err = windows.LookupSID("", owner)
+	sid, _, _, err := windows.LookupSID("", owner)
 	if err != nil {
 		return nil, fmt.Errorf("lookup account %q: %w", owner, err)
 	}
