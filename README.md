@@ -24,7 +24,7 @@ On Windows, the end-to-end suite uses WSLC directly and does not require Docker 
 go test -v -tags e2e -timeout 10m ./test/e2e
 ```
 
-The test builds temporary OCI images, creates an isolated WSLC network, verifies enrollment, certificate fetch, client revocation, and token expiry/revocation, then removes its containers, network, and images.
+The test builds temporary OCI images, creates an isolated WSLC network, and issues real certificates from a Pebble ACME server through the `exec` DNS hook and a challenge test DNS server. It verifies enrollment, certificate fetch, renewal, client revocation, and token expiry/revocation, then removes its containers, network, and images.
 
 Linux CI can run the same orchestration with Docker Engine by setting `SIGIL_CONTAINER_CLI=docker`.
 
@@ -148,5 +148,5 @@ After successful certificate issuance or renewal, `sigils` sends push notificati
 
 ## Current limitations
 
-- Automated ACME issuance is unit-tested; the current container E2E focuses on the security-critical enrollment and distribution path using a generated test certificate.
+- The container E2E issues certificates through the `exec` DNS provider; lego's built-in cloud DNS providers are not covered by an E2E.
 - Some TUI management actions are not wired yet; use the corresponding CLI commands for those operations.

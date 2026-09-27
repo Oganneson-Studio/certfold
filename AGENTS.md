@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-项目处于持续开发阶段，不要把它描述为“v1 已全部完成”。核心注册、mTLS 鉴权、证书拉取、客户端吊销、管理命令、服务端热重载、客户端身份续签和 push 调度均已可用，并有 WSLC 黑盒测试；真实 DNS provider 的 ACME 容器 E2E 与部分 TUI 操作仍未完成。2026-09-27 完成现状审阅并拍板重构方向（见下一节），按 `TODO.md` 分阶段执行。
+项目处于持续开发阶段，不要把它描述为“v1 已全部完成”。核心注册、mTLS 鉴权、证书拉取、客户端吊销、管理命令、服务端热重载、客户端身份续签、push 调度，以及 Phase 2 的并行签发引擎和 exec DNS provider 均已可用，并有 WSLC 黑盒测试（含从 Pebble 真实签发）；各家云 DNS provider 的 E2E 与部分 TUI 操作仍未完成。2026-09-27 完成现状审阅并拍板重构方向（见下一节），按 `TODO.md` 分阶段执行。
 
 ## 重构方向（2026-09-27 拍板）
 
@@ -15,7 +15,7 @@
 - B3（Phase 4）：PowerShell 安装改为 `& ([scriptblock]::Create((irm <url>/install.ps1))) -Token '<token>'`，服务端不再把请求参数写进脚本，安全约束 7 随之作废。
 - B4（Phase 3）：删除 `/v1/heartbeat`，由 mTLS 鉴权中间件用条件 UPDATE 刷新 `last_seen`（每个客户端每分钟最多写一次）。
 - C1（Phase 3）：客户端每张证书可配置 `on_change` 钩子，argv 形式，带超时，只能在客户端配置。
-- 每一项删除都排在替代品落地之后：删除 IPC `POST /ipc/v1/certs` 要等 Pebble E2E；删除 heartbeat 和 push 要等 `/v1/sync`。
+- 每一项删除都排在替代品落地之后：删除 IPC `POST /ipc/v1/certs`（A13）已随 Pebble E2E 于 2026-09-28 完成；删除 heartbeat 和 push 要等 `/v1/sync`。
 - 保留不动：mTLS + 数据库指纹鉴权、一次性令牌绑定、`subscribers` 唯一授权来源、客户端本地输出配置、spec 指纹绑定、`securefile`、严格 YAML。
 
 ## 项目快览
@@ -64,7 +64,7 @@ go vet ./...
 go test -v -tags e2e -timeout 10m ./test/e2e
 ```
 
-E2E 不依赖 Compose 或固定 IP。它构建临时镜像、创建随机命名网络、通过网络别名连接、执行注册/拉取/吊销/token 测试，并按精确名称清理资源。Linux CI 可显式设置 `SIGIL_CONTAINER_CLI=docker` 使用 Docker Engine；Windows 必须使用 WSLC。
+E2E 不依赖 Compose 或固定 IP。它构建临时镜像、创建随机命名网络、通过网络别名连接，用 Pebble + challtestsrv + exec DNS hook 真实签发证书，执行注册/拉取/renew/吊销/token 测试，并按精确名称清理资源。WSLC 热跑一轮约 40 秒，Linux Docker 冷启动约 140–155 秒。Linux CI 可显式设置 `SIGIL_CONTAINER_CLI=docker` 使用 Docker Engine；Windows 必须使用 WSLC。
 
 竞态测试需要 CGO：
 
@@ -89,7 +89,7 @@ go test -race ./internal/client ./internal/ipc ./internal/scheduler ./internal/s
 8. 生产一键安装要求公网端点使用操作系统信任的 TLS 证书。通过 `server.tls_cert_file` 与 `server.tls_key_file` 配置；内部 mini-CA 默认证书不能让首次系统 `curl` 自动信任。
 9. 服务端 push 只能向不含 userinfo、query 或 fragment 的 HTTPS endpoint 发送 bearer 鉴权请求，且不得跟随重定向或在错误日志中泄漏完整 endpoint。客户端 push listener 是明文 HTTP，只能监听字面量回环 IP；远程接入必须先由本机反向代理或隧道终止 TLS。listener 必须配置至少 32 字符 bearer token，使用常量时间比较，并合并并发通知，避免并发写证书和状态文件。（Phase 3 按 B1 改造后本条作废。）
 10. 配置解析使用 `yaml.KnownFields(true)`。增加字段时必须同步 schema、验证和测试。`config.ReadServerPaths` 是只给 CLI 定位 IPC、给安装器找 data_dir 用的宽松读取函数，daemon 不得用它加载配置。`${VAR}` 和 `${VAR:-default}` 在 YAML 解析后逐个标量值展开：值原样插入、不 trim；键不展开；`$$` 表示字面 `$`；变量未设置且没有默认值时报错。三个解析入口（`ParseServer`、`ParseClient`、`ReadServerPaths`）必须得到一致结果。
-11. 服务端只读 IPC 必须使用显式 DTO，不能在线路上返回证书私钥、push token 或 enrollment-token secret hash。
+11. 服务端只读 IPC 必须使用显式 DTO，不能在线路上返回证书私钥、push token 或 enrollment-token secret hash。IPC 上没有写证书的路由，证书只能经签发进入数据库（A13）。
 12. 数据库证书记录必须绑定有效配置指纹；CA directory、domains 或 key type 变化后，旧材料不得继续分发。
 13. `exec` DNS provider 只能在 server.yaml 中配置。它以 sigils 服务账户运行、继承其全部环境变量（包括 `${VAR}` 引用的凭据），单次运行 2 分钟超时。
    - 错误信息只含动作、记录名和退出状态或超时，启动失败时另带 argv[0]。
@@ -140,6 +140,7 @@ go test -race ./internal/client ./internal/ipc ./internal/scheduler ./internal/s
   - `service uninstall` 会一并删除事件日志源。
 - WSLC 2.9.4 每个会话最多挂载 15 个**不同的主机路径**（2026-09-27 实测）：
   - 按会话存活期间出现过的不同路径计数，与容器数无关，同一路径重复挂载不另计。
+  - 同一会话里，多个 agent 可以同时跑 E2E（资源名互不相同）；核对残留时只看本轮自己的资源名。
   - 其中 3 个被 WSL 自身的 virtiofs 共享占用，用户可用 12 个；`wslc build` 的构建上下文目录也占一个。
   - E2E 每轮都把固定目录 `%TEMP%\sigil-wslc-e2e` 挂到 `/e2e`，本轮文件放在其下的 `run-*` 子目录，结束时只删子目录。所以跑多少轮都只占 2 个名额：挂载根和构建上下文。
   - 新增挂载或镜像构建时，主机路径必须在各轮之间保持不变。
@@ -155,7 +156,8 @@ go test -race ./internal/client ./internal/ipc ./internal/scheduler ./internal/s
 
 ## 已知未完成项
 
-- ACME 真实 DNS provider 的容器 E2E 尚未建立；现有 E2E 用生成证书验证注册和分发安全链。
+- E2E 已用 Pebble + challtestsrv + exec DNS hook 覆盖真实 ACME 签发（`LEGO_CA_CERTIFICATES`、`acme.dns_resolvers`、`skip_propagation_check`、首启两张证书并行签发、手动 renew 后客户端拿到新证书）；各家云 DNS provider 仍然没有 E2E。
+- `skip_propagation_check` 的接线只有 E2E 的“签发成功”能守住，`acme.dns_resolvers` 的生效只有 `TestIssuanceUsesDNSResolvers` 能守住（开了 skip 时签发照样成功）。改这两处时必须跑 E2E。
 - TUI 仍有部分管理操作未接线。
 - 2026-09-27 审阅发现的缺陷 A1–A13 见审阅文档，修复进度见 `TODO.md`。
 ## 修改原则
