@@ -105,7 +105,8 @@ go test -race ./internal/client ./internal/ipc
 - 平台差异使用 build tag 文件，例如 `_windows.go` 与 `_unix.go`。
 - Windows 的 `os.Chmod(0600)` 不能替代 DACL。
 - Windows 安装脚本必须区分 AMD64、ARM64 和 x86。
-- WSLC 2.9.4 每个会话存在挂载数量限制；E2E 当前每轮只挂载统一临时根目录，避免 Compose 风格的大量独立挂载。
+- Windows 服务（2026-09-27 真机实测）：正常启停退出码为 0；启动即失败时 SCM 记为 System 日志 7034、`ExitCode=1067`，失败原因写在 Application 日志，来源为服务名 `sigils`/`sigilc`。事件写入后要过几秒才查得到，脚本不能查一次为空就下结论。未握手的旧版本会等到 SCM 超时（本机 90 秒）后报 1053。`service uninstall` 会一并删除事件日志源。
+- WSLC 2.9.4 每个会话最多挂载 15 个**不同的主机路径**（2026-09-27 实测：按会话存活期间出现过的不同路径计数，与容器数无关，同一路径挂 17 个容器也不受影响）。E2E 每轮只挂载一个临时根目录，但每轮路径都不同，会话里累计满 15 个就报 `装入的卷太多 (限制： 15)`。确认没有容器和网络后，可以用 `wslc system session terminate` 重置空闲会话。
 - 不运行或依赖 Docker Desktop。需要容器验证时直接调用 `wslc`。
 
 ## 已知未完成项
