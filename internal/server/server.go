@@ -144,7 +144,9 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 		Changes:       changes,
 		Done:          ctx.Done(),
 	}, serverTLSCert)
-	httpSrv.ErrorLog = errorLog
+	// Anyone who reaches the port can make it log, so it logs a few lines a
+	// minute at most.
+	httpSrv.ErrorLog = log.New(&limitedWriter{w: errorLog.Writer(), clock: time.Now}, "", 0)
 	httpsDone := make(chan error, 1)
 	go func() { httpsDone <- httpSrv.ServeTLS(httpsListener, "", "") }()
 
