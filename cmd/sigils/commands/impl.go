@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -116,13 +117,16 @@ func runCertList(cmd *cobra.Command, _ []string) error {
 	if asJSON {
 		return printJSON(certificateDetailList(certs))
 	}
-	fmt.Printf("%-20s %-12s %-30s %-10s %-10s %s\n", "NAME", "CA", "DOMAINS", "STATE", "NOT AFTER", "RENEW AT")
+	// Neither certificate names nor domain lists are bounded, so the columns
+	// fit what they hold.
+	table := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "NAME\tCA\tDOMAINS\tSTATE\tNOT AFTER\tRENEW AT")
 	for _, cert := range certs {
-		fmt.Printf("%-20s %-12s %-30s %-10s %-10s %s\n",
+		fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			cert.Name, cert.CA, strings.Join(cert.Domains, ","), cert.State,
 			formatTime(cert.NotAfter, "2006-01-02"), formatRenewAt(cert, "2006-01-02"))
 	}
-	return nil
+	return table.Flush()
 }
 
 func runCertShow(cmd *cobra.Command, args []string) error {
