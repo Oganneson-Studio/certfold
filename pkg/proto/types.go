@@ -49,8 +49,3 @@ type CertBundle struct {
 	FullchainPEM string `json:"fullchain_pem"`
 	KeyPEM       string `json:"key_pem"`
 }
-
-// PushNotify is the body for POST /v1/push/notify (client side).
-type PushNotify struct {
-	CertName string `json:"cert_name"`
-}
