@@ -91,10 +91,10 @@ func TestManInTheMiddleErrorIsPrintable(t *testing.T) {
 	}
 }
 
-// Reload gets its configuration from config.LoadClient, which checks the
-// identity, so none of its errors quote more than the PEM block types of an
-// identity that passed that check; they reach terminals through the IPC API
-// all the same.
+// Reload quotes the configuration it is given in one error only: an identity
+// without a certificate or key block lists the types of the blocks it has.
+// config.LoadClient refuses such an identity first, but the error would
+// reach a terminal through the IPC API all the same.
 func TestReloadErrorIsPrintable(t *testing.T) {
 	now := time.Now()
 	cfg := buildTestCfg(t, "https://sigil.example.test")

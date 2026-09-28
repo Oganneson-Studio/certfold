@@ -139,8 +139,9 @@ func (s *Server) SignClientCert(ctx context.Context, csrDER []byte, name, tokenI
 	return certDER, nil
 }
 
-// DecodeToken base64url-decodes an enrollment token and returns the payload.
-// The client uses ServerURL to know which server to POST the CSR to.
+// DecodeToken decodes and checks an enrollment token as decodeToken does, and
+// returns the payload. The client uses ServerURL to know which server to POST
+// the CSR to.
 func DecodeToken(tokenStr string) (*tokenPayload, error) {
 	return decodeToken(tokenStr)
 }
