@@ -543,10 +543,11 @@ func (c *Client) recordReconcile(err error) {
 // once: as the event "round failed" when LastError becomes another error, and
 // as "round succeeded again" when it is cleared. The rounds of the loop, IPC
 // fetches, and reloads and the reconcile at startup when they fail, all set
-// it, and share this. It only works for errors that read the same each time they repeat, which is
-// why the errors of writing outputs and the store name no temporary file. An
-// error that names the current time, as a failed verification of an expired
-// certificate does, is still logged on every round.
+// it, and share this. It only works for errors that read the same each time
+// they repeat, which is why the errors of writing outputs and the store name
+// no temporary file. An error that names the current time, as a failed
+// verification of an expired certificate does, is still logged on every
+// round.
 func (c *Client) setLastErrorLocked(err error) {
 	lastError := ""
 	if err != nil {
