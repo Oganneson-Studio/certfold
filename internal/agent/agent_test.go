@@ -26,8 +26,8 @@ func testIPCSocket(t *testing.T) string {
 }
 
 func TestRunReturnsNilWhenCancelled(t *testing.T) {
-	// A listener that accepts the first pull and never answers shows the
-	// daemon reached its pull loop.
+	// A listener that accepts the first sync request and never answers shows
+	// the daemon reached its sync loop.
 	upstream, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

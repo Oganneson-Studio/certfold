@@ -1,5 +1,3 @@
-// Package client implements the sigilc runtime: pull loop, push receiver,
-// certificate caching, and output writing.
 package client
 
 import (
@@ -13,11 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math/rand"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,36 +24,54 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/enroll"
 	"github.com/Oganneson-Studio/sigil/internal/output"
-	"github.com/Oganneson-Studio/sigil/internal/securefile"
 	"github.com/Oganneson-Studio/sigil/internal/version"
 	"github.com/Oganneson-Studio/sigil/pkg/proto"
 )
 
-const jitterPct = 0.1 // ±10 % of pull_interval
+const jitterPct = 0.1 // ±10 % of the backoff after a failed round
 
-// state tracks the fingerprints of certs written to disk.
-type state struct {
-	Certs map[string]string `json:"certs"` // name → fingerprint
-}
+// httpTimeout bounds each request of the HTTP client built from the identity.
+// The loop's GET /v1/sync, which the server may hold for longer, does not use
+// it. A variable only so tests can shorten it.
+var httpTimeout = 30 * time.Second
 
 // Client is the sigilc runtime.
 type Client struct {
+	// cfg and http change only while pullMu is held as well, so the holder of
+	// pullMu reads them without cfgMu.
 	cfgMu sync.RWMutex
 	cfg   *config.ClientConfig
 	http  *http.Client
 
+	// pullMu serializes the apply phases of the sync loop, IPC fetches and
+	// reloads: identity renewal, downloading bundles and writing the store,
+	// reconciling outputs and running on_change programs. The loop does not
+	// hold it while it waits for the answer to GET /v1/sync.
 	pullMu sync.Mutex
-	// rewriteAll makes the next full pull rewrite the outputs of every
-	// subscribed certificate, whatever the fingerprints in state.json say:
-	// outputs may have been added to client.yaml or removed from disk since
-	// they were last written. New and Reload set it; a full pull clears it
-	// once it has listed the subscribed certificates. If that pull fails for a
-	// certificate whose recorded fingerprint equals the served one, its entry
-	// is dropped from state.json so the next pull retries it; an older
-	// fingerprint stays, since a diff retries the certificate anyway.
-	// Guarded by pullMu.
-	rewriteAll bool
-	reloadCh   chan struct{}
+	// store holds the content of certs.json: the material of every
+	// certificate in the last view applied. Guarded by pullMu.
+	store map[string]storedCert
+	// storeUnsaved records that a write failed after a reconcile changed
+	// hook_pending bits in memory, so certs.json lags behind them. Every
+	// reconcile writes the store again until a write succeeds, and any write
+	// that succeeds clears it. Guarded by pullMu.
+	storeUnsaved bool
+	// etag is the ETag of the last view applied in full, sent as
+	// If-None-Match. Guarded by pullMu.
+	etag string
+	// syncCancel cancels the loop's GET /v1/sync in flight. The loop sets it
+	// in the pullMu section where it takes the configuration, identity and
+	// etag for the request, so Reload and an identity switch cancel every
+	// request made with what they replace, and an IPC fetch every request
+	// whose answer could be older than its own. Guarded by pullMu.
+	syncCancel context.CancelFunc
+	// runCtx is the ctx of Run from the start of Run on; on_change programs
+	// run under it, or under context.Background before Run starts. It stays
+	// set after Run returns, so a fetch or reload that takes pullMu after
+	// that cancels its programs at once instead of leaving them to outlive
+	// the daemon. Guarded by pullMu.
+	runCtx   context.Context
+	reloadCh chan struct{}
 
 	statusMu sync.RWMutex
 	status   RuntimeStatus
@@ -64,6 +80,9 @@ type Client struct {
 
 	identitySaver IdentitySaver
 	now           func() time.Time
+	// hook runs the on_change program of a certificate: runHook, or a
+	// stand-in in tests.
+	hook func(ctx context.Context, certName string, argv []string) error
 }
 
 // IdentitySaver persists a renewed mTLS identity before the running client
@@ -80,15 +99,21 @@ func WithIdentitySaver(saver IdentitySaver) Option {
 
 // RuntimeStatus is a point-in-time snapshot of the sigilc daemon.
 type RuntimeStatus struct {
-	Name       string
-	ServerURL  string
+	Name      string
+	ServerURL string
+	// Online reports whether the last round of the loop, or IPC fetch, got a
+	// 200 or 304 from GET /v1/sync, and LastPullAt when the last one did.
 	Online     bool
 	LastPullAt time.Time
-	LastError  string
-	Certs      map[string]string
+	// LastError is the joined error of the last round, IPC fetch or reload,
+	// or empty if it had none.
+	LastError string
+	// Certs maps the name of each stored certificate to its fingerprint.
+	Certs map[string]string
 }
 
-// New constructs a Client with an mTLS-capable HTTP client built from cfg.Identity.
+// New constructs a Client with an mTLS-capable HTTP client built from
+// cfg.Identity, and reads the store in cfg.Client.DataDir.
 func New(cfg *config.ClientConfig, options ...Option) (*Client, error) {
 	if err := config.ValidatePushListen(cfg.Client.PushListen); err != nil {
 		return nil, fmt.Errorf("client.push_listen: %w", err)
@@ -97,96 +122,102 @@ func New(cfg *config.ClientConfig, options ...Option) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	certs, err := loadStore(cfg.Client.DataDir)
+	if err != nil {
+		return nil, fmt.Errorf("load certificate store: %w", err)
+	}
 	c := &Client{
-		cfg:        cfg,
-		http:       httpClient,
-		rewriteAll: true,
-		reloadCh:   make(chan struct{}, 1),
+		cfg:      cfg,
+		http:     httpClient,
+		store:    certs,
+		reloadCh: make(chan struct{}, 1),
 		status: RuntimeStatus{
 			Name:      cfg.Client.Name,
 			ServerURL: cfg.Client.ServerURL,
-			Certs:     map[string]string{},
+			Certs:     fingerprints(certs),
 		},
-		now: time.Now,
+		now:  time.Now,
+		hook: runHook,
 	}
 	for _, option := range options {
 		option(c)
 	}
-	c.status.Certs = cloneFingerprints(c.loadState().Certs)
 	return c, nil
 }
 
-// Run starts the pull loop (and optional push receiver) and blocks until ctx
-// is cancelled.
+// Run reconciles the outputs with the store, then runs the sync loop (and the
+// optional push receiver) until ctx is cancelled.
 func (c *Client) Run(ctx context.Context) error {
 	pushListen := c.pushListen()
 	if err := config.ValidatePushListen(pushListen); err != nil {
 		return fmt.Errorf("client.push_listen: %w", err)
 	}
 
-	// First pull immediately. New set rewriteAll, so it rewrites every output.
-	_ = c.pullOnce(ctx)
+	// Restore the outputs before the first request: they come back even
+	// while the server is unreachable.
+	c.pullMu.Lock()
+	c.runCtx = ctx
+	c.recordReconcile(c.reconcileLocked())
+	c.pullMu.Unlock()
 
 	// Push receiver (optional).
 	if pushListen != "" {
 		go c.startPushReceiver(ctx, pushListen)
 	}
 
-	err := c.pullLoop(ctx)
-	// A push or IPC pull runs outside the loop and may still be writing
-	// outputs or state.json. Take pullMu once so Run returns after it ends.
+	err := c.syncLoop(ctx)
+	// An IPC fetch, push or reload may still be writing outputs or the store.
+	// Take pullMu once so Run returns after it ends.
 	c.pullMu.Lock()
 	c.pullMu.Unlock()
 	return err
 }
 
-// pullLoop ticks every pull_interval ±10 % and calls pullOnce. A successful
-// Reload triggers an immediate pull and restarts the interval.
-func (c *Client) pullLoop(ctx context.Context) error {
-	for {
-		interval := jitter(c.pullInterval(), jitterPct)
-		timer := time.NewTimer(interval)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-c.reloadCh:
-			timer.Stop()
-			_ = c.pullOnce(ctx)
-		case <-timer.C:
-			_ = c.pullOnce(ctx)
-		}
-	}
-}
-
-// pullOnce executes one full pull cycle:
-//  1. GET /v1/certificates
-//  2. Diff against local state, or select every certificate while
-//     rewriteAll is set
-//  3. Fetch selected bundles + write outputs
-//  4. Persist updated state
-//  5. POST /v1/heartbeat
-func (c *Client) pullOnce(ctx context.Context) error {
-	return c.Fetch(ctx, "")
-}
-
-// Fetch performs an immediate pull. When name is non-empty, that certificate
-// is fetched even when its fingerprint has not changed. An empty name fetches
-// the certificates whose fingerprints changed, or every subscribed
-// certificate after startup or a reload.
+// Fetch runs a full pull in the caller's goroutine. It asks GET /v1/sync for
+// the view without If-None-Match, downloads the certificates whose
+// fingerprints changed, and name as well when it is not empty, then
+// reconciles every output with the store and runs the pending on_change
+// programs. A failed step does not stop the later ones; Fetch returns their
+// joined errors.
 func (c *Client) Fetch(ctx context.Context, name string) error {
 	c.pullMu.Lock()
 	defer c.pullMu.Unlock()
-	if err := c.renewIdentityLocked(ctx); err != nil {
-		err = fmt.Errorf("renew client identity: %w", err)
-		c.recordPull(err)
-		return err
+	// The loop's request in flight may be answered with an older view than
+	// the one this fetch gets. Applied after this fetch, that view would drop
+	// the certificates added since, and download again the ones removed. Cancel
+	// it; the loop starts over with the etag this fetch leaves.
+	if c.syncCancel != nil {
+		c.syncCancel()
 	}
-	c.cfgMu.RLock()
-	defer c.cfgMu.RUnlock()
 
-	err := c.fetchLocked(ctx, name)
-	c.recordPull(err)
+	var errs []error
+	var answeredAt time.Time
+	// As in the loop, a failed renewal does not stop the pull: the current
+	// identity stays valid until it expires.
+	if err := c.renewIdentityLocked(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("renew client identity: %w", err))
+	}
+	if result, err := requestSync(ctx, c.http, c.cfg.Client.ServerURL, ""); err != nil {
+		errs = append(errs, fmt.Errorf("sync: %w", err))
+	} else {
+		answeredAt = time.Now()
+		if result.modified {
+			if name != "" && !slices.ContainsFunc(result.view, func(s proto.CertSummary) bool { return s.Name == name }) {
+				errs = append(errs, fmt.Errorf("certificate %q is not subscribed", name))
+			}
+			if err := c.applyViewLocked(ctx, result, name); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if err := c.heartbeat(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("heartbeat: %w", err))
+		}
+	}
+	if err := c.reconcileLocked(); err != nil {
+		errs = append(errs, err)
+	}
+	err := errors.Join(errs...)
+	c.recordPullLocked(answeredAt, err)
 	return err
 }
 
@@ -262,6 +293,12 @@ func (c *Client) renewIdentityLocked(ctx context.Context) error {
 	c.cfg = &updated
 	c.http = newHTTPClient
 	c.cfgMu.Unlock()
+	// The loop's request in flight still presents the old identity. Cancel
+	// it so the next round waits with the new one. The etag stays: the view
+	// does not depend on the identity.
+	if c.syncCancel != nil {
+		c.syncCancel()
+	}
 	return nil
 }
 
@@ -295,82 +332,6 @@ func validateRenewedIdentity(cfg *config.ClientConfig, now time.Time) (*http.Cli
 	return client, nil
 }
 
-func (c *Client) fetchLocked(ctx context.Context, name string) error {
-	summaries, err := c.listCerts(ctx)
-	if err != nil {
-		return fmt.Errorf("list certs: %w", err)
-	}
-
-	st := c.loadState()
-	changed := diffCerts(summaries, st.Certs)
-	if name != "" {
-		changed = nil
-		for _, summary := range summaries {
-			if summary.Name == name {
-				changed = append(changed, summary)
-				break
-			}
-		}
-		if len(changed) == 0 {
-			return fmt.Errorf("certificate %q is not subscribed", name)
-		}
-	} else if c.rewriteAll {
-		changed = summaries
-		c.rewriteAll = false
-	}
-
-	var errs []error
-	for _, s := range changed {
-		bundle, err := c.getBundle(ctx, s.Name)
-		if err == nil {
-			if err = c.writeOutputs(s.Name, bundle); err != nil {
-				err = fmt.Errorf("write %s: %w", s.Name, err)
-			}
-		}
-		if err != nil {
-			errs = append(errs, err)
-			// A diff skips a certificate whose fingerprint state.json already
-			// records, so a forced or named pull that failed for it would not
-			// be retried. Forget the fingerprint so the next pull retries it.
-			if st.Certs[s.Name] == s.Fingerprint {
-				delete(st.Certs, s.Name)
-			}
-			continue
-		}
-		st.Certs[s.Name] = s.Fingerprint
-	}
-
-	if err := c.saveState(st); err != nil {
-		errs = append(errs, fmt.Errorf("save state: %w", err))
-	}
-	if err := c.heartbeat(ctx, st); err != nil {
-		errs = append(errs, fmt.Errorf("heartbeat: %w", err))
-	}
-	c.statusMu.Lock()
-	c.status.Certs = cloneFingerprints(st.Certs)
-	c.statusMu.Unlock()
-	return errors.Join(errs...)
-}
-
-// listCerts calls GET /v1/certificates and returns the response.
-func (c *Client) listCerts(ctx context.Context) ([]proto.CertSummary, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		c.cfg.Client.ServerURL+"/v1/certificates", nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("server returned %d", resp.StatusCode)
-	}
-	var out []proto.CertSummary
-	return out, json.NewDecoder(resp.Body).Decode(&out)
-}
-
 // getBundle calls GET /v1/certificates/{name}/bundle.
 func (c *Client) getBundle(ctx context.Context, name string) (*proto.CertBundle, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
@@ -384,17 +345,20 @@ func (c *Client) getBundle(ctx context.Context, name string) (*proto.CertBundle,
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("bundle %s: server returned %d", name, resp.StatusCode)
+		return nil, fmt.Errorf("server returned %d", resp.StatusCode)
 	}
 	var b proto.CertBundle
-	return &b, json.NewDecoder(resp.Body).Decode(&b)
+	if err := json.NewDecoder(resp.Body).Decode(&b); err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+	return &b, nil
 }
 
-// heartbeat calls POST /v1/heartbeat with the current fingerprint set.
-func (c *Client) heartbeat(ctx context.Context, st *state) error {
+// heartbeat calls POST /v1/heartbeat with one of the stored fingerprints.
+func (c *Client) heartbeat(ctx context.Context) error {
 	fp := ""
-	for _, v := range st.Certs {
-		fp = v
+	for _, cert := range c.store {
+		fp = cert.Fingerprint
 		break
 	}
 	body, _ := json.Marshal(proto.HeartbeatRequest{
@@ -418,37 +382,91 @@ func (c *Client) heartbeat(ctx context.Context, st *state) error {
 	return nil
 }
 
-// writeOutputs renders the bundle into each configured output for certName.
-func (c *Client) writeOutputs(certName string, bundle *proto.CertBundle) error {
-	specs := c.cfg.Certificates[certName].Outputs
-	if len(specs) == 0 {
-		// Cache to data_dir/cache/ even if no output specs.
-		return c.cacheBundle(certName, bundle)
-	}
-	// Split fullchain into cert + chain.
-	cb := splitBundle(bundle)
-	for _, spec := range specs {
-		if err := output.Write(cb, spec); err != nil {
-			return err
+// reconcileLocked brings the outputs of every stored certificate in line with
+// its material, then runs the pending on_change programs in name order, and
+// returns the joined errors of both.
+//
+// When Reconcile rewrites the content of an output of a certificate that has
+// an on_change program, the certificate gets hook_pending; repairing only the
+// mode or owner of an output does not set it. The new bits are written to the
+// store before any program runs. A program does not run while its certificate's outputs
+// failed to reconcile, since they may be incomplete. A program that exits 0
+// clears the bit, and so does the lack of a program; a failure keeps it, so
+// the program runs again after the next reconcile. The cleared bits are
+// written once all programs have run.
+func (c *Client) reconcileLocked() error {
+	certificates := c.cfg.Certificates
+	names := slices.Sorted(maps.Keys(c.store))
+	var errs []error
+	failed := make(map[string]bool)
+	pending := false
+	for _, name := range names {
+		outputs := certificates[name].Outputs
+		if len(outputs) == 0 {
+			continue
 		}
+		cert := c.store[name]
+		changed, err := output.Reconcile(splitBundle(cert), outputs)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("outputs of certificate %s: %w", name, err))
+			failed[name] = true
+		}
+		if changed && len(certificates[name].OnChange) > 0 && !cert.HookPending {
+			cert.HookPending = true
+			c.store[name] = cert
+			pending = true
+		}
+	}
+	if pending || c.storeUnsaved {
+		if err := c.writeStoreLocked(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	ctx := c.runCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cleared := false
+	for _, name := range names {
+		cert := c.store[name]
+		if !cert.HookPending {
+			continue
+		}
+		if argv := certificates[name].OnChange; len(argv) > 0 {
+			if failed[name] {
+				continue
+			}
+			if err := c.hook(ctx, name, argv); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+		}
+		cert.HookPending = false
+		c.store[name] = cert
+		cleared = true
+	}
+	if cleared {
+		if err := c.writeStoreLocked(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// writeStoreLocked writes the store in memory to certs.json, and records
+// whether certs.json lags behind it.
+func (c *Client) writeStoreLocked() error {
+	err := saveStore(c.cfg.Client.DataDir, c.store)
+	c.storeUnsaved = err != nil
+	if err != nil {
+		return fmt.Errorf("save store: %w", err)
 	}
 	return nil
 }
 
-// cacheBundle writes the bundle to data_dir/cache/<name>/ as raw PEM files.
-func (c *Client) cacheBundle(name string, bundle *proto.CertBundle) error {
-	dir := filepath.Join(c.cfg.Client.DataDir, "cache", name)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(dir, "fullchain.pem"), []byte(bundle.FullchainPEM), 0o644); err != nil {
-		return err
-	}
-	return securefile.WriteFile(filepath.Join(dir, "key.pem"), []byte(bundle.KeyPEM))
-}
-
 // startPushReceiver starts a minimal HTTP server on push_listen that triggers
-// pullOnce when it receives POST /v1/push/notify.
+// a full pull when it receives POST /v1/push/notify.
 func (c *Client) startPushReceiver(ctx context.Context, listenAddr string) {
 	srv := &http.Server{
 		Addr:              listenAddr,
@@ -510,35 +528,6 @@ func validPushAuthorization(header, expected string) bool {
 	return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
 }
 
-// loadState reads data_dir/state.json; returns an empty state on any error.
-func (c *Client) loadState() *state {
-	st := &state{Certs: make(map[string]string)}
-	data, err := os.ReadFile(c.statePath())
-	if err != nil {
-		return st
-	}
-	_ = json.Unmarshal(data, st)
-	if st.Certs == nil {
-		st.Certs = make(map[string]string)
-	}
-	return st
-}
-
-func (c *Client) saveState(st *state) error {
-	data, err := json.Marshal(st)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(c.cfg.Client.DataDir, 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(c.statePath(), data, 0o600)
-}
-
-func (c *Client) statePath() string {
-	return filepath.Join(c.cfg.Client.DataDir, "state.json")
-}
-
 // Status returns a copy of the current runtime status.
 func (c *Client) Status() RuntimeStatus {
 	c.cfgMu.RLock()
@@ -556,10 +545,16 @@ func (c *Client) Status() RuntimeStatus {
 }
 
 // Reload applies a newly parsed client configuration. Changing the IPC or
-// push listener requires a service restart because those listeners are owned
-// by Run and the command process respectively. Once applied, Run pulls
-// immediately and rewrites the outputs of every subscribed certificate, so
-// outputs added to client.yaml are written without waiting for a renewal.
+// push listener or the data directory requires a service restart: Run and
+// the command process own the listeners, and New read the store from the data
+// directory.
+//
+// Before it returns, Reload reconciles the outputs with the store under the
+// new configuration and runs the pending on_change programs. Their errors go
+// to the status rather than to the caller, since the configuration is applied
+// by then. Reload then clears the etag, cancels the loop's request in flight,
+// which was made with the old configuration, and wakes the loop from a
+// backoff, so the loop pulls the whole view at once.
 func (c *Client) Reload(cfg *config.ClientConfig) error {
 	httpClient, err := buildHTTPClient(cfg)
 	if err != nil {
@@ -573,6 +568,10 @@ func (c *Client) Reload(cfg *config.ClientConfig) error {
 		c.cfgMu.Unlock()
 		return fmt.Errorf("client.ipc_socket changed; restart sigilc to apply it")
 	}
+	if cfg.Client.DataDir != c.cfg.Client.DataDir {
+		c.cfgMu.Unlock()
+		return fmt.Errorf("client.data_dir changed; restart sigilc to apply it")
+	}
 	if cfg.Client.PushListen != c.cfg.Client.PushListen {
 		c.cfgMu.Unlock()
 		return fmt.Errorf("client.push_listen changed; restart sigilc to apply it")
@@ -580,12 +579,17 @@ func (c *Client) Reload(cfg *config.ClientConfig) error {
 	c.cfg = cfg
 	c.http = httpClient
 	c.cfgMu.Unlock()
-	c.rewriteAll = true
 
 	c.statusMu.Lock()
 	c.status.Name = cfg.Client.Name
 	c.status.ServerURL = cfg.Client.ServerURL
 	c.statusMu.Unlock()
+
+	c.recordReconcile(c.reconcileLocked())
+	c.etag = ""
+	if c.syncCancel != nil {
+		c.syncCancel()
+	}
 	select {
 	case c.reloadCh <- struct{}{}:
 	default:
@@ -593,22 +597,35 @@ func (c *Client) Reload(cfg *config.ClientConfig) error {
 	return nil
 }
 
-func (c *Client) recordPull(err error) {
+// recordPullLocked records the outcome of a round of the loop or an IPC
+// fetch. answeredAt is when GET /v1/sync answered 200 or 304, or zero if it
+// did not.
+func (c *Client) recordPullLocked(answeredAt time.Time, err error) {
 	c.statusMu.Lock()
 	defer c.statusMu.Unlock()
-	c.status.LastPullAt = time.Now().UTC()
-	c.status.Online = err == nil
+	c.status.Online = !answeredAt.IsZero()
+	if c.status.Online {
+		c.status.LastPullAt = answeredAt.UTC()
+	}
+	c.status.Certs = fingerprints(c.store)
+	c.setLastErrorLocked(err)
+}
+
+// recordReconcile records the outcome of a reconcile without a request, at
+// startup or on reload. The next round overwrites it.
+func (c *Client) recordReconcile(err error) {
+	c.statusMu.Lock()
+	defer c.statusMu.Unlock()
+	c.setLastErrorLocked(err)
+}
+
+// setLastErrorLocked sets LastError; statusMu must be held.
+func (c *Client) setLastErrorLocked(err error) {
 	if err == nil {
 		c.status.LastError = ""
 	} else {
 		c.status.LastError = err.Error()
 	}
-}
-
-func (c *Client) pullInterval() time.Duration {
-	c.cfgMu.RLock()
-	defer c.cfgMu.RUnlock()
-	return c.cfg.Client.PullInterval
 }
 
 func (c *Client) pushListen() string {
@@ -623,6 +640,15 @@ func (c *Client) pushToken() string {
 	return c.cfg.Client.PushToken
 }
 
+// fingerprints maps the name of each certificate in certs to its fingerprint.
+func fingerprints(certs map[string]storedCert) map[string]string {
+	out := make(map[string]string, len(certs))
+	for name, cert := range certs {
+		out[name] = cert.Fingerprint
+	}
+	return out
+}
+
 func cloneFingerprints(src map[string]string) map[string]string {
 	dst := make(map[string]string, len(src))
 	for name, fingerprint := range src {
@@ -631,21 +657,11 @@ func cloneFingerprints(src map[string]string) map[string]string {
 	return dst
 }
 
-// diffCerts returns the summaries whose fingerprints differ from localState.
-func diffCerts(summaries []proto.CertSummary, localState map[string]string) []proto.CertSummary {
-	var changed []proto.CertSummary
-	for _, s := range summaries {
-		if localState[s.Name] != s.Fingerprint {
-			changed = append(changed, s)
-		}
-	}
-	return changed
-}
-
-// splitBundle splits a FullchainPEM (cert + intermediates) into CertPEM and ChainPEM.
-// It treats the first PEM block as the leaf cert and the rest as the chain.
-func splitBundle(b *proto.CertBundle) *output.CertBundle {
-	full := []byte(b.FullchainPEM)
+// splitBundle splits the stored fullchain (cert + intermediates) into CertPEM
+// and ChainPEM. It treats the first PEM block as the leaf cert and the rest as
+// the chain.
+func splitBundle(cert storedCert) *output.CertBundle {
+	full := []byte(cert.FullchainPEM)
 	block, rest := pem.Decode(full)
 	certPEM := full
 	if block != nil {
@@ -654,7 +670,7 @@ func splitBundle(b *proto.CertBundle) *output.CertBundle {
 	return &output.CertBundle{
 		CertPEM:  certPEM,
 		ChainPEM: rest,
-		KeyPEM:   []byte(b.KeyPEM),
+		KeyPEM:   []byte(cert.KeyPEM),
 	}
 }
 
@@ -665,7 +681,7 @@ func buildHTTPClient(cfg *config.ClientConfig) (*http.Client, error) {
 	id := cfg.Identity
 	if id.ClientCert == "" && id.ClientKey == "" {
 		// No identity yet (pre-enroll): plain HTTP client (no mTLS).
-		return &http.Client{Timeout: 30 * time.Second}, nil
+		return &http.Client{Timeout: httpTimeout}, nil
 	}
 	tlsCert, err := tls.X509KeyPair([]byte(id.ClientCert), []byte(id.ClientKey))
 	if err != nil {
@@ -681,7 +697,7 @@ func buildHTTPClient(cfg *config.ClientConfig) (*http.Client, error) {
 		MinVersion:   tls.VersionTLS13,
 	}
 	return &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: httpTimeout,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
