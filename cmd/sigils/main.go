@@ -5,11 +5,14 @@ import (
 	"os"
 
 	"github.com/Oganneson-Studio/sigil/cmd/sigils/commands"
+	"github.com/Oganneson-Studio/sigil/internal/logging"
 )
 
 func main() {
 	if err := commands.NewRootCmd().Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		// Errors can quote files, and answers of the daemon that quote the
+		// network, such as the errors of a manual renewal.
+		fmt.Fprintln(os.Stderr, "error:", logging.Printable(err.Error()))
 		os.Exit(1)
 	}
 }

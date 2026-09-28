@@ -5,11 +5,14 @@ import (
 	"os"
 
 	"github.com/Oganneson-Studio/sigil/cmd/sigilc/commands"
+	"github.com/Oganneson-Studio/sigil/internal/logging"
 )
 
 func main() {
 	if err := commands.NewRootCmd().Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		// Errors can quote the network, such as the DNS names in the
+		// certificate of a man in the middle.
+		fmt.Fprintln(os.Stderr, "error:", logging.Printable(err.Error()))
 		os.Exit(1)
 	}
 }
