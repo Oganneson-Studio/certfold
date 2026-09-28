@@ -70,16 +70,11 @@ func (h *handlers) installSh(w http.ResponseWriter, r *http.Request) {
 // GET /install.ps1
 // ---------------------------------------------------------------------------
 
-func (h *handlers) installPs1(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/plain")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Referrer-Policy", "no-referrer")
-	token := r.URL.Query().Get("token")
-	if token != "" && !validEnrollmentToken(token) {
-		http.Error(w, "invalid token", http.StatusBadRequest)
-		return
-	}
-	renderInstallPs1(w, h.deps.serverConfig().PublicBaseURL(), token)
+// installPs1 serves the same script to every request and reads nothing from
+// it: the token is the -Token argument of the command that runs the script.
+func (h *handlers) installPs1(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	renderInstallPs1(w, h.deps.serverConfig().PublicBaseURL())
 }
 
 // ---------------------------------------------------------------------------
@@ -147,20 +142,6 @@ func validPlatformPart(s string) bool {
 	}
 	for _, r := range s {
 		if (r < 'a' || r > 'z') && (r < '0' || r > '9') {
-			return false
-		}
-	}
-	return true
-}
-
-func validEnrollmentToken(s string) bool {
-	if s == "" || len(s) > 64*1024 {
-		return false
-	}
-	for _, r := range s {
-		if (r < 'a' || r > 'z') &&
-			(r < 'A' || r > 'Z') &&
-			(r < '0' || r > '9') && r != '-' && r != '_' {
 			return false
 		}
 	}

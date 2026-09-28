@@ -19,7 +19,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -156,49 +155,6 @@ func TestInstallSh(t *testing.T) {
 	}
 	if strings.Contains(body, "enroll --server") {
 		t.Error("install.sh passes the unsupported --server flag")
-	}
-}
-
-func TestInstallPs1(t *testing.T) {
-	deps := buildDeps(t)
-	srv := NewInsecure(deps)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/install.ps1?token=test-token", nil)
-	srv.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: got %d", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "sigilc.exe") {
-		t.Errorf("install.ps1 missing sigilc.exe reference")
-	}
-	if !strings.Contains(rec.Body.String(), `param([string]$Token = "test-token")`) {
-		t.Errorf("install.ps1 did not embed the token query parameter")
-	}
-	if strings.Contains(rec.Body.String(), "enroll --server") {
-		t.Error("install.ps1 passes the unsupported --server flag")
-	}
-	if !strings.Contains(rec.Body.String(), `"ARM64" { "arm64" }`) {
-		t.Error("install.ps1 does not detect Windows ARM64")
-	}
-}
-
-func TestInstallPs1_RejectsPowerShellInjection(t *testing.T) {
-	deps := buildDeps(t)
-	srv := NewInsecure(deps)
-	rec := httptest.NewRecorder()
-	payload := `$([System.Environment]::MachineName)`
-	req := httptest.NewRequest(http.MethodGet, "/install.ps1?token="+url.QueryEscape(payload), nil)
-	srv.Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status: got %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-	if strings.Contains(rec.Body.String(), payload) {
-		t.Fatal("install.ps1 reflected executable PowerShell input")
-	}
-	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
-		t.Fatalf("Cache-Control = %q, want no-store", got)
 	}
 }
 

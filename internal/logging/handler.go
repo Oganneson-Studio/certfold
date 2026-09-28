@@ -193,7 +193,8 @@ func recordAttrs(r slog.Record) []slog.Attr {
 // in a string or an error withheld:
 //   - A ReplaceAttr function sees each value once slog has resolved it, the
 //     values in groups too, so a Private is withheld wherever it ends up.
-//   - An error is written as its Error text.
+//   - An error is written as fmt prints it: its Error text, or <nil> for a
+//     nil pointer, whose Error method may panic.
 //   - They drop the level and the message the handler writes for every
 //     record. Attributes named level or msg outside any group are dropped
 //     with them, so these two keys are reserved.
@@ -210,7 +211,7 @@ var renderOptions = &slog.HandlerOptions{
 			case Private, *Private:
 				return slog.String(a.Key, withheld)
 			case error:
-				return slog.String(a.Key, RedactURLQueries(v.Error()))
+				return slog.String(a.Key, RedactURLQueries(fmt.Sprint(v)))
 			}
 		}
 		return a

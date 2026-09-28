@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/Oganneson-Studio/sigil/internal/api"
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 	"github.com/Oganneson-Studio/sigil/internal/logging"
@@ -244,12 +245,13 @@ func runTokenCreate(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: server.public_url is not set; install URL may be unreachable (%s). Set server.public_url in server.yaml.\n", created.ServerURL)
 	}
 
+	sh, ps1 := api.InstallCommands(created.ServerURL, created.Token)
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Token: %s\n\n", created.Token)
 	fmt.Fprintln(out, "Install (Linux/macOS):")
-	fmt.Fprintf(out, "  curl -fsSL %s/install.sh | sudo sh -s -- --token %s\n\n", created.ServerURL, created.Token)
-	fmt.Fprintln(out, "Install (Windows):")
-	fmt.Fprintf(out, "  iwr -useb '%s/install.ps1?token=%s' | iex\n", created.ServerURL, created.Token)
+	fmt.Fprintf(out, "  %s\n\n", sh)
+	fmt.Fprintln(out, "Install (Windows, elevated PowerShell):")
+	fmt.Fprintf(out, "  %s\n", ps1)
 	return nil
 }
 

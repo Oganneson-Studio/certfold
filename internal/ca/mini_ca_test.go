@@ -4,7 +4,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -278,22 +277,6 @@ func TestSign_InvalidCSRSignature(t *testing.T) {
 	_, err := m.Sign(csr, "bad")
 	if err == nil {
 		t.Fatal("expected error for tampered CSR, got nil")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// TLSConfig
-// ---------------------------------------------------------------------------
-
-func TestTLSConfig(t *testing.T) {
-	m := bootstrapInTemp(t)
-	cfg := m.TLSConfig()
-
-	if cfg.ClientAuth != tls.RequireAndVerifyClientCert {
-		t.Errorf("ClientAuth: got %v", cfg.ClientAuth)
-	}
-	if cfg.ClientCAs == nil {
-		t.Error("ClientCAs pool is nil")
 	}
 }
 

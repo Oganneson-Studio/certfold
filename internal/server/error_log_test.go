@@ -27,6 +27,14 @@ func TestLimitedWriterPassesTenLinesAMinute(t *testing.T) {
 	if got, want := lines[len(lines)-1], "http: TLS handshake error 1000 (990 earlier lines dropped)"; got != want {
 		t.Fatalf("first line of the next minute = %q, want %q", got, want)
 	}
+
+	// Reporting the dropped lines resets their count: the next line passed
+	// does not repeat it.
+	logger.Printf("http: TLS handshake error %d", 1001)
+	lines = strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	if got, want := lines[len(lines)-1], "http: TLS handshake error 1001"; got != want {
+		t.Fatalf("second line of the next minute = %q, want %q", got, want)
+	}
 }
 
 func TestRunLimitsTheErrorLogOfHTTPS(t *testing.T) {
