@@ -19,3 +19,9 @@ func createTemp(dir string, _ config.OutputSpec) (*os.File, error) {
 func applyMode(tmp *os.File, spec config.OutputSpec) error {
 	return tmp.Chmod(os.FileMode(outputMode(spec)))
 }
+
+// modeMatches reports whether info has the permission bits applyMode gives
+// the output.
+func modeMatches(info os.FileInfo, spec config.OutputSpec) bool {
+	return info.Mode().Perm() == os.FileMode(outputMode(spec))
+}

@@ -33,3 +33,7 @@ func createTemp(dir string, spec config.OutputSpec) (*os.File, error) {
 // attribute there, and a read-only output cannot be replaced by the next
 // rewrite; createTemp sets the access controls instead.
 func applyMode(*os.File, config.OutputSpec) error { return nil }
+
+// modeMatches reports true: the mode is not applied on Windows, so there is
+// nothing to compare. Neither is the DACL createTemp sets compared.
+func modeMatches(os.FileInfo, config.OutputSpec) bool { return true }

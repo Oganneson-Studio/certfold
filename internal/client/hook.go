@@ -2,8 +2,27 @@ package client
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"log"
 	"os/exec"
+	"time"
 )
+
+// Bounds on one run of an on_change program. They are variables only so tests
+// can shorten them.
+var (
+	// hookTimeout bounds one run; when it expires the program is killed.
+	hookTimeout = 2 * time.Minute
+	// hookWaitDelay bounds how long the program's output may stay open after
+	// it exits or is killed, typically because a process it started still
+	// holds it.
+	hookWaitDelay = 5 * time.Second
+)
+
+// hookOutputLimit caps the program output kept for the log. The end of the
+// output, where errors usually are, is kept.
+const hookOutputLimit = 4 << 10
 
 // runHook runs argv, the on_change program of the certificate certName, and
 // returns nil if it exits 0.
@@ -37,8 +56,55 @@ import (
 //     arguments may hold credentials, and the output may repeat them.
 //   - Only the last 4 KiB of the output are kept, and they are logged only
 //     when the run fails.
-//
-// This is a stub: it runs argv to completion under ctx and returns the result.
+//   - A program that exits 0 succeeds even if a process it started still
+//     holds the output when WaitDelay expires. The output is closed then,
+//     which may end that process on its next write, so this is logged,
+//     naming only the certificate.
 func runHook(ctx context.Context, certName string, argv []string) error {
-	return exec.CommandContext(ctx, argv[0], argv[1:]...).Run()
+	ctx, cancel := context.WithTimeoutCause(ctx, hookTimeout, fmt.Errorf("timed out after %s", hookTimeout))
+	defer cancel()
+	out := &tailWriter{}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	// One writer for both, so exec serializes the writes to it.
+	cmd.Stdout, cmd.Stderr = out, out
+	cmd.WaitDelay = hookWaitDelay
+	err := cmd.Run()
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// The program exited 0, but a process it started still held its
+		// output when WaitDelay expired. Closing the output may end that
+		// process on its next write, so leave a trace of it.
+		log.Printf("sigilc: on_change of certificate %s exited 0, but a process it started still held its output after %s; the output was closed", certName, hookWaitDelay)
+		return nil
+	}
+	if ctx.Err() != nil {
+		// Wait reports the killed program's exit status, not why it was
+		// killed: the timeout, or ctx ending with the daemon.
+		err = context.Cause(ctx)
+	}
+	if len(out.tail) > 0 {
+		tail := out.tail
+		if out.truncated {
+			tail = append([]byte("..."), tail...)
+		}
+		log.Printf("sigilc: on_change of certificate %s failed: %v; output: %q", certName, err, tail)
+	}
+	return fmt.Errorf("on_change of certificate %s: %w", certName, err)
+}
+
+// tailWriter keeps the last hookOutputLimit bytes written to it.
+type tailWriter struct {
+	tail      []byte
+	truncated bool
+}
+
+func (w *tailWriter) Write(p []byte) (int, error) {
+	w.tail = append(w.tail, p...)
+	if extra := len(w.tail) - hookOutputLimit; extra > 0 {
+		w.tail = append(w.tail[:0], w.tail[extra:]...)
+		w.truncated = true
+	}
+	return len(p), nil
 }
