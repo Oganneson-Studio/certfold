@@ -390,7 +390,7 @@ func (c *Client) reconcileLocked() error {
 		cert := c.store[name]
 		changed, err := output.Reconcile(splitBundle(cert), outputs)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("write %s: %w", name, err))
+			errs = append(errs, fmt.Errorf("outputs of certificate %s: %w", name, err))
 			failed[name] = true
 		}
 		if changed && len(certificates[name].OnChange) > 0 && !cert.HookPending {

@@ -463,25 +463,21 @@ func (f *fakeServer) heartbeatCount() int {
 	return f.heartbeats
 }
 
-// hookRecorder stands in for runHook: it records the certificate of each run
-// and fails while fail is set.
-type hookRecorder struct {
-	fail atomic.Bool
+// fakeHook stands in for runHook: it records the certificate of each run,
+// which succeeds.
+type fakeHook struct {
 	mu   sync.Mutex
 	runs []string
 }
 
-func (h *hookRecorder) run(_ context.Context, certName string, _ []string) error {
+func (h *fakeHook) run(_ context.Context, certName string, _ []string) error {
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.runs = append(h.runs, certName)
-	h.mu.Unlock()
-	if h.fail.Load() {
-		return fmt.Errorf("on_change of %s exited with status 1", certName)
-	}
 	return nil
 }
 
-func (h *hookRecorder) calls() []string {
+func (h *fakeHook) calls() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return slices.Clone(h.runs)
@@ -529,7 +525,7 @@ func TestFetchDoesNotRewriteUnchangedOutputs(t *testing.T) {
 	cfg := buildTestCfg(t, ts.URL)
 	outPath := fullchainOutput(cfg, t.TempDir(), "api-prod", "/usr/sbin/reload")
 	c := newTestClient(t, cfg)
-	hooks := &hookRecorder{}
+	hooks := &fakeHook{}
 	c.hook = hooks.run
 
 	if err := c.Fetch(context.Background(), ""); err != nil {
@@ -758,7 +754,7 @@ func TestFetchNamedCertificateForcesOnlyThatBundle(t *testing.T) {
 	fullchainOutput(cfg, dir, "a", "/usr/sbin/reload")
 	fullchainOutput(cfg, dir, "b", "/usr/sbin/reload")
 	c := newTestClient(t, cfg)
-	hooks := &hookRecorder{}
+	hooks := &fakeHook{}
 	c.hook = hooks.run
 	if err := c.Fetch(context.Background(), ""); err != nil {
 		t.Fatalf("Fetch: %v", err)
@@ -865,10 +861,10 @@ func TestReconcileFailureSkipsHook(t *testing.T) {
 		OnChange: []string{"/usr/sbin/reload"},
 	}
 	c := newTestClient(t, cfg)
-	hooks := &hookRecorder{}
+	hooks := &fakeHook{}
 	c.hook = hooks.run
 
-	if err := c.Fetch(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "write api-prod") {
+	if err := c.Fetch(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "outputs of certificate api-prod") {
 		t.Fatalf("Fetch error = %v, want the failed output reported", err)
 	}
 	if got := hooks.calls(); len(got) != 0 {
@@ -908,7 +904,7 @@ func TestCertificateLeavingViewKeepsOutputs(t *testing.T) {
 	fullchainOutput(cfg, dir, "a")
 	pathB := fullchainOutput(cfg, dir, "b", "/usr/sbin/reload")
 	c := newTestClient(t, cfg)
-	hooks := &hookRecorder{}
+	hooks := &fakeHook{}
 	c.hook = hooks.run
 	if err := c.Fetch(context.Background(), ""); err != nil {
 		t.Fatalf("Fetch: %v", err)
