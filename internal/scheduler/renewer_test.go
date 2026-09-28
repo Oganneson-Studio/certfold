@@ -39,7 +39,7 @@ type mockIssuer struct {
 	called chan struct{}
 }
 
-func (m *mockIssuer) Issue(_ context.Context, cfg *config.ServerConfig, _ config.CertificateSpec) (*acme.Result, error) {
+func (m *mockIssuer) Issue(_ context.Context, cfg *config.ServerConfig, _ config.CertificateSpec, _ []byte) (*acme.Result, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls++
@@ -51,6 +51,11 @@ func (m *mockIssuer) Issue(_ context.Context, cfg *config.ServerConfig, _ config
 		}
 	}
 	return m.result, m.err
+}
+
+// RenewalInfo leaves the renewal plan to the lifetime ratio.
+func (m *mockIssuer) RenewalInfo(*config.ServerConfig, config.CertificateSpec, []byte) (*acme.RenewalInfo, error) {
+	return nil, acme.ErrNoRenewalInfo
 }
 
 // gatedIssuer hands every Issue call to the test and blocks it until the test
@@ -75,7 +80,12 @@ func newGatedIssuer(t *testing.T, notAfter time.Time) *gatedIssuer {
 	return &gatedIssuer{calls: make(chan *issueCall), result: successResult(t, notAfter)}
 }
 
-func (g *gatedIssuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec config.CertificateSpec) (*acme.Result, error) {
+// RenewalInfo leaves the renewal plan to the lifetime ratio.
+func (g *gatedIssuer) RenewalInfo(*config.ServerConfig, config.CertificateSpec, []byte) (*acme.RenewalInfo, error) {
+	return nil, acme.ErrNoRenewalInfo
+}
+
+func (g *gatedIssuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec config.CertificateSpec, _ []byte) (*acme.Result, error) {
 	g.mu.Lock()
 	g.active++
 	g.peak = max(g.peak, g.active)

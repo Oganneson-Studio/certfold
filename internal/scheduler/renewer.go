@@ -44,7 +44,8 @@ const (
 
 // issuer is the subset of acme.Issuer used by Renewer.
 type issuer interface {
-	Issue(ctx context.Context, cfg *config.ServerConfig, spec config.CertificateSpec) (*acme.Result, error)
+	Issue(ctx context.Context, cfg *config.ServerConfig, spec config.CertificateSpec, replacing []byte) (*acme.Result, error)
+	RenewalInfo(cfg *config.ServerConfig, spec config.CertificateSpec, certPEM []byte) (*acme.RenewalInfo, error)
 }
 
 // Renewer drives certificate renewal for all specs in ServerConfig.
@@ -363,7 +364,7 @@ func (r *Renewer) issue(ctx context.Context, current func() *config.ServerConfig
 	}
 	fp := config.CertificateSpecFingerprint(cfg, spec)
 	slog.Info("certificate issuance started", "cert", name, "reason", reason)
-	result, err := r.issuer.Issue(ctx, cfg, spec)
+	result, err := r.issuer.Issue(ctx, cfg, spec, nil)
 	if err != nil {
 		// Its text can quote the ACME CA and the DNS provider API, and
 		// RenewNamed hands it over IPC to a terminal.

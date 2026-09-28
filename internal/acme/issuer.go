@@ -110,14 +110,18 @@ func NewIssuer(accounts *store.AccountRepo) *Issuer { return &Issuer{accounts: a
 
 // Issue requests a certificate for the given spec from its configured CA.
 // cfg and spec must come from the same validated runtime configuration
-// snapshot.
+// snapshot. replacing, the fullchain PEM of the certificate this one
+// replaces, or nil, names that certificate in the order (RFC 9773, section
+// 5) when it has an authority key identifier. lego sends it only to a CA
+// that offers renewal information, and orders again without it when the CA
+// answers that the certificate was replaced already.
 //
 // ctx is used only for the account store. lego's API takes no context, so
 // cancelling ctx does not interrupt a running ACME exchange; the timeouts
 // described at the top of this file bound it instead. sigils waits for the
 // scheduler's in-flight Issue during shutdown, so those timeouts also bound
 // how long issuance can delay shutdown.
-func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec config.CertificateSpec) (*Result, error) {
+func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec config.CertificateSpec, replacing []byte) (*Result, error) {
 	caEntry, ok := cfg.ACME.CAs[spec.CA]
 	if !ok {
 		return nil, fmt.Errorf("unknown CA %q", spec.CA)
@@ -147,6 +151,9 @@ func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec confi
 	req := certificate.ObtainRequest{
 		Domains: spec.Domains,
 		Bundle:  true,
+	}
+	if id, ok := ariCertID(replacing); ok {
+		req.ReplacesCertID = id
 	}
 	res, err := client.Certificate.Obtain(req)
 	if err != nil {
