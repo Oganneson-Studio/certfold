@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -92,11 +93,12 @@ func TestRunServesUntilCancelled(t *testing.T) {
 	}
 	port := freeTCPPort(t)
 	path := writeServerConfig(t, fmt.Sprintf("127.0.0.1:%d", port), dataDir, testIPCSocket(t))
+	logs := setupLogs(t, io.Discard)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	result := make(chan error, 1)
-	go func() { result <- Run(ctx, path) }()
+	go func() { result <- Run(ctx, path, logs) }()
 	waitServing(t, miniCA, port, result)
 
 	cancel()
@@ -157,11 +159,12 @@ func TestRunAnswersWaitingSyncAtShutdown(t *testing.T) {
 	identity := enrollClient(t, miniCA, dataDir, "web-1")
 	port := freeTCPPort(t)
 	path := writeServerConfig(t, fmt.Sprintf("127.0.0.1:%d", port), dataDir, testIPCSocket(t))
+	logs := setupLogs(t, io.Discard)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	result := make(chan error, 1)
-	go func() { result <- Run(ctx, path) }()
+	go func() { result <- Run(ctx, path, logs) }()
 	waitServing(t, miniCA, port, result)
 
 	roots := x509.NewCertPool()
@@ -252,11 +255,12 @@ func TestRunSetsConfiguredDNSResolvers(t *testing.T) {
 	}
 	port := freeTCPPort(t)
 	path := writeServerConfig(t, fmt.Sprintf("127.0.0.1:%d", port), dataDir, testIPCSocket(t), resolver.LocalAddr().String())
+	logs := setupLogs(t, io.Discard)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	result := make(chan error, 1)
-	go func() { result <- Run(ctx, path) }()
+	go func() { result <- Run(ctx, path, logs) }()
 	waitServing(t, miniCA, port, result)
 	cancel()
 	select {
@@ -347,7 +351,7 @@ func TestRunFailsFastOnBusyHTTPSWithoutTouchingIPC(t *testing.T) {
 	path := writeServerConfig(t, busy.Addr().String(), t.TempDir(), socket)
 
 	start := time.Now()
-	err = Run(context.Background(), path)
+	err = Run(context.Background(), path, setupLogs(t, io.Discard))
 	if err == nil || !strings.Contains(err.Error(), "https listen") {
 		t.Fatalf("Run error = %v, want an https listen failure", err)
 	}

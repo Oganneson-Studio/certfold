@@ -15,6 +15,7 @@ import (
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
+	"github.com/Oganneson-Studio/sigil/internal/logging"
 	"github.com/Oganneson-Studio/sigil/internal/server"
 	internalsvc "github.com/Oganneson-Studio/sigil/internal/service"
 	tuiserver "github.com/Oganneson-Studio/sigil/internal/tui/server"
@@ -26,8 +27,8 @@ import (
 
 func runServe(cmd *cobra.Command, _ []string) error {
 	cfgPath := serverConfigPath(cmd)
-	return internalsvc.Run(serverSvcConfig(cmd), func(ctx context.Context) error {
-		return server.Run(ctx, cfgPath)
+	return internalsvc.Run(serverSvcConfig(cmd), func(ctx context.Context, logs logging.Logs) error {
+		return server.Run(ctx, cfgPath, logs)
 	})
 }
 

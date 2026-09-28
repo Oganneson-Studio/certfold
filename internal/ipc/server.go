@@ -85,7 +85,7 @@ func Serve(ctx context.Context, l net.Listener, deps ServerDeps) error {
 
 func buildIPCRouter(h *ipcHandlers) http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.Recoverer)
+	r.Use(logging.Recoverer)
 	r.Use(middleware.RequestSize(maxRequestBody))
 
 	if h.deps.DB != nil {

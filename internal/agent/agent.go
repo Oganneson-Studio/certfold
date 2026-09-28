@@ -3,17 +3,22 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/Oganneson-Studio/sigil/internal/client"
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/enroll"
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
+	"github.com/Oganneson-Studio/sigil/internal/logging"
 	"github.com/Oganneson-Studio/sigil/internal/version"
 )
 
 // Run loads client.yaml from configPath and runs the sigilc daemon until ctx
 // is cancelled. Cancellation is a clean stop and returns nil.
-func Run(ctx context.Context, configPath string) error {
+//
+// logs is the logging that logging.Setup made the default: the IPC API serves
+// its events, and the errors of the IPC server go to its sink alone.
+func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 	cfg, err := config.LoadClient(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -35,6 +40,9 @@ func Run(ctx context.Context, configPath string) error {
 	if err != nil {
 		return fmt.Errorf("ipc listen: %w", err)
 	}
+	// Before the IPC server takes a request. Loading the store may have
+	// logged already.
+	slog.Info("sigilc started", "version", version.Version, "server", cfg.Client.ServerURL)
 	control := &ipc.ClientControlDeps{
 		State: func(context.Context) (ipc.ClientState, error) {
 			status := c.Status()
@@ -60,13 +68,17 @@ func Run(ctx context.Context, configPath string) error {
 			return c.Reload(updated)
 		},
 	}
+	ipcSrv := ipc.NewServer(ipc.ServerDeps{Client: control, Events: logs.Events})
+	// Its errors go to the service log but are not events.
+	ipcSrv.ErrorLog = slog.NewLogLogger(logs.Sink, slog.LevelInfo)
 	// The IPC server stops with ctx, so it also stops when Run returns an error.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go func() { _ = ipc.Serve(ctx, ipcListener, ipc.ServerDeps{Client: control}) }()
+	context.AfterFunc(ctx, func() { _ = ipcSrv.Close() })
+	go func() { _ = ipcSrv.Serve(ipcListener) }()
 
-	fmt.Printf("sigilc %s starting (server: %s)\n", version.Version, cfg.Client.ServerURL)
 	err = c.Run(ctx)
+	slog.Info("sigilc stopping")
 	if ctx.Err() != nil {
 		return nil
 	}
