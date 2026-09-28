@@ -10,8 +10,9 @@ import (
 // Recoverer replaces chi's middleware.Recoverer, which prints the panic and
 // its stack to os.Stderr, where a Windows service has none. It logs a panic
 // of next as the ERROR event "panic serving request" and answers 500. The
-// stack goes only to the service log. The path is r.URL.Path, never
-// RequestURI, whose query may hold an enrollment token.
+// stack is Private: journald keeps it, the events and the Windows event log
+// do not. The path is r.URL.Path, never RequestURI, whose query may hold an
+// enrollment token.
 //
 // A panic with http.ErrAbortHandler is not recovered: net/http aborts the
 // response without logging it.

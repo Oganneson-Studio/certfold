@@ -78,9 +78,10 @@ func TestHandlerKeepsRecordsTheSinkDoesNotTake(t *testing.T) {
 	}
 }
 
-// TestPrivateValuesStayInServiceLog covers Private values given with the
-// record, inside a group and through WithAttrs, outside and inside a group.
-func TestPrivateValuesStayInServiceLog(t *testing.T) {
+// TestPrivateValuesAreWithheldFromEvents covers Private values given with
+// the record, inside a group and through WithAttrs, outside and inside a
+// group: events show the placeholder, a slog.TextHandler sink the text.
+func TestPrivateValuesAreWithheldFromEvents(t *testing.T) {
 	var sink bytes.Buffer
 	logger, ring := newTestLogger(&sink)
 	logger.With("bound", Private("secret-bound")).
@@ -100,8 +101,8 @@ func TestPrivateValuesStayInServiceLog(t *testing.T) {
 			t.Errorf("service log lacks %q: %s", secret, sink.String())
 		}
 	}
-	want := `bound="(in service log)" hook.argv0=/usr/sbin/reload hook.env="(in service log)" ` +
-		`hook.cert=api-prod hook.output="(in service log)" hook.run.stderr="(in service log)"`
+	want := `bound=(withheld) hook.argv0=/usr/sbin/reload hook.env=(withheld) ` +
+		`hook.cert=api-prod hook.output=(withheld) hook.run.stderr=(withheld)`
 	if e.Attrs != want {
 		t.Fatalf("event attrs:\n got %s\nwant %s", e.Attrs, want)
 	}
@@ -119,11 +120,11 @@ func (p privateRun) LogValue() slog.Value {
 	return slog.GroupValue(slog.String("cert", "api-prod"), slog.Any("output", Private(p)))
 }
 
-// TestPrivateValuesStayInServiceLogWhenResolved covers Private values that
-// only appear once slog resolves another value: returned by a LogValuer that
-// is given with the record or bound with With, inside the group a LogValuer
+// TestPrivateValuesAreWithheldWhenResolved covers Private values that only
+// appear once slog resolves another value: returned by a LogValuer that is
+// given with the record or bound with With, inside the group a LogValuer
 // returns, and behind a pointer.
-func TestPrivateValuesStayInServiceLogWhenResolved(t *testing.T) {
+func TestPrivateValuesAreWithheldWhenResolved(t *testing.T) {
 	var sink bytes.Buffer
 	logger, ring := newTestLogger(&sink)
 	pointer := Private("secret-pointer")
@@ -139,13 +140,13 @@ func TestPrivateValuesStayInServiceLogWhenResolved(t *testing.T) {
 			t.Errorf("event holds %q: %+v", secret, e)
 		}
 	}
-	// The service log prints a *Private as a pointer.
+	// A slog.TextHandler prints a *Private as a pointer.
 	for _, secret := range []string{"secret-bound", "secret-result", "secret-run"} {
 		if !strings.Contains(sink.String(), secret) {
 			t.Errorf("service log lacks %q: %s", secret, sink.String())
 		}
 	}
-	want := `bound="(in service log)" result="(in service log)" run.cert=api-prod run.output="(in service log)" pointer="(in service log)"`
+	want := `bound=(withheld) result=(withheld) run.cert=api-prod run.output=(withheld) pointer=(withheld)`
 	if e.Attrs != want {
 		t.Fatalf("event attrs:\n got %s\nwant %s", e.Attrs, want)
 	}
@@ -234,6 +235,9 @@ func TestEventAttrsAreCutAtRuneBoundary(t *testing.T) {
 	})
 }
 
+// TestLineHandlerWritesOneLinePerRecord covers the lines of the Windows event
+// log, which any interactive user can read: Private values are withheld as
+// in events, also when another value resolves to one.
 func TestLineHandlerWritesOneLinePerRecord(t *testing.T) {
 	type line struct {
 		level slog.Level
@@ -245,12 +249,14 @@ func TestLineHandlerWritesOneLinePerRecord(t *testing.T) {
 		return nil
 	})).With("component", "lego").WithGroup("hook")
 
-	logger.Warn("on_change failed", "cert", "api-prod", "output", Private("line 1\nline 2"))
+	logger.Warn("on_change failed",
+		"cert", "api-prod",
+		"output", Private("secret-output\nline 2"),
+		"result", privateResult("secret-result"))
 	logger.Error("daemon\nfailed")
 
 	want := []line{
-		// The line shows the text of Private values.
-		{slog.LevelWarn, `on_change failed component=lego hook.cert=api-prod hook.output="line 1\nline 2"`},
+		{slog.LevelWarn, `on_change failed component=lego hook.cert=api-prod hook.output=(withheld) hook.result=(withheld)`},
 		{slog.LevelError, "daemon failed component=lego"},
 	}
 	if !slices.Equal(lines, want) {

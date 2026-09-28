@@ -22,7 +22,7 @@ func TestRecovererLogsPanicWithoutStack(t *testing.T) {
 	}
 
 	e := onlyEvent(t, logs.Events)
-	want := `method=GET path=/install.ps1 panic=boom stack="(in service log)"`
+	want := `method=GET path=/install.ps1 panic=boom stack=(withheld)`
 	if e.Level != "ERROR" || e.Message != "panic serving request" || e.Attrs != want {
 		t.Fatalf("event = %+v, want attrs %s", e, want)
 	}
