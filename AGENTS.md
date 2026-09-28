@@ -64,7 +64,7 @@ go vet ./...
 go test -v -tags e2e -timeout 10m ./test/e2e
 ```
 
-E2E 不依赖 Compose 或固定 IP。它构建临时镜像、创建随机命名网络、通过网络别名连接，用 Pebble + challtestsrv + exec DNS hook 真实签发证书，执行注册/拉取/renew/吊销/token 测试，并测 sync 交付延迟、输出对账与自动恢复、on_change 和 reload 唤醒，并按精确名称清理资源。WSLC 热跑一轮约 40 秒，Linux Docker 冷启动约 140–155 秒。Linux CI 可显式设置 `SIGIL_CONTAINER_CLI=docker` 使用 Docker Engine；Windows 必须使用 WSLC。
+E2E 不依赖 Compose 或固定 IP。它构建临时镜像、创建随机命名网络、通过网络别名连接，用 Pebble + challtestsrv + exec DNS hook 真实签发证书，执行注册/拉取/renew/吊销/token 测试，并测 sync 交付延迟、输出对账与自动恢复、on_change 和 reload 唤醒，并按精确名称清理资源。WSLC 热跑一轮约 2 分钟（2026-09-28 实测 go test 121–127 秒），其中不调 fetch 的自动恢复一步固定约 55 秒：要等循环挂起的 sync 满 55 秒返回，前一步的 fetch 会让这次等待重新计时。Linux Docker 的耗时在 Phase 3 之后没有重测。Linux CI 可显式设置 `SIGIL_CONTAINER_CLI=docker` 使用 Docker Engine；Windows 必须使用 WSLC。
 
 竞态测试需要 CGO：
 
@@ -79,7 +79,7 @@ go test -race ./internal/api ./internal/client ./internal/ipc ./internal/schedul
 1. `server.yaml` 的 `certificates[].subscribers` 是订阅授权的唯一来源；客户端输出配置不能扩大授权。
 2. 注册 token 是一次性的，并绑定 secret、server URL、客户端名和 mini-CA 证书。客户端发送 token 前必须验证 TLS，禁止恢复 `InsecureSkipVerify`。
 3. 已注册客户端每次访问都必须同时通过 mTLS、数据库存在性和证书指纹匹配；挂起的 `/v1/sync` 被唤醒后、返回新清单前要再校验一次。删除客户端即撤销访问；除注册外，任何写路径（包括鉴权中间件刷新 `last_seen` 的条件 UPDATE）都不得创建客户端记录。
-4. `client.yaml` 和客户端本地存储 `<data_dir>/certs.json` 都包含私钥。写入必须经过 `internal/securefile`：Unix 使用私有模式，Windows 使用受保护 DACL，且采用临时文件加原子替换。私有临时文件一律用 `securefile.CreateTemp` 创建：Windows 上在 `CreateFile` 时就带受保护 DACL，不能先建文件再收紧，因为收紧之前别的账户打开的句柄仍能读到之后写入的内容。certs.json 加载时若已存在，先用 `securefile.ProtectFile` 收紧；它的路径不能由服务端下发的证书名派生。`client.data_dir` 必须放在能存住 Unix 权限位的文件系统上（WSL drvfs、没有 unix extensions 的 CIFS 都存不住），否则私有模式形同虚设。
+4. `client.yaml` 和客户端本地存储 `<data_dir>/certs.json` 都包含私钥。写入必须经过 `internal/securefile`：Unix 使用私有模式，Windows 使用受保护 DACL，且采用临时文件加原子替换。私有临时文件一律用 `securefile.CreateTemp` 创建：Windows 上在 `CreateFile` 时就带受保护 DACL，不能先建文件再收紧，因为收紧之前别的账户打开的句柄仍能读到之后写入的内容。certs.json 加载时若已存在，先用 `securefile.ProtectFile` 收紧；它的路径不能由服务端下发的证书名派生。`client.data_dir` 和私钥类输出必须放在能存住 Unix 权限位的文件系统上，否则私有模式形同虚设；WSL drvfs/9p（没开 metadata）、没有 unix extensions 的 CIFS、vfat/exfat 和 WSLC 的 bind mount 都存不住。
 5. 私钥输出默认权限为 `0600`；公开证书可为 `0644`。不要对所有输出格式使用同一默认权限。对账重写输出时按证书成组暂存：内容、权限位和属主先在临时文件上就位，全部暂存成功才依次改名替换，不能先改名再 chown。Windows 上的私钥类输出（`pem-key`、`pem-bundle`、`pkcs12`）有几条额外规则：
    - 临时文件在 `CreateFile` 时就带受保护 DACL：SYSTEM、Administrators 和运行 sigilc 的账户完全控制，配置的 `owner` 只读。
    - `mode` 在 Windows 上不应用，不能放宽这个 DACL；只读属性还会让之后的替换失败。
@@ -173,8 +173,8 @@ go test -race ./internal/api ./internal/client ./internal/ipc ./internal/schedul
   - 构建上下文的大小不影响耗时，开销在 `COPY . .` 的缓存失效：上下文里任何文件变了，sigils 和 sigilc 各要重编约 12–15 秒。
 - WSLC bind mount（2026-09-28 实测）：
   - 挂载里的文件一律报告为 0777，chmod 静默无效。E2E 因此把客户端输出放在客户端容器自己的文件系统里。
-  - 宿主进程打开着挂载里的某个文件时（Go 的 os.Open/ReadFile 不带 FILE_SHARE_DELETE），容器里 rename 覆盖这个文件会报 Permission denied。
-  - 宿主改写挂载里的文件，容器里立即可见。
+  - 宿主进程打开着挂载里的某个文件时（Go 的 os.Open/ReadFile 不带 FILE_SHARE_DELETE），容器里 rename 覆盖这个文件会报 Permission denied。容器可能替换某个文件时，宿主不要打开它。
+  - 宿主改写挂载里的文件，容器里立即可见（变长、变短、等长都实测过），所以 E2E 可以在容器运行期间从宿主改 server.yaml。
 - 本机 Git for Windows 的 curl（Schannel）校验私有根时会报 `CERT_TRUST_REVOCATION_STATUS_UNKNOWN`，要加 `--ssl-no-revoke`；Go 写的 harness 不受影响。
 - 不运行或依赖 Docker Desktop。需要容器验证时直接调用 `wslc`。
 
