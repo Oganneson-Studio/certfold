@@ -33,8 +33,8 @@ func TestRenewalFollowsCertificateLifetime(t *testing.T) {
 				PrivateKey:  []byte("---key---"),
 				NotAfter:    notAfter,
 			}}
-			clock := start
-			r := New(mi, db, nil, func() time.Time { return clock })
+			clock := newTestClock(start)
+			r := New(mi, db, nil, clock.Now)
 			cfg := minimalCfg("api-prod", nil)
 
 			for _, step := range []struct {
@@ -46,7 +46,7 @@ func TestRenewalFollowsCertificateLifetime(t *testing.T) {
 				{notAfter.Add(-tc.left - time.Second), 1},
 				{notAfter.Add(-tc.left), 2},
 			} {
-				clock = step.at
+				clock.Set(step.at)
 				if err := tickAndWait(ctx, r, cfg); err != nil {
 					t.Fatal(err)
 				}
@@ -138,9 +138,9 @@ func TestCertificateDueOnArrivalBacksOff(t *testing.T) {
 				PrivateKey:  []byte("---key---"),
 				NotAfter:    now.Add(10 * 24 * time.Hour),
 			}}
-			clock := now
+			clock := newTestClock(now)
 			var stored atomic.Int32
-			r := New(mi, db, func() { stored.Add(1) }, func() time.Time { return clock })
+			r := New(mi, db, func() { stored.Add(1) }, clock.Now)
 			cfg := minimalCfg("api-prod", nil)
 
 			for i, delay := range []time.Duration{baseBackoff, 2 * baseBackoff} {
@@ -152,7 +152,7 @@ func TestCertificateDueOnArrivalBacksOff(t *testing.T) {
 				if err != nil {
 					t.Fatalf("the certificate was not stored: %v", err)
 				}
-				if rec.FullchainPEM != string(tc.certificate) || !rec.IssuedAt.Equal(clock) {
+				if rec.FullchainPEM != string(tc.certificate) || !rec.IssuedAt.Equal(clock.Now()) {
 					t.Fatalf("stored record = %+v", rec)
 				}
 				if got := stored.Load(); got != int32(i+1) {
@@ -160,7 +160,7 @@ func TestCertificateDueOnArrivalBacksOff(t *testing.T) {
 				}
 				assertStatus(t, db, store.IssuanceStatus{
 					Name: "api-prod", Failures: i + 1, LastError: tc.wantErr,
-					LastAttemptAt: clock, NextAttemptAt: clock.Add(delay),
+					LastAttemptAt: clock.Now(), NextAttemptAt: clock.Now().Add(delay),
 				})
 
 				// Not issued again until the retry time.
@@ -168,7 +168,7 @@ func TestCertificateDueOnArrivalBacksOff(t *testing.T) {
 				if mi.calls != i+1 {
 					t.Fatalf("issued again during the backoff; Issue calls = %d", mi.calls)
 				}
-				clock = clock.Add(delay)
+				clock.Set(clock.Now().Add(delay))
 			}
 		})
 	}
