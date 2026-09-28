@@ -100,8 +100,9 @@ type RuntimeStatus struct {
 	// 200 or 304 from GET /v1/sync, and LastPullAt when the last one did.
 	Online     bool
 	LastPullAt time.Time
-	// LastError is the joined error of the last round, IPC fetch or reload,
-	// or empty if it had none.
+	// LastError is the joined error of the last round or IPC fetch, or empty
+	// if it had none. A reload, or the reconcile at startup, sets it only
+	// when its reconcile fails.
 	LastError string
 	// Certs lists the stored certificates in name order.
 	Certs []CertStatus
@@ -520,22 +521,29 @@ func (c *Client) recordPullLocked(answeredAt time.Time, err error) {
 
 // recordReconcile records the outcome of a reconcile without a request, at
 // startup or on reload, and describes the certificates under the running
-// configuration, so the status follows a reload at once. The next round
-// overwrites it. The caller holds pullMu.
+// configuration, so the status follows a reload at once. A failed reconcile
+// sets LastError. One that succeeds leaves LastError as it was: it does not
+// reach the server, so it cannot tell that the error of the round before it
+// is gone. Clearing it on a reload while the server stays unreachable would
+// log "round succeeded again", then "round failed" once more. The round that
+// follows a reload at once sets LastError from its own outcome. The caller
+// holds pullMu.
 func (c *Client) recordReconcile(err error) {
 	certs := certStatuses(c.store, c.cfg)
 	c.statusMu.Lock()
 	defer c.statusMu.Unlock()
 	c.status.Certs = certs
-	c.setLastErrorLocked(err)
+	if err != nil {
+		c.setLastErrorLocked(err)
+	}
 }
 
 // setLastErrorLocked sets LastError; statusMu must be held. Only a change of
 // LastError is logged, so a failure that repeats round after round is logged
 // once: as the event "round failed" when LastError becomes another error, and
 // as "round succeeded again" when it is cleared. The rounds of the loop, IPC
-// fetches, reloads and the reconcile at startup all set it, and share this.
-// It only works for errors that read the same each time they repeat, which is
+// fetches, and reloads and the reconcile at startup when they fail, all set
+// it, and share this. It only works for errors that read the same each time they repeat, which is
 // why the errors of writing outputs and the store name no temporary file. An
 // error that names the current time, as a failed verification of an expired
 // certificate does, is still logged on every round.

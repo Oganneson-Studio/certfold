@@ -374,6 +374,56 @@ func TestLastErrorIsLoggedWhenItChanges(t *testing.T) {
 	}
 }
 
+// TestReloadDuringOutageKeepsLastError covers a reload while the server is
+// unreachable. Its reconcile succeeds, but does not reach the server, so the
+// last error of the fetch before it stays, and the reload logs no recovery.
+// The fetch that reaches the server again logs it, once.
+func TestReloadDuringOutageKeepsLastError(t *testing.T) {
+	bundle := newTestBundle(t, "api-prod")
+	fs := newFakeServer(bundle)
+	var down atomic.Bool
+	down.Store(true)
+	fs.syncStatus = func(string) int {
+		if down.Load() {
+			return http.StatusServiceUnavailable
+		}
+		return 0
+	}
+	ts := httptest.NewServer(fs.handler())
+	t.Cleanup(ts.Close)
+	cfg := buildTestCfg(t, ts.URL)
+	seedStore(t, cfg.Client.DataDir, bundle)
+	c := newTestClient(t, cfg)
+	ring, _ := captureEvents(t)
+
+	failure := "sync: server returned 503"
+	if err := c.Fetch(context.Background(), ""); err == nil || err.Error() != failure {
+		t.Fatalf("Fetch error = %v, want %q", err, failure)
+	}
+	updated := *cfg
+	if err := c.Reload(&updated); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if got := c.Status().LastError; got != failure {
+		t.Fatalf("last error after the reload = %q, want %q, which the reload cannot tell is gone", got, failure)
+	}
+	if err := c.Fetch(context.Background(), ""); err == nil || err.Error() != failure {
+		t.Fatalf("Fetch error = %v, want %q again", err, failure)
+	}
+	down.Store(false)
+	if err := c.Fetch(context.Background(), ""); err != nil {
+		t.Fatalf("Fetch once the server is back: %v", err)
+	}
+	want := []string{
+		`WARN round failed error="` + failure + `"`,
+		"INFO configuration reloaded",
+		"INFO round succeeded again",
+	}
+	if got := eventLines(ring); !slices.Equal(got, want) {
+		t.Fatalf("events:\n got %q\nwant %q", got, want)
+	}
+}
+
 // TestReloadIsLogged covers the events of a reload that configures an output
 // with an on_change program: the reload, then the output its reconcile
 // writes and the program it runs.
