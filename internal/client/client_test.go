@@ -772,11 +772,17 @@ func TestRenewIdentityPersistsBeforeRuntimeSwitch(t *testing.T) {
 		}, nil
 	})}
 
+	ring, _ := captureEvents(t)
 	if err := c.renewIdentityLocked(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if !saverSawOldIdentity {
 		t.Fatal("runtime identity changed before the renewed identity was persisted")
+	}
+	// slog.TextHandler writes times as RFC 3339 with milliseconds.
+	wantEvents := []string{"INFO client identity renewed not_after=" + now.Add(90*24*time.Hour).Format("2006-01-02T15:04:05.000Z07:00")}
+	if got := eventLines(ring); !slices.Equal(got, wantEvents) {
+		t.Fatalf("events = %q, want %q", got, wantEvents)
 	}
 	if savedCert == "" || savedKey == "" || savedCert == oldCert {
 		t.Fatal("renewed identity was not persisted")

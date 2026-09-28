@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -110,9 +111,11 @@ func (c *Client) ListClients(ctx context.Context) ([]*ClientInfo, error) {
 	return out, c.do(ctx, http.MethodGet, "/ipc/v1/clients", nil, &out)
 }
 
-// DeleteClient removes a client record by name.
+// DeleteClient removes a client record by name. The name is escaped in the
+// path, so a '?' or '#' typed in it cannot cut the path short and remove
+// another client.
 func (c *Client) DeleteClient(ctx context.Context, name string) error {
-	return c.do(ctx, http.MethodDelete, "/ipc/v1/clients/"+name, nil, nil)
+	return c.do(ctx, http.MethodDelete, "/ipc/v1/clients/"+url.PathEscape(name), nil, nil)
 }
 
 // CreateToken asks the daemon to create an enrollment token bound to its
@@ -131,9 +134,10 @@ func (c *Client) ListTokens(ctx context.Context) ([]*TokenInfo, error) {
 	return out, c.do(ctx, http.MethodGet, "/ipc/v1/tokens", nil, &out)
 }
 
-// DeleteToken removes an enrollment token by ID.
+// DeleteToken removes an enrollment token by ID, escaped in the path as
+// DeleteClient escapes a name.
 func (c *Client) DeleteToken(ctx context.Context, id string) error {
-	return c.do(ctx, http.MethodDelete, "/ipc/v1/tokens/"+id, nil, nil)
+	return c.do(ctx, http.MethodDelete, "/ipc/v1/tokens/"+url.PathEscape(id), nil, nil)
 }
 
 // GetClientState returns the current sigilc runtime status.

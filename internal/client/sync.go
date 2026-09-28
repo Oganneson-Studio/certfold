@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/Oganneson-Studio/sigil/pkg/proto"
@@ -180,9 +182,11 @@ func requestSync(ctx context.Context, httpClient *http.Client, serverURL, etag s
 //     as they are, and their programs do not run.
 //
 // The store is written, once, only if it changed; if the write fails, the
-// store in memory stays as it was. c.etag becomes the ETag of the view if all
-// of this succeeded and is cleared otherwise, so the next round asks for the
-// whole view again.
+// store in memory stays as it was. Once it is written, each certificate it
+// holds with a new fingerprint is logged as the event "certificate updated",
+// and each it no longer holds as "certificate no longer delivered". c.etag
+// becomes the ETag of the view if all of this succeeded and is cleared
+// otherwise, so the next round asks for the whole view again.
 func (c *Client) applyViewLocked(ctx context.Context, result *syncResult, force string) error {
 	next := make(map[string]storedCert, len(result.view))
 	var errs []error
@@ -219,6 +223,18 @@ func (c *Client) applyViewLocked(ctx context.Context, result *syncResult, force 
 		if err := saveStore(c.cfg.Client.DataDir, next); err != nil {
 			errs = append(errs, fmt.Errorf("save store: %w", err))
 		} else {
+			for _, name := range slices.Sorted(maps.Keys(next)) {
+				cert := next[name]
+				if stored, ok := c.store[name]; !ok || stored.Fingerprint != cert.Fingerprint {
+					slog.Info("certificate updated", "cert", name,
+						"fingerprint", cert.Fingerprint, "not_after", leafNotAfter(cert.FullchainPEM))
+				}
+			}
+			for _, name := range slices.Sorted(maps.Keys(c.store)) {
+				if _, ok := next[name]; !ok {
+					slog.Info("certificate no longer delivered", "cert", name)
+				}
+			}
 			// next carries the bits in memory, unsaved ones included.
 			c.store = next
 			c.storeUnsaved = false

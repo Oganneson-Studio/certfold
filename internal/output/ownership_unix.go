@@ -11,7 +11,9 @@ import (
 )
 
 // applyOwnership sets owner and group on path when the fields are non-empty.
-// On non-Windows systems this uses syscall.Lchown with uid/gid lookup.
+// On non-Windows systems this uses syscall.Lchown with uid/gid lookup. Its
+// error does not name path, which may be a temporary file with a random
+// name; every caller names the output.
 func applyOwnership(path, owner, group string) error {
 	if owner == "" && group == "" {
 		return nil
@@ -23,7 +25,7 @@ func applyOwnership(path, owner, group string) error {
 	}
 
 	if err := syscall.Lchown(path, uid, gid); err != nil {
-		return fmt.Errorf("chown %s: %w", path, err)
+		return fmt.Errorf("chown: %w", err)
 	}
 	return nil
 }

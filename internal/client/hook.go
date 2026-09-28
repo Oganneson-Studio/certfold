@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os/exec"
 	"time"
+
+	"github.com/Oganneson-Studio/sigil/internal/logging"
 )
 
 // Bounds on one run of an on_change program. They are variables only so tests
@@ -56,12 +58,15 @@ const hookOutputLimit = 4 << 10
 //     shows it as the last error.
 //   - argv[1:] and the program's output never appear in the error: the
 //     arguments may hold credentials, and the output may repeat them.
-//   - Only the last 4 KiB of the output are kept, and they are logged only
-//     when the run fails.
+//   - Every failed run is logged as the event "on_change failed". Only the
+//     last 4 KiB of the output are kept, and the event holds them as a
+//     logging.Private value: the service log shows them, the events and the
+//     Windows event log do not. The output of a run that succeeds is not
+//     logged.
 //   - A program that exits 0 succeeds even if a process it started still
 //     holds the output when WaitDelay expires. The output is closed then,
-//     which may end that process on its next write, so this is logged,
-//     naming only the certificate.
+//     which may end that process on its next write, so this is logged as the
+//     event "on_change output held open", naming only the certificate.
 func runHook(ctx context.Context, certName string, argv []string) error {
 	ctx, cancel := context.WithTimeoutCause(ctx, hookTimeout, fmt.Errorf("timed out after %s", hookTimeout))
 	defer cancel()
@@ -78,7 +83,7 @@ func runHook(ctx context.Context, certName string, argv []string) error {
 		// The program exited 0, but a process it started still held its
 		// output when WaitDelay expired. Closing the output may end that
 		// process on its next write, so leave a trace of it.
-		log.Printf("sigilc: on_change of certificate %s exited 0, but a process it started still held its output after %s; the output was closed", certName, hookWaitDelay)
+		slog.Warn("on_change output held open", "cert", certName)
 		return nil
 	}
 	if ctx.Err() != nil {
@@ -86,13 +91,11 @@ func runHook(ctx context.Context, certName string, argv []string) error {
 		// killed: the timeout, or ctx ending with the daemon.
 		err = context.Cause(ctx)
 	}
-	if len(out.tail) > 0 {
-		tail := out.tail
-		if out.truncated {
-			tail = append([]byte("..."), tail...)
-		}
-		log.Printf("sigilc: on_change of certificate %s failed: %v; output: %q", certName, err, tail)
+	tail := out.tail
+	if out.truncated {
+		tail = append([]byte("..."), tail...)
 	}
+	slog.Warn("on_change failed", "cert", certName, "error", err, "output", logging.Private(tail))
 	return fmt.Errorf("on_change of certificate %s: %w", certName, err)
 }
 
