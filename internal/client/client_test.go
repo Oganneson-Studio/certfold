@@ -614,6 +614,27 @@ func TestFetchReportsServerError(t *testing.T) {
 	}
 }
 
+// TestFetchReconcilesAfterFailedSync covers an IPC fetch while the server
+// fails: the outputs are reconciled from the store all the same.
+func TestFetchReconcilesAfterFailedSync(t *testing.T) {
+	bundle := newTestBundle(t, "api-prod")
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(ts.Close)
+	cfg := buildTestCfg(t, ts.URL)
+	outPath := fullchainOutput(cfg, t.TempDir(), "api-prod")
+	seedStore(t, cfg.Client.DataDir, bundle)
+	c := newTestClient(t, cfg)
+
+	if err := c.Fetch(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("Fetch error = %v, want the 503", err)
+	}
+	if got := fileContent(outPath); got != bundle.FullchainPEM {
+		t.Fatal("Fetch did not reconcile the outputs after the failed sync")
+	}
+}
+
 // TestFetchTrustsSystemRootsAndMiniCA covers a server that presents a publicly
 // trusted server.tls_cert_file: pulls must trust the system roots, as
 // enrollment does, while the mini-CA keeps authenticating the client.
@@ -1025,6 +1046,20 @@ func TestStoreIsPrivate(t *testing.T) {
 	})
 }
 
+// TestUnreadableStoreFailsNew covers a certs.json that exists but cannot be
+// read: New fails rather than start from an empty store, which would lose
+// the pending on_change runs recorded in it.
+func TestUnreadableStoreFailsNew(t *testing.T) {
+	cfg := buildTestCfg(t, "https://sigil.example.test")
+	// A directory where certs.json belongs cannot be read as a file.
+	if err := os.Mkdir(filepath.Join(cfg.Client.DataDir, storeFileName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(cfg); err == nil {
+		t.Fatal("New read a store it cannot read as an empty one")
+	}
+}
+
 func TestStoreSurvivesRestart(t *testing.T) {
 	bundle := newTestBundle(t, "api-prod")
 	ts := httptest.NewServer(newFakeServer(bundle).handler())
@@ -1094,6 +1129,48 @@ func TestRunRestoresOutputsBeforeFirstAnswer(t *testing.T) {
 
 	startRun(t, c)
 	waitFor(t, "the output restored from the store", func() bool { return fileContent(outPath) == bundle.FullchainPEM })
+}
+
+// TestStoppingRunKillsHook checks that on_change programs run under the ctx
+// of Run: stopping the daemon kills a running program instead of waiting for
+// it to end.
+func TestStoppingRunKillsHook(t *testing.T) {
+	bundle := newTestBundle(t, "api-prod")
+	ts := httptest.NewServer(newFakeServer(bundle).handler())
+	t.Cleanup(ts.Close)
+	cfg := buildTestCfg(t, ts.URL)
+	fullchainOutput(cfg, t.TempDir(), "api-prod", "/usr/sbin/reload")
+	// The output is missing, so the reconcile at startup writes it and runs
+	// the program.
+	seedStore(t, cfg.Client.DataDir, bundle)
+	c := newTestClient(t, cfg)
+	entered := make(chan struct{})
+	var once sync.Once
+	c.hook = func(ctx context.Context, _ string, _ []string) error {
+		once.Do(func() { close(entered) })
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(20 * time.Second):
+			return nil
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("on_change did not run at startup")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return: stopping it did not kill the running on_change program")
+	}
 }
 
 // TestRoundReconcilesAfterNotModified covers an output deleted while nothing
@@ -1708,6 +1785,37 @@ func TestReloadAppliesRuntimeConfig(t *testing.T) {
 	status := c.Status()
 	if status.Name != "web-2" || status.ServerURL != "https://new.example.com" {
 		t.Fatalf("status after reload = %+v", status)
+	}
+}
+
+// TestReloadKeepsReconcileErrorsInStatus covers a reload whose reconcile
+// fails: the configuration is applied all the same, so Reload succeeds and
+// the error goes to the status.
+func TestReloadKeepsReconcileErrorsInStatus(t *testing.T) {
+	bundle := newTestBundle(t, "api-prod")
+	cfg := buildTestCfg(t, "https://sigil.example.test")
+	seedStore(t, cfg.Client.DataDir, bundle)
+	c := newTestClient(t, cfg)
+	// A file where the key's directory belongs fails that output.
+	blocker := filepath.Join(t.TempDir(), "keys")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	updated := *cfg
+	updated.Client.ServerURL = "https://new.example.test"
+	updated.Certificates = map[string]config.CertificateOutputs{"api-prod": {
+		Outputs: []config.OutputSpec{{Format: "pem-key", Path: filepath.Join(blocker, "api.key")}},
+	}}
+
+	if err := c.Reload(&updated); err != nil {
+		t.Fatalf("Reload returned %v, want the reconcile error in the status only", err)
+	}
+	status := c.Status()
+	if !strings.Contains(status.LastError, "outputs of certificate api-prod") {
+		t.Fatalf("last error = %q, want the failed reconcile", status.LastError)
+	}
+	if status.ServerURL != "https://new.example.test" {
+		t.Fatalf("server URL = %q, want the reloaded one", status.ServerURL)
 	}
 }
 
