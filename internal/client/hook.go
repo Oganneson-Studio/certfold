@@ -40,7 +40,9 @@ const hookOutputLimit = 4 << 10
 //     how long a process it started may keep its output open. Both are
 //     package variables only so tests can shorten them.
 //   - The timeout is added to ctx, which must end with the daemon: the ctx
-//     of Run, or context.Background while Run is not running. Stopping the
+//     of Run, or context.Background before Run starts. After Run returns,
+//     callers keep passing its cancelled ctx, so a program started then is
+//     killed at once instead of outliving the daemon. Stopping the
 //     daemon kills the program instead of waiting up to hookTimeout for it,
 //     since the service stop waits for Run to return. An IPC caller that
 //     disconnects must not kill it, so ctx is never that of an IPC request.
