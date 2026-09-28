@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -116,13 +117,16 @@ func runCertList(cmd *cobra.Command, _ []string) error {
 	if asJSON {
 		return printJSON(certificateDetailList(certs))
 	}
-	fmt.Printf("%-20s %-12s %-30s %-10s %s\n", "NAME", "CA", "DOMAINS", "STATE", "NOT AFTER")
+	// Neither certificate names nor domain lists are bounded, so the columns
+	// fit what they hold.
+	table := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "NAME\tCA\tDOMAINS\tSTATE\tNOT AFTER\tRENEW AT")
 	for _, cert := range certs {
-		fmt.Printf("%-20s %-12s %-30s %-10s %s\n",
+		fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			cert.Name, cert.CA, strings.Join(cert.Domains, ","), cert.State,
-			formatTime(cert.NotAfter, "2006-01-02"))
+			formatTime(cert.NotAfter, "2006-01-02"), formatRenewAt(cert, "2006-01-02"))
 	}
-	return nil
+	return table.Flush()
 }
 
 func runCertShow(cmd *cobra.Command, args []string) error {
@@ -144,10 +148,16 @@ func runCertShow(cmd *cobra.Command, args []string) error {
 			if lastError == "" {
 				lastError = "-"
 			}
+			subscribers := strings.Join(cert.Subscribers, ", ")
+			if subscribers == "" {
+				subscribers = "-"
+			}
 			fmt.Printf("Name:         %s\n", cert.Name)
 			fmt.Printf("CA:           %s\n", cert.CA)
 			fmt.Printf("Domains:      %s\n", strings.Join(cert.Domains, ", "))
+			fmt.Printf("Subscribers:  %s\n", subscribers)
 			fmt.Printf("Not After:    %s\n", formatTime(cert.NotAfter, "2006-01-02"))
+			fmt.Printf("Renew At:     %s\n", formatRenewAt(cert, "2006-01-02 15:04:05 MST"))
 			fmt.Printf("State:        %s\n", cert.State)
 			fmt.Printf("Failures:     %d\n", cert.Failures)
 			fmt.Printf("Last Error:   %s\n", lastError)

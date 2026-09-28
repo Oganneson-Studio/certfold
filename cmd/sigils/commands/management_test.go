@@ -190,7 +190,6 @@ func TestCertRemoveReloadsRunningServer(t *testing.T) {
     ca: le
     dns_provider: route
     key_type: ec256
-    renew_days_before: 30
 `)
 	reloader := &fakeServerReloader{}
 	stubServerReloader(t, reloader, nil)
@@ -263,7 +262,8 @@ func TestCertAddTellsStoppedDaemonFromUnreachableOne(t *testing.T) {
 }
 
 // serveCertificates serves the certificates of cfg, backed by db, on a new
-// IPC endpoint and returns the endpoint.
+// IPC endpoint and returns the endpoint. Each stored certificate is due for
+// renewal by ARI 20 days before it expires.
 func serveCertificates(t *testing.T, db *store.DB, cfg *config.ServerConfig) string {
 	t.Helper()
 	socket := testIPCSocket(t)
@@ -277,6 +277,9 @@ func serveCertificates(t *testing.T, db *store.DB, cfg *config.ServerConfig) str
 		_ = ipc.Serve(ctx, l, ipc.ServerDeps{DB: db, Certificates: &ipc.CertificateControlDeps{
 			Current: func() *config.ServerConfig { return cfg },
 			Issuing: func(string) bool { return false },
+			RenewalPlan: func(record *store.CertRecord) (time.Time, string) {
+				return record.NotAfter.Add(-20 * 24 * time.Hour), "ari"
+			},
 		}})
 	}()
 	if _, err := ipc.NewClient(socket); err != nil {
@@ -323,9 +326,11 @@ func TestCertListAndShowReportIssuanceState(t *testing.T) {
 	// The store keeps whole seconds.
 	now := time.Now().UTC().Truncate(time.Second)
 	notAfter := now.Add(60 * 24 * time.Hour)
+	renewAt := notAfter.Add(-20 * 24 * time.Hour) // as serveCertificates plans it
 	nextAttempt := now.Add(20 * time.Minute)
 	mail := config.CertificateSpec{Name: "mail", CA: "le", Domains: []string{"mail.example.com"}, KeyType: "ec256"}
-	api := config.CertificateSpec{Name: "api-prod", CA: "le", Domains: []string{"api.example.com"}, KeyType: "ec256"}
+	api := config.CertificateSpec{Name: "api-prod", CA: "le", Domains: []string{"api.example.com"}, KeyType: "ec256",
+		Subscribers: []string{"web-1", "web-2"}}
 	cfg := &config.ServerConfig{
 		ACME: config.ACMESection{CAs: map[string]config.CAEntry{
 			"le": {Directory: "https://acme.example.com/directory"},
@@ -359,9 +364,9 @@ func TestCertListAndShowReportIssuanceState(t *testing.T) {
 
 	table := runSigils(t, "--ipc", socket, "cert", "list")
 	wantRows := [][]string{
-		{"NAME", "CA", "DOMAINS", "STATE", "NOT", "AFTER"},
-		{"mail", "le", "mail.example.com", "backoff", "-"},
-		{"api-prod", "le", "api.example.com", "valid", notAfter.Format("2006-01-02")},
+		{"NAME", "CA", "DOMAINS", "STATE", "NOT", "AFTER", "RENEW", "AT"},
+		{"mail", "le", "mail.example.com", "backoff", "-", "-"},
+		{"api-prod", "le", "api.example.com", "valid", notAfter.Format("2006-01-02"), renewAt.Format("2006-01-02"), "(ari)"},
 	}
 	lines := strings.Split(strings.TrimSuffix(table, "\n"), "\n")
 	if len(lines) != len(wantRows) {
@@ -386,20 +391,24 @@ func TestCertListAndShowReportIssuanceState(t *testing.T) {
 			t.Errorf("JSON output:\n got %s\nwant %s", got, want)
 		}
 	}
-	mailJSON := fmt.Sprintf(`{"name":"mail","ca":"le","domains":["mail.example.com"],"state":"backoff","failures":2,`+
+	mailJSON := fmt.Sprintf(`{"name":"mail","ca":"le","domains":["mail.example.com"],"subscribers":[],"state":"backoff","failures":2,`+
 		`"last_error":"acme: rate limited","last_attempt_at":%q,"next_attempt_at":%q}`,
 		now.Format(time.RFC3339), nextAttempt.Format(time.RFC3339))
-	apiJSON := fmt.Sprintf(`{"name":"api-prod","ca":"le","domains":["api.example.com"],"not_after":%q,"fingerprint":"sha256:AA",`+
+	apiJSON := fmt.Sprintf(`{"name":"api-prod","ca":"le","domains":["api.example.com"],"subscribers":["web-1","web-2"],"not_after":%q,`+
+		`"renew_at":%q,"renew_source":"ari","fingerprint":"sha256:AA",`+
 		`"issued_at":%q,"updated_at":%q,"state":"valid","failures":0}`,
-		notAfter.Format(time.RFC3339), now.Format(time.RFC3339), now.Format(time.RFC3339))
+		notAfter.Format(time.RFC3339), renewAt.Format(time.RFC3339), now.Format(time.RFC3339), now.Format(time.RFC3339))
 	sameJSON(runSigils(t, "--ipc", socket, "--json", "cert", "list"), "["+mailJSON+","+apiJSON+"]")
 	sameJSON(runSigils(t, "--ipc", socket, "--json", "cert", "show", "mail"), mailJSON)
+	sameJSON(runSigils(t, "--ipc", socket, "--json", "cert", "show", "api-prod"), apiJSON)
 
 	wantShow := map[string]string{
 		"mail": "Name:         mail\n" +
 			"CA:           le\n" +
 			"Domains:      mail.example.com\n" +
+			"Subscribers:  -\n" +
 			"Not After:    -\n" +
+			"Renew At:     -\n" +
 			"State:        backoff\n" +
 			"Failures:     2\n" +
 			"Last Error:   acme: rate limited\n" +
@@ -407,7 +416,9 @@ func TestCertListAndShowReportIssuanceState(t *testing.T) {
 		"api-prod": "Name:         api-prod\n" +
 			"CA:           le\n" +
 			"Domains:      api.example.com\n" +
+			"Subscribers:  web-1, web-2\n" +
 			"Not After:    " + notAfter.Format("2006-01-02") + "\n" +
+			"Renew At:     " + renewAt.Format("2006-01-02 15:04:05 MST") + " (ari)\n" +
 			"State:        valid\n" +
 			"Failures:     0\n" +
 			"Last Error:   -\n" +

@@ -445,7 +445,6 @@ func (d *deployment) writeConfigs(dnsHookPath string) error {
     ca: pebble
     dns_provider: challtestsrv
     key_type: ec256
-    renew_days_before: 30
 `, cert.name, cert.domain)
 		if i == 0 {
 			fmt.Fprintf(&certs, "    subscribers: [%q]\n", d.clientName)

@@ -40,12 +40,13 @@ func testCertConfig(specs ...config.CertificateSpec) *config.ServerConfig {
 	}
 }
 
-// certDeps returns certificate deps that run cfg and report the named
-// certificates as issuing.
+// certDeps returns certificate deps that run cfg, report the named
+// certificates as issuing and plan no renewal.
 func certDeps(cfg *config.ServerConfig, issuing ...string) *CertificateControlDeps {
 	return &CertificateControlDeps{
-		Current: func() *config.ServerConfig { return cfg },
-		Issuing: func(name string) bool { return slices.Contains(issuing, name) },
+		Current:     func() *config.ServerConfig { return cfg },
+		Issuing:     func(name string) bool { return slices.Contains(issuing, name) },
+		RenewalPlan: func(*store.CertRecord) (time.Time, string) { return time.Time{}, "" },
 	}
 }
 

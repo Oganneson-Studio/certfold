@@ -42,6 +42,10 @@ type CertificateControlDeps struct {
 	Current func() *config.ServerConfig
 	// Issuing reports whether an issuance of the named certificate is running or waiting for a slot.
 	Issuing func(name string) bool
+	// RenewalPlan returns when a stored certificate that matches the running
+	// configuration is due for renewal, and the source of that time: "ari" or
+	// "ratio". The zero time means at once.
+	RenewalPlan func(*store.CertRecord) (time.Time, string)
 }
 
 // TokenControlDeps exposes enrollment-token operations implemented by the

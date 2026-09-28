@@ -91,11 +91,11 @@ func expandEnvNode(n *yaml.Node, path string) error {
 		}
 		if value != n.Value {
 			n.Value = value
-			// The parser tagged the unexpanded text, so "${DAYS}" is a !!str.
+			// The parser tagged the unexpanded text, so "${SKIP}" is a !!str.
 			// Clearing the tag of a plain scalar makes YAML resolve the
 			// expanded text as if it had been written literally, so
-			// renew_days_before: ${DAYS} still decodes as an int. Quoted and
-			// block scalars, and explicitly tagged ones, keep their tag.
+			// skip_propagation_check: ${SKIP} still decodes as a bool. Quoted
+			// and block scalars, and explicitly tagged ones, keep their tag.
 			if n.Style == 0 {
 				n.Tag = ""
 			}

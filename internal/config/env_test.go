@@ -188,12 +188,14 @@ func TestEnvValuesAreLiteralScalars(t *testing.T) {
 
 func TestReadServerPathsExpandsAliasesLikeLoadServer(t *testing.T) {
 	t.Setenv("SIGIL_TEST_HOST", "sigil.example.com")
-	// Both paths alias one anchored value. "$$$$" shows that each path gets
-	// the value expanded exactly once.
-	path := writeServerYAML(t, withServerSection(`public_url: &base "https://${SIGIL_TEST_HOST}/$$$$"
+	// Both paths alias one anchored value, that of another field, which
+	// server.public_url cannot be: it may not hold "$". "$$$$" shows that
+	// each path gets the value expanded exactly once.
+	path := writeServerYAML(t, withServerSection(`tls_cert_file: &base "/srv/${SIGIL_TEST_HOST}/$$$$"
+  tls_key_file: *base
   data_dir: *base
   ipc_socket: *base`))
-	const want = "https://sigil.example.com/$$"
+	const want = "/srv/sigil.example.com/$$"
 
 	cfg, err := LoadServer(path)
 	if err != nil {
@@ -229,17 +231,17 @@ func TestEnvValueCannotAddYAMLStructure(t *testing.T) {
 }
 
 func TestEnvValuesInPlainScalarsResolveTheirType(t *testing.T) {
-	t.Setenv("SIGIL_TEST_DAYS", "21")
+	t.Setenv("SIGIL_TEST_SKIP", "true")
 	t.Setenv("SIGIL_TEST_TOKEN", "12345")
-	src := strings.Replace(validServerYAML, "renew_days_before: 14", "renew_days_before: ${SIGIL_TEST_DAYS}", 1)
-	src = strings.Replace(src, `api_token: "tok"`, `api_token: "${SIGIL_TEST_TOKEN}"`, 1)
+	src := strings.Replace(validServerYAML, `api_token: "tok"`,
+		`api_token: "${SIGIL_TEST_TOKEN}"`+"\n    skip_propagation_check: ${SIGIL_TEST_SKIP}", 1)
 	src = strings.Replace(src, `eab_hmac: "h"`, `eab_hmac: "h$$1"`, 1)
 	cfg, err := ParseServer([]byte(src))
 	if err != nil {
 		t.Fatalf("ParseServer: %v", err)
 	}
-	if got := cfg.Certificates[1].RenewDaysBefore; got != 21 {
-		t.Errorf("renew_days_before = %d, want 21", got)
+	if !cfg.DNSProviders["cf_main"].SkipPropagationCheck {
+		t.Error("skip_propagation_check = false, want true")
 	}
 	// A quoted value stays a string even when it looks like a number.
 	if got := cfg.DNSProviders["cf_main"].Config["api_token"]; got != "12345" {

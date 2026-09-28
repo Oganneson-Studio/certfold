@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -68,20 +69,21 @@ type DNSProvider struct {
 	Config               map[string]any `yaml:",inline"`
 }
 
+// CertificateSpec is a certificate that sigils issues. When it is renewed is
+// not configured: the scheduler renews a certificate when a share of its
+// lifetime is left.
 type CertificateSpec struct {
-	Name            string   `yaml:"name"`
-	Domains         []string `yaml:"domains"`
-	CA              string   `yaml:"ca"`
-	DNSProvider     string   `yaml:"dns_provider"`
-	KeyType         string   `yaml:"key_type,omitempty"`
-	RenewDaysBefore int      `yaml:"renew_days_before,omitempty"`
-	Subscribers     []string `yaml:"subscribers,omitempty"`
+	Name        string   `yaml:"name"`
+	Domains     []string `yaml:"domains"`
+	CA          string   `yaml:"ca"`
+	DNSProvider string   `yaml:"dns_provider"`
+	KeyType     string   `yaml:"key_type,omitempty"`
+	Subscribers []string `yaml:"subscribers,omitempty"`
 }
 
 const (
-	DefaultListen          = ":8443"
-	DefaultKeyType         = "ec256"
-	DefaultRenewDaysBefore = 30
+	DefaultListen  = ":8443"
+	DefaultKeyType = "ec256"
 )
 
 // validKeyTypes are the key algorithms the ACME issuer understands.
@@ -183,9 +185,6 @@ func (c *ServerConfig) applyDefaults() {
 		if c.Certificates[i].KeyType == "" {
 			c.Certificates[i].KeyType = DefaultKeyType
 		}
-		if c.Certificates[i].RenewDaysBefore == 0 {
-			c.Certificates[i].RenewDaysBefore = DefaultRenewDaysBefore
-		}
 	}
 }
 
@@ -205,6 +204,9 @@ func (c *ServerConfig) Validate() error {
 	if c.Server.PublicURL != "" {
 		if u, err := url.ParseRequestURI(c.Server.PublicURL); err != nil || u.Scheme != "https" {
 			v.Add("server.public_url", "must be an https URL, got %q", c.Server.PublicURL)
+		} else if i := strings.IndexFunc(c.Server.PublicURL, unquotable); i >= 0 {
+			r, _ := utf8.DecodeRuneInString(c.Server.PublicURL[i:])
+			v.Add("server.public_url", "must not contain %q: install commands quote the URL for sh and PowerShell", r)
 		}
 	}
 
@@ -277,9 +279,6 @@ func (c *ServerConfig) Validate() error {
 		}
 		if !validKeyTypes[cert.KeyType] {
 			v.Add(base+".key_type", "invalid key_type %q (supported: rsa2048, rsa4096, ec256, ec384)", cert.KeyType)
-		}
-		if cert.RenewDaysBefore < 1 || cert.RenewDaysBefore > 89 {
-			v.Add(base+".renew_days_before", "must be between 1 and 89 (got %d)", cert.RenewDaysBefore)
 		}
 	}
 
@@ -375,6 +374,15 @@ func (c *ServerConfig) PublicBaseURL() string {
 	}
 	// Best-effort: wrap listen address with https scheme.
 	return "https://" + strings.TrimLeft(c.Server.Listen, ":")
+}
+
+// unquotable reports whether r may not appear in server.public_url, which the
+// install commands put between single quotes for sh and for PowerShell: any
+// character but ASCII, and quotes, backticks, "$", "\", whitespace and control
+// characters. PowerShell takes U+2018 to U+201B for single quotes and U+201C
+// to U+201E for double quotes, hence ASCII only.
+func unquotable(r rune) bool {
+	return r > unicode.MaxASCII || unicode.IsSpace(r) || unicode.IsControl(r) || strings.ContainsRune("'\"`$\\", r)
 }
 
 // isValidDNSResolver reports whether s works as a resolver address after
