@@ -38,13 +38,17 @@ func Run(ctx context.Context, configPath string) error {
 	control := &ipc.ClientControlDeps{
 		State: func(context.Context) (ipc.ClientState, error) {
 			status := c.Status()
+			certs := make([]ipc.ClientCertState, 0, len(status.Certs))
+			for _, cert := range status.Certs {
+				certs = append(certs, ipc.ClientCertState(cert))
+			}
 			return ipc.ClientState{
 				Name:       status.Name,
 				ServerURL:  status.ServerURL,
 				Online:     status.Online,
 				LastPullAt: status.LastPullAt,
 				LastError:  status.LastError,
-				Certs:      status.Certs,
+				Certs:      certs,
 			}, nil
 		},
 		Fetch: c.Fetch,

@@ -540,7 +540,7 @@ func TestFetchWritesOutputsAndStore(t *testing.T) {
 		t.Fatalf("stored = %+v, want the served bundle", stored)
 	}
 	status := c.Status()
-	if !status.Online || status.LastPullAt.IsZero() || status.LastError != "" || status.Certs["api-prod"] != bundle.Fingerprint {
+	if !status.Online || status.LastPullAt.IsZero() || status.LastError != "" || statusFingerprints(status)["api-prod"] != bundle.Fingerprint {
 		t.Fatalf("status = %+v", status)
 	}
 }
@@ -597,7 +597,7 @@ func TestFetchStoresCertificatesWithoutOutputs(t *testing.T) {
 	if err := c.Fetch(context.Background(), ""); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if got := c.Status().Certs["tls-internal"]; got != bundle.Fingerprint {
+	if got := statusFingerprints(c.Status())["tls-internal"]; got != bundle.Fingerprint {
 		t.Fatalf("status fingerprint = %q, want %q", got, bundle.Fingerprint)
 	}
 	entries, err := os.ReadDir(cfg.Client.DataDir)
@@ -882,7 +882,7 @@ func TestFetchRejectsBadBundle(t *testing.T) {
 			if got := fileContent(outPath); got != old.FullchainPEM {
 				t.Fatal("the bad bundle replaced the output")
 			}
-			if status := c.Status(); status.LastError != err.Error() || status.Certs["api-prod"] != old.Fingerprint {
+			if status := c.Status(); status.LastError != err.Error() || statusFingerprints(status)["api-prod"] != old.Fingerprint {
 				t.Fatalf("status = %+v", status)
 			}
 		})
@@ -1016,7 +1016,7 @@ func TestCertificateLeavingViewKeepsOutputs(t *testing.T) {
 	if _, ok := readStore(t, cfg.Client.DataDir)["b"]; ok {
 		t.Fatal("b stayed in the store after leaving the view")
 	}
-	if _, ok := c.Status().Certs["b"]; ok {
+	if _, ok := statusFingerprints(c.Status())["b"]; ok {
 		t.Fatal("status still lists b")
 	}
 	after, err := os.Stat(pathB)
@@ -1089,7 +1089,7 @@ func TestStoreSurvivesRestart(t *testing.T) {
 	if got, want := restarted.store["api-prod"], c.store["api-prod"]; got != want || got.Fingerprint != bundle.Fingerprint {
 		t.Fatalf("store after restart = %+v, want %+v", got, want)
 	}
-	if got := restarted.Status().Certs["api-prod"]; got != bundle.Fingerprint {
+	if got := statusFingerprints(restarted.Status())["api-prod"]; got != bundle.Fingerprint {
 		t.Fatalf("status fingerprint after restart = %q, want %q", got, bundle.Fingerprint)
 	}
 }
@@ -1318,7 +1318,7 @@ func TestSyncDeliversChangeWhileWaiting(t *testing.T) {
 	renewed := newTestBundle(t, "api-prod")
 	fs.setView(renewed)
 	waitFor(t, "the renewed certificate written", func() bool { return fileContent(outPath) == renewed.FullchainPEM })
-	if got := c.Status().Certs["api-prod"]; got != renewed.Fingerprint {
+	if got := statusFingerprints(c.Status())["api-prod"]; got != renewed.Fingerprint {
 		t.Fatalf("status fingerprint = %q, want %q", got, renewed.Fingerprint)
 	}
 }

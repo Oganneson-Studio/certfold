@@ -153,7 +153,7 @@ func (h *ipcHandlers) getClientState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if state.Certs == nil {
-		state.Certs = map[string]string{}
+		state.Certs = []ClientCertState{}
 	}
 	writeJSON(w, http.StatusOK, state)
 }

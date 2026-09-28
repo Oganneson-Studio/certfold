@@ -102,8 +102,20 @@ type RuntimeStatus struct {
 	// LastError is the joined error of the last round, IPC fetch or reload,
 	// or empty if it had none.
 	LastError string
-	// Certs maps the name of each stored certificate to its fingerprint.
-	Certs map[string]string
+	// Certs lists the stored certificates in name order.
+	Certs []CertStatus
+}
+
+// CertStatus describes a stored certificate. NotAfter is that of its first
+// certificate. Outputs is the number of outputs client.yaml configures for
+// it, and OnChange reports whether client.yaml configures an on_change
+// program for it. HookPending is the stored hook_pending.
+type CertStatus struct {
+	Name, Fingerprint string
+	NotAfter          time.Time
+	Outputs           int
+	OnChange          bool
+	HookPending       bool
 }
 
 // New constructs a Client with an mTLS-capable HTTP client built from
@@ -125,7 +137,7 @@ func New(cfg *config.ClientConfig, options ...Option) (*Client, error) {
 		status: RuntimeStatus{
 			Name:      cfg.Client.Name,
 			ServerURL: cfg.Client.ServerURL,
-			Certs:     fingerprints(certs),
+			Certs:     certStatuses(certs, cfg),
 		},
 		now:  time.Now,
 		hook: runHook,
@@ -427,7 +439,7 @@ func (c *Client) Status() RuntimeStatus {
 	status := c.status
 	status.Name = name
 	status.ServerURL = serverURL
-	status.Certs = cloneFingerprints(c.status.Certs)
+	status.Certs = slices.Clone(c.status.Certs)
 	return status
 }
 
@@ -483,21 +495,26 @@ func (c *Client) Reload(cfg *config.ClientConfig) error {
 // fetch. answeredAt is when GET /v1/sync answered 200 or 304, or zero if it
 // did not.
 func (c *Client) recordPullLocked(answeredAt time.Time, err error) {
+	certs := certStatuses(c.store, c.cfg)
 	c.statusMu.Lock()
 	defer c.statusMu.Unlock()
 	c.status.Online = !answeredAt.IsZero()
 	if c.status.Online {
 		c.status.LastPullAt = answeredAt.UTC()
 	}
-	c.status.Certs = fingerprints(c.store)
+	c.status.Certs = certs
 	c.setLastErrorLocked(err)
 }
 
 // recordReconcile records the outcome of a reconcile without a request, at
-// startup or on reload. The next round overwrites it.
+// startup or on reload, and describes the certificates under the running
+// configuration, so the status follows a reload at once. The next round
+// overwrites it. The caller holds pullMu.
 func (c *Client) recordReconcile(err error) {
+	certs := certStatuses(c.store, c.cfg)
 	c.statusMu.Lock()
 	defer c.statusMu.Unlock()
+	c.status.Certs = certs
 	c.setLastErrorLocked(err)
 }
 
@@ -510,21 +527,37 @@ func (c *Client) setLastErrorLocked(err error) {
 	}
 }
 
-// fingerprints maps the name of each certificate in certs to its fingerprint.
-func fingerprints(certs map[string]storedCert) map[string]string {
-	out := make(map[string]string, len(certs))
-	for name, cert := range certs {
-		out[name] = cert.Fingerprint
+// certStatuses describes the certificates in certs, in name order, with the
+// outputs and on_change program cfg configures for them.
+func certStatuses(certs map[string]storedCert, cfg *config.ClientConfig) []CertStatus {
+	out := make([]CertStatus, 0, len(certs))
+	for _, name := range slices.Sorted(maps.Keys(certs)) {
+		cert := certs[name]
+		configured := cfg.Certificates[name]
+		out = append(out, CertStatus{
+			Name:        name,
+			Fingerprint: cert.Fingerprint,
+			NotAfter:    leafNotAfter(cert.FullchainPEM),
+			Outputs:     len(configured.Outputs),
+			OnChange:    len(configured.OnChange) > 0,
+			HookPending: cert.HookPending,
+		})
 	}
 	return out
 }
 
-func cloneFingerprints(src map[string]string) map[string]string {
-	dst := make(map[string]string, len(src))
-	for name, fingerprint := range src {
-		dst[name] = fingerprint
+// leafNotAfter returns the NotAfter of the first certificate in
+// fullchainPEM, or the zero time if it cannot be parsed.
+func leafNotAfter(fullchainPEM string) time.Time {
+	block, _ := pem.Decode([]byte(fullchainPEM))
+	if block == nil {
+		return time.Time{}
 	}
-	return dst
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return time.Time{}
+	}
+	return leaf.NotAfter
 }
 
 // splitBundle splits the stored fullchain (cert + intermediates) into CertPEM

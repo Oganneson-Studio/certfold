@@ -575,7 +575,7 @@ func TestClientControlEndpoints(t *testing.T) {
 				Name:      "web-1",
 				ServerURL: "https://sigil.example.com",
 				Online:    true,
-				Certs:     map[string]string{"api-prod": "sha256:AA"},
+				Certs:     []ClientCertState{{Name: "api-prod", Fingerprint: "sha256:AA"}},
 			}, nil
 		},
 		Fetch: func(_ context.Context, name string) error {

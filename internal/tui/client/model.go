@@ -143,8 +143,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.serverURL = msg.state.ServerURL
 		m.online = msg.state.Online
 		m.certs = make([]CertStatus, 0, len(msg.state.Certs))
-		for name := range msg.state.Certs {
-			m.certs = append(m.certs, CertStatus{Name: name, Healthy: msg.state.Online})
+		for _, cert := range msg.state.Certs {
+			m.certs = append(m.certs, CertStatus{Name: cert.Name, Healthy: msg.state.Online})
 		}
 		sort.Slice(m.certs, func(i, j int) bool { return m.certs[i].Name < m.certs[j].Name })
 	}
