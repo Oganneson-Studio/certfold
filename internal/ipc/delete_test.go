@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"log/slog"
@@ -53,6 +54,49 @@ func TestDeleteMissingClientOrTokenIsNotFound(t *testing.T) {
 	}
 	if events := ring.Since(0); len(events) != 0 {
 		t.Errorf("events = %+v, want none: nothing was removed", events)
+	}
+}
+
+// TestDeleteLooksUpWhatWasTyped covers a mistyped name or ID with a '?' or
+// '#', which would cut the path short: the daemon looks up exactly what was
+// typed and answers 404, and the client or token the cut path would name
+// stays.
+func TestDeleteLooksUpWhatWasTyped(t *testing.T) {
+	db := mustOpenDB(t)
+	ctx := context.Background()
+	now := time.Now()
+	if err := db.Clients.Upsert(ctx, &store.ClientRecord{Name: "web-1", Fingerprint: "sha256:AA", EnrolledAt: now}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Tokens.Upsert(ctx, &store.TokenRecord{
+		TokenID:   "tok-1",
+		Name:      "web-2",
+		ExpiresAt: now.Add(time.Hour),
+		CreatedAt: now,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(buildIPCRouter(&ipcHandlers{deps: ServerDeps{DB: db}}))
+	defer ts.Close()
+	c := newTestClient(ts)
+
+	for _, typed := range []string{"web-1?", "web-1#", "web-1?x=1"} {
+		err := c.DeleteClient(ctx, typed)
+		if want := fmt.Sprintf("server returned 404: client %q is not enrolled", typed); err == nil || !strings.HasSuffix(err.Error(), want) {
+			t.Errorf("DeleteClient(%q) error = %v, want it to end in %s", typed, err, want)
+		}
+	}
+	for _, typed := range []string{"tok-1?", "tok-1#", "tok-1?x=1"} {
+		err := c.DeleteToken(ctx, typed)
+		if want := fmt.Sprintf("server returned 404: enrollment token %q does not exist", typed); err == nil || !strings.HasSuffix(err.Error(), want) {
+			t.Errorf("DeleteToken(%q) error = %v, want it to end in %s", typed, err, want)
+		}
+	}
+	if _, err := db.Clients.Get(ctx, "web-1", nil); err != nil {
+		t.Errorf("web-1 is gone: %v", err)
+	}
+	if _, err := db.Tokens.Get(ctx, "tok-1", nil); err != nil {
+		t.Errorf("tok-1 is gone: %v", err)
 	}
 }
 
