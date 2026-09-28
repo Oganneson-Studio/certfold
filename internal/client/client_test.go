@@ -1343,7 +1343,6 @@ func TestReloadDiscardsAnswerThatArrivedDuringReload(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	unblock := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(unblock)
 	c.hook = func(context.Context, string, []string) error {
 		select {
 		case entered <- struct{}{}:
@@ -1353,6 +1352,9 @@ func TestReloadDiscardsAnswerThatArrivedDuringReload(t *testing.T) {
 		return nil
 	}
 	startRun(t, c)
+	// Registered after startRun, so it runs first: stopping Run waits for
+	// pullMu, which Reload holds while the program waits.
+	t.Cleanup(unblock)
 	waitFor(t, "the loop to wait for a change", func() bool { return fs.syncsWithETag() >= 1 })
 
 	// The reloaded configuration adds an output and an on_change program, so
