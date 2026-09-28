@@ -24,7 +24,8 @@ import (
 //     through its replacement, leaves the certificate in use. Each change is
 //     tried, and logged, once; so is a stat that fails.
 //   - Otherwise the mini-CA issues the certificate, and a new one once it is
-//     due for renewal.
+//     due for renewal. A try that fails waits reissueRetry before the next,
+//     and the failure is logged once until a try succeeds.
 //
 // A handshake always gets a certificate: whatever fails keeps the one in use.
 type tlsSource struct {
@@ -39,12 +40,19 @@ type tlsSource struct {
 	// files is what the TLS files were at the last try to load them, or zero
 	// once a stat of them failed.
 	files [2]fileVersion
-	// renewAt is when the certificate the mini-CA issued is due for renewal.
-	renewAt time.Time
+	// issueAt is when the mini-CA is to issue the next certificate: when the
+	// one in use is due for renewal, or reissueRetry after a try that failed.
+	issueAt time.Time
 	// reissueFailed is set while a new mini-CA certificate cannot be issued,
 	// so that the failure is logged once.
 	reissueFailed bool
 }
+
+// reissueRetry is how long the mini-CA waits after a failed try to issue a
+// new certificate. Any connection, authenticated or not, starts a handshake,
+// and each try generates a key and stores a serial while every handshake
+// waits for it.
+const reissueRetry = time.Minute
 
 // fileVersion tells versions of a file apart by modification time and size.
 type fileVersion struct {
@@ -61,7 +69,7 @@ func newTLSSource(miniCA *ca.MiniCA, cfg *config.ServerConfig, now func() time.T
 		if err != nil {
 			return nil, err
 		}
-		s.cert, s.renewAt = cert, renewAt
+		s.cert, s.issueAt = cert, renewAt
 		return s, nil
 	}
 	// Stat before the load, so that a change made during it is loaded at the
@@ -84,7 +92,7 @@ func (s *tlsSource) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, erro
 	defer s.mu.Unlock()
 	if s.cfg.Server.TLSCertFile != "" {
 		s.reloadFiles()
-	} else if !s.now().Before(s.renewAt) {
+	} else if !s.now().Before(s.issueAt) {
 		s.reissue()
 	}
 	return s.cert, nil
@@ -117,13 +125,14 @@ func (s *tlsSource) reloadFiles() {
 func (s *tlsSource) reissue() {
 	cert, renewAt, err := s.issue()
 	if err != nil {
+		s.issueAt = s.now().Add(reissueRetry)
 		if !s.reissueFailed {
 			slog.Warn("server TLS certificate not reissued", "error", err)
 			s.reissueFailed = true
 		}
 		return
 	}
-	s.cert, s.renewAt, s.reissueFailed = cert, renewAt, false
+	s.cert, s.issueAt, s.reissueFailed = cert, renewAt, false
 	slog.Info("server TLS certificate reissued", "not_after", cert.Leaf.NotAfter)
 }
 

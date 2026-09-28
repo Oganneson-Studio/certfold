@@ -250,9 +250,34 @@ func TestTLSSourceReissuesMiniCACertificateWhenDue(t *testing.T) {
 	assertTLSEvents(t, events, "INFO server TLS certificate reissued not_after=")
 }
 
-// A certificate the mini-CA cannot issue, here because it cannot store the
-// next serial, leaves the old one in use. The failure is logged once while it
-// lasts, and again when it recurs after a success.
+// breakMiniCA keeps the mini-CA under dataDir from issuing certificates until
+// repairMiniCA: it cannot store the next serial under data_dir/ca while a file
+// takes the place of that directory.
+func breakMiniCA(t *testing.T, dataDir string) {
+	t.Helper()
+	caDir := filepath.Join(dataDir, "ca")
+	if err := os.RemoveAll(caDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(caDir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func repairMiniCA(t *testing.T, dataDir string) {
+	t.Helper()
+	caDir := filepath.Join(dataDir, "ca")
+	if err := os.Remove(caDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(caDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A certificate the mini-CA cannot issue leaves the old one in use. The
+// failure is logged once while it lasts, however often it is tried, and again
+// when it recurs after a success.
 func TestTLSSourceLogsReissueFailureOnce(t *testing.T) {
 	events := captureTLSEvents(t)
 	dataDir := t.TempDir()
@@ -260,33 +285,18 @@ func TestTLSSourceLogsReissueFailureOnce(t *testing.T) {
 	src := newMiniCATLSSource(t, dataDir, &now)
 	first := servedSerial(t, src)
 
-	// The mini-CA stores its serial under data_dir/ca, which a file takes
-	// the place of while it is broken.
-	caDir := filepath.Join(dataDir, "ca")
-	breakCA := func() {
-		t.Helper()
-		if err := os.RemoveAll(caDir); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(caDir, nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	breakCA()
+	breakMiniCA(t, dataDir)
 	now = now.Add(365 * 24 * time.Hour)
+	// Two tries, as far apart as the wait between them.
 	for range 2 {
 		if got := servedSerial(t, src); got.Cmp(first) != 0 {
 			t.Fatalf("served serial %s while no certificate can be issued, want the old %s", got, first)
 		}
+		now = now.Add(reissueRetry)
 	}
 	assertTLSEvents(t, events, "WARN server TLS certificate not reissued error=")
 
-	if err := os.Remove(caDir); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(caDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	repairMiniCA(t, dataDir)
 	second := servedSerial(t, src)
 	if second.Cmp(first) == 0 {
 		t.Fatal("did not issue a new certificate once the mini-CA could store its serial again")
@@ -295,7 +305,7 @@ func TestTLSSourceLogsReissueFailureOnce(t *testing.T) {
 		"WARN server TLS certificate not reissued error=",
 		"INFO server TLS certificate reissued not_after=")
 
-	breakCA()
+	breakMiniCA(t, dataDir)
 	now = now.Add(365 * 24 * time.Hour)
 	if got := servedSerial(t, src); got.Cmp(second) != 0 {
 		t.Fatalf("served serial %s while no certificate can be issued, want the old %s", got, second)
@@ -304,6 +314,37 @@ func TestTLSSourceLogsReissueFailureOnce(t *testing.T) {
 		"WARN server TLS certificate not reissued error=",
 		"INFO server TLS certificate reissued not_after=",
 		"WARN server TLS certificate not reissued error=")
+}
+
+// After a failed try to issue a new certificate, the handshakes of the next
+// reissueRetry do not try again, even once the mini-CA could issue: any
+// connection starts one. The first handshake after the wait does.
+func TestTLSSourceWaitsBeforeRetryingReissue(t *testing.T) {
+	events := captureTLSEvents(t)
+	dataDir := t.TempDir()
+	now := time.Now()
+	src := newMiniCATLSSource(t, dataDir, &now)
+	first := servedSerial(t, src)
+
+	breakMiniCA(t, dataDir)
+	now = now.Add(365 * 24 * time.Hour)
+	if got := servedSerial(t, src); got.Cmp(first) != 0 {
+		t.Fatalf("served serial %s while no certificate can be issued, want the old %s", got, first)
+	}
+	// A try would succeed from now on, so only the wait keeps the old
+	// certificate in use.
+	repairMiniCA(t, dataDir)
+	now = now.Add(reissueRetry - time.Second)
+	if got := servedSerial(t, src); got.Cmp(first) != 0 {
+		t.Fatalf("served a new certificate %s %s after the failed try, want the old %s", got, reissueRetry-time.Second, first)
+	}
+	now = now.Add(time.Second)
+	if got := servedSerial(t, src); got.Cmp(first) == 0 {
+		t.Fatalf("still served %s %s after the failed try, want a new certificate", got, reissueRetry)
+	}
+	assertTLSEvents(t, events,
+		"WARN server TLS certificate not reissued error=",
+		"INFO server TLS certificate reissued not_after=")
 }
 
 // TestTLSSourceServesReplacedFilesToNewConnections makes handshakes with a
