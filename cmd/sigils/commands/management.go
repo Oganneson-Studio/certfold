@@ -64,16 +64,14 @@ func runCertAdd(cmd *cobra.Command, args []string) error {
 
 	caName, _ := cmd.Flags().GetString("ca")
 	keyType, _ := cmd.Flags().GetString("key-type")
-	renewDays, _ := cmd.Flags().GetInt("renew-days-before")
 	subscribers, _ := cmd.Flags().GetStringSlice("subscribers")
 	spec := config.CertificateSpec{
-		Name:            strings.TrimSpace(args[0]),
-		Domains:         cleanStringList(domains),
-		CA:              strings.TrimSpace(caName),
-		DNSProvider:     strings.TrimSpace(dnsProvider),
-		KeyType:         strings.TrimSpace(keyType),
-		RenewDaysBefore: renewDays,
-		Subscribers:     cleanStringList(subscribers),
+		Name:        strings.TrimSpace(args[0]),
+		Domains:     cleanStringList(domains),
+		CA:          strings.TrimSpace(caName),
+		DNSProvider: strings.TrimSpace(dnsProvider),
+		KeyType:     strings.TrimSpace(keyType),
+		Subscribers: cleanStringList(subscribers),
 	}
 
 	cfgPath := serverConfigPath(cmd)

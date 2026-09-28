@@ -190,7 +190,6 @@ func TestCertRemoveReloadsRunningServer(t *testing.T) {
     ca: le
     dns_provider: route
     key_type: ec256
-    renew_days_before: 30
 `)
 	reloader := &fakeServerReloader{}
 	stubServerReloader(t, reloader, nil)

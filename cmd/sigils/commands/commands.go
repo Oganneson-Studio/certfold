@@ -67,7 +67,6 @@ func newCertCmd() *cobra.Command {
 	add.Flags().String("ca", "", "CA name (must exist in acme.cas)")
 	add.Flags().String("dns", "", "DNS provider name (must exist in dns_providers)")
 	add.Flags().String("key-type", "ec256", "key type: rsa2048 | rsa4096 | ec256 | ec384")
-	add.Flags().Int("renew-days-before", 30, "days before expiry to renew")
 	add.Flags().StringSlice("subscribers", nil, "client names allowed to subscribe")
 	_ = add.MarkFlagRequired("domains")
 	_ = add.MarkFlagRequired("dns")

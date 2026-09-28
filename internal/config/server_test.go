@@ -46,7 +46,6 @@ certificates:
     ca: zerossl
     dns_provider: aliyun_a
     key_type: rsa4096
-    renew_days_before: 14
 `
 
 func TestParseServer_Valid(t *testing.T) {
@@ -66,14 +65,8 @@ func TestParseServer_Valid(t *testing.T) {
 	if cfg.Certificates[0].KeyType != DefaultKeyType {
 		t.Errorf("cert[0] key_type default: got %q", cfg.Certificates[0].KeyType)
 	}
-	if cfg.Certificates[0].RenewDaysBefore != DefaultRenewDaysBefore {
-		t.Errorf("cert[0] renew_days_before default: got %d", cfg.Certificates[0].RenewDaysBefore)
-	}
 	if cfg.Certificates[1].KeyType != "rsa4096" {
 		t.Errorf("cert[1] explicit key_type: got %q", cfg.Certificates[1].KeyType)
-	}
-	if cfg.Certificates[1].RenewDaysBefore != 14 {
-		t.Errorf("cert[1] explicit renew_days_before: got %d", cfg.Certificates[1].RenewDaysBefore)
 	}
 	if cfg.DNSProviders["cf_main"].Config["api_token"] != "tok" {
 		t.Errorf("cf_main api_token: got %v", cfg.DNSProviders["cf_main"].Config["api_token"])
@@ -136,11 +129,6 @@ func TestParseServer_ValidationErrors(t *testing.T) {
 			name:   "invalid key_type",
 			mutate: func(s string) string { return strings.Replace(s, "key_type: rsa4096", "key_type: rsa1024", 1) },
 			want:   "invalid key_type",
-		},
-		{
-			name:   "renew window too large",
-			mutate: func(s string) string { return strings.Replace(s, "renew_days_before: 14", "renew_days_before: 100", 1) },
-			want:   "renew_days_before",
 		},
 		{
 			name:   "unknown DNS provider type",

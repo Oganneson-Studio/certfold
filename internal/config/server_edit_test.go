@@ -40,12 +40,11 @@ certificates:
 func TestAddCertificateSpecPreservesPlaceholdersAndUsesDefaultCA(t *testing.T) {
 	path := writeEditTestConfig(t, "  []\n")
 	spec, err := AddCertificateSpec(path, CertificateSpec{
-		Name:            "api-prod",
-		Domains:         []string{"api.example.com"},
-		DNSProvider:     "route",
-		KeyType:         "ec256",
-		RenewDaysBefore: 30,
-		Subscribers:     []string{"web-1"},
+		Name:        "api-prod",
+		Domains:     []string{"api.example.com"},
+		DNSProvider: "route",
+		KeyType:     "ec256",
+		Subscribers: []string{"web-1"},
 	})
 	if err != nil {
 		t.Fatalf("AddCertificateSpec: %v", err)
@@ -85,11 +84,10 @@ func TestAddCertificateSpecKeepsDollarSignsLiteral(t *testing.T) {
 	names := []string{"a$b", "a$$b", "${HOME}"}
 	for _, name := range names {
 		if _, err := AddCertificateSpec(path, CertificateSpec{
-			Name:            name,
-			Domains:         []string{"api.example.com"},
-			DNSProvider:     "route",
-			KeyType:         "ec256",
-			RenewDaysBefore: 30,
+			Name:        name,
+			Domains:     []string{"api.example.com"},
+			DNSProvider: "route",
+			KeyType:     "ec256",
 		}); err != nil {
 			t.Fatalf("AddCertificateSpec(%q): %v", name, err)
 		}
@@ -114,7 +112,6 @@ func TestAddCertificateSpecFailureLeavesFileUnchanged(t *testing.T) {
     ca: le
     dns_provider: route
     key_type: ec256
-    renew_days_before: 30
 `)
 	before, err := os.ReadFile(path)
 	if err != nil {
@@ -122,11 +119,10 @@ func TestAddCertificateSpecFailureLeavesFileUnchanged(t *testing.T) {
 	}
 
 	_, err = AddCertificateSpec(path, CertificateSpec{
-		Name:            "api-prod",
-		Domains:         []string{"other.example.com"},
-		DNSProvider:     "route",
-		KeyType:         "ec256",
-		RenewDaysBefore: 30,
+		Name:        "api-prod",
+		Domains:     []string{"other.example.com"},
+		DNSProvider: "route",
+		KeyType:     "ec256",
 	})
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("duplicate add error = %v", err)
@@ -137,11 +133,10 @@ func TestAddCertificateSpecFailureLeavesFileUnchanged(t *testing.T) {
 	}
 
 	_, err = AddCertificateSpec(path, CertificateSpec{
-		Name:            "bad-provider",
-		Domains:         []string{"bad.example.com"},
-		DNSProvider:     "missing",
-		KeyType:         "ec256",
-		RenewDaysBefore: 30,
+		Name:        "bad-provider",
+		Domains:     []string{"bad.example.com"},
+		DNSProvider: "missing",
+		KeyType:     "ec256",
 	})
 	if err == nil || !strings.Contains(err.Error(), "unknown DNS provider") {
 		t.Fatalf("invalid add error = %v", err)
@@ -158,13 +153,11 @@ func TestRemoveCertificateSpecIsExactAndFailureLeavesFileUnchanged(t *testing.T)
     ca: le
     dns_provider: route
     key_type: ec256
-    renew_days_before: 30
   - name: api-stage
     domains: [stage.example.com]
     ca: le
     dns_provider: route
     key_type: ec256
-    renew_days_before: 30
 `)
 	if err := RemoveCertificateSpec(path, "api-prod"); err != nil {
 		t.Fatalf("RemoveCertificateSpec: %v", err)
