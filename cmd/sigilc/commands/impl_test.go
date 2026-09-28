@@ -15,12 +15,12 @@ import (
 
 func TestEnsureEnrollmentConfig_CreatesInitialConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "client.yaml")
-	name, err := ensureEnrollmentConfig(path, "web-1", "https://sigil.example.com")
+	name, created, err := ensureEnrollmentConfig(path, "web-1", "https://sigil.example.com")
 	if err != nil {
 		t.Fatalf("ensureEnrollmentConfig: %v", err)
 	}
-	if name != "web-1" {
-		t.Fatalf("name = %q, want web-1", name)
+	if name != "web-1" || !created {
+		t.Fatalf("name = %q, created = %t; want web-1, created", name, created)
 	}
 	cfg, err := config.LoadClient(path)
 	if err != nil {
@@ -43,16 +43,21 @@ func TestEnsureEnrollmentConfig_CreatesInitialConfig(t *testing.T) {
 	}
 }
 
+// A client.yaml that names another client or server URL is not replaced; the
+// error says where it is, so an operator who meant to replace it can.
 func TestEnsureEnrollmentConfig_RejectsTokenMismatch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "client.yaml")
-	if _, err := ensureEnrollmentConfig(path, "web-1", "https://sigil.example.com"); err != nil {
+	if _, _, err := ensureEnrollmentConfig(path, "web-1", "https://sigil.example.com"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ensureEnrollmentConfig(path, "web-2", "https://sigil.example.com"); err == nil {
-		t.Fatal("expected mismatched client name to fail")
+	if _, _, err := ensureEnrollmentConfig(path, "web-2", "https://sigil.example.com"); err == nil || !strings.Contains(err.Error(), path) {
+		t.Fatalf("mismatched client name: error = %v, want one that names %s", err, path)
 	}
-	if _, err := ensureEnrollmentConfig(path, "web-1", "https://other.example.com"); err == nil {
-		t.Fatal("expected mismatched server URL to fail")
+	if _, _, err := ensureEnrollmentConfig(path, "web-1", "https://other.example.com"); err == nil || !strings.Contains(err.Error(), path) {
+		t.Fatalf("mismatched server URL: error = %v, want one that names %s", err, path)
+	}
+	if _, created, err := ensureEnrollmentConfig(path, "web-1", "https://sigil.example.com"); err != nil || created {
+		t.Fatalf("matching token: created = %t, error = %v; want the client.yaml there", created, err)
 	}
 }
 
