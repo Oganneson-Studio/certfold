@@ -1021,6 +1021,45 @@ func TestSyncRejectsClientRemovedWhileWaiting(t *testing.T) {
 	}
 }
 
+// Once a renewed identity is in use, a sync still waiting under the one it
+// replaced must not receive the client's view.
+func TestSyncRejectsIdentityReplacedWhileWaiting(t *testing.T) {
+	setSyncMaxWait(t, time.Minute)
+	deps := buildDeps(t)
+	cfg := deps.ServerCfg
+	cfg.Certificates = append(cfg.Certificates, config.CertificateSpec{
+		Name: "payroll-prod", CA: "letsencrypt", Domains: []string{"payroll.example.com"}, Subscribers: []string{"web-1"},
+	})
+	seedCert(t, deps, cfg, cfg.Certificates[0], "sha256:API")
+	replaced := makeEnrolledClientCert(t, deps, "web-1")
+	handler := NewInsecure(deps).Handler
+	_, etag := syncView(t, handler, replaced)
+
+	answered := startSync(handler, syncRequest(replaced, etag))
+	assertWaiting(t, answered)
+	renewed := makeClientCert(t, deps.MiniCA, "web-1")
+	if err := deps.DB.Clients.StagePendingIdentity(context.Background(), "web-1", ca.Fingerprint(renewed.Certificate[0]), time.Now().Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	firstUse := httptest.NewRecorder()
+	handler.ServeHTTP(firstUse, syncRequest(renewed, ""))
+	if firstUse.Code != http.StatusOK {
+		t.Fatalf("first use of the renewed identity: status = %d", firstUse.Code)
+	}
+	seedCert(t, deps, cfg, cfg.Certificates[1], "sha256:PAYROLL")
+	deps.Changes.Notify()
+	rec := awaitSync(t, answered)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, body = %s; want 401", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); strings.Contains(body, "payroll-prod") || strings.Contains(body, "api-prod") {
+		t.Fatalf("401 carries the view: %s", body)
+	}
+	if got := rec.Header().Get("ETag"); got != "" {
+		t.Fatalf("401 carries the ETag of the new view: %s", got)
+	}
+}
+
 func TestSyncAnswersAtShutdown(t *testing.T) {
 	setSyncMaxWait(t, time.Minute)
 	deps := buildDeps(t)
@@ -1258,7 +1297,7 @@ func TestHeartbeatDoesNotRecreateClientRemovedDuringRequest(t *testing.T) {
 
 	body, _ := json.Marshal(proto.HeartbeatRequest{})
 	req := simulateMTLS(httptest.NewRequest(http.MethodPost, "/v1/heartbeat", bytes.NewReader(body)), identity)
-	rec := requestDuringWrite(t, deps, req, tx)
+	rec := requestDuringWrite(t, NewInsecure(deps).Handler, req, tx)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
@@ -1289,7 +1328,7 @@ func TestHeartbeatKeepsIdentityStagedDuringRequest(t *testing.T) {
 
 	body, _ := json.Marshal(proto.HeartbeatRequest{})
 	req := simulateMTLS(httptest.NewRequest(http.MethodPost, "/v1/heartbeat", bytes.NewReader(body)), identity)
-	rec := requestDuringWrite(t, deps, req, tx)
+	rec := requestDuringWrite(t, NewInsecure(deps).Handler, req, tx)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", rec.Code)
 	}
@@ -1371,21 +1410,21 @@ func buildFileDeps(t *testing.T) (Deps, *store.DB) {
 	return deps, other
 }
 
-// requestDuringWrite serves req while writeTx, an uncommitted transaction on
-// another handle, holds the database write lock. The request's reads see the
-// state before writeTx, so its lookup of the client passes, and its writes
-// wait until writeTx commits. The commit is delayed so the request has
-// normally finished its reads by then, which places the concurrent change
+// requestDuringWrite has handler serve req while writeTx, an uncommitted
+// transaction on another handle, holds the database write lock. The request's
+// reads see the state before writeTx, so its lookup of the client passes, and
+// its writes wait until writeTx commits. The commit is delayed so the request
+// has normally finished its reads by then, which places the concurrent change
 // between the request's lookup and its write. The outcome the tests assert
 // must hold for every interleaving; the delay only makes a regression, such as
 // a read-modify-write of the client record, observable.
-func requestDuringWrite(t *testing.T, deps Deps, req *http.Request, writeTx *sql.Tx) *httptest.ResponseRecorder {
+func requestDuringWrite(t *testing.T, handler http.Handler, req *http.Request, writeTx *sql.Tx) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		NewInsecure(deps).Handler.ServeHTTP(rec, req)
+		handler.ServeHTTP(rec, req)
 	}()
 	time.Sleep(200 * time.Millisecond)
 	commitErr := writeTx.Commit()
@@ -1466,7 +1505,7 @@ func TestAuthenticatedRequestDoesNotRecreateClientRemovedDuringRequest(t *testin
 		t.Fatal(err)
 	}
 
-	rec := requestDuringWrite(t, deps, syncRequest(identity, ""), tx)
+	rec := requestDuringWrite(t, NewInsecure(deps).Handler, syncRequest(identity, ""), tx)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
@@ -1495,7 +1534,7 @@ func TestAuthenticatedRequestKeepsIdentityStagedDuringRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rec := requestDuringWrite(t, deps, syncRequest(identity, ""), tx)
+	rec := requestDuringWrite(t, NewInsecure(deps).Handler, syncRequest(identity, ""), tx)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -1539,7 +1578,7 @@ func TestAuthenticatedRequestAcceptsIdentityPromotedDuringRequest(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	rec := requestDuringWrite(t, deps, syncRequest(renewed, ""), tx)
+	rec := requestDuringWrite(t, NewInsecure(deps).Handler, syncRequest(renewed, ""), tx)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -1548,6 +1587,59 @@ func TestAuthenticatedRequestAcceptsIdentityPromotedDuringRequest(t *testing.T) 
 		t.Fatal(err)
 	}
 	if got.Fingerprint != renewedFingerprint || got.LastSeen.IsZero() {
+		t.Fatalf("unexpected client after the request: %+v", got)
+	}
+}
+
+// Clients that share a name, such as clones of one machine, can renew in
+// turn: a newer renewal replaces the pending identity between the lookup and
+// the promotion. The read after the failed promotion must refuse the replaced
+// identity rather than accept any client it finds.
+func TestAuthenticatedRequestRejectsPendingIdentityReplacedDuringRequest(t *testing.T) {
+	deps, other := buildFileDeps(t)
+	enrolled := makeEnrolledClientCert(t, deps, "web-1")
+	replaced := makeClientCert(t, deps.MiniCA, "web-1")
+	newer := makeClientCert(t, deps.MiniCA, "web-1")
+	ctx := context.Background()
+	if err := deps.DB.Clients.StagePendingIdentity(ctx, "web-1", ca.Fingerprint(replaced.Certificate[0]), time.Now().Add(90*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	restaged, err := deps.DB.Clients.Get(ctx, "web-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restaged.PendingFingerprint = ca.Fingerprint(newer.Certificate[0])
+
+	// A request of the active identity claims this interval's last_seen
+	// write, so no MarkSeen runs for the request under test: its WHERE on the
+	// fingerprint would refuse the replaced identity too and hide a missing
+	// check. It must come before the transaction, whose write lock it would
+	// otherwise wait for.
+	handler := NewInsecure(deps).Handler
+	active := httptest.NewRecorder()
+	handler.ServeHTTP(active, syncRequest(enrolled, ""))
+	if active.Code != http.StatusOK {
+		t.Fatalf("active identity: status = %d", active.Code)
+	}
+
+	tx, err := other.BeginTx(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := other.Clients.Upsert(ctx, restaged, tx); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := requestDuringWrite(t, handler, syncRequest(replaced, ""), tx)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	got, err := deps.DB.Clients.Get(ctx, "web-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Fingerprint != ca.Fingerprint(enrolled.Certificate[0]) || got.PendingFingerprint != ca.Fingerprint(newer.Certificate[0]) {
 		t.Fatalf("unexpected client after the request: %+v", got)
 	}
 }
