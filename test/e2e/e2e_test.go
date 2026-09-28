@@ -303,8 +303,9 @@ func TestPublicTLSCertificateReload(t *testing.T) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	// Only the pair as a whole loads, so however the server saw the two
-	// writes, it reloaded once.
+	// The server reloaded once: the harness connects only after both files
+	// are written, and the client daemon keeps its connection alive, so no
+	// handshake came while they were being written.
 	var reloads []serverEvent
 	for _, e := range serverEvents(t, d) {
 		if e.Message == "server TLS certificate reloaded" {
