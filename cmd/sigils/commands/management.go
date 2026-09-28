@@ -32,6 +32,7 @@ type certificateDetails struct {
 	Name          string     `json:"name"`
 	CA            string     `json:"ca"`
 	Domains       []string   `json:"domains"`
+	Subscribers   []string   `json:"subscribers"`
 	NotAfter      *time.Time `json:"not_after,omitempty"`
 	RenewAt       *time.Time `json:"renew_at,omitempty"`
 	RenewSource   string     `json:"renew_source,omitempty"`
@@ -214,6 +215,7 @@ func newCertificateDetails(rec *ipc.CertificateInfo) certificateDetails {
 		Name:          rec.Name,
 		CA:            rec.CA,
 		Domains:       append([]string(nil), rec.Domains...),
+		Subscribers:   append([]string{}, rec.Subscribers...), // [] rather than null for none
 		NotAfter:      timePointer(rec.NotAfter),
 		RenewAt:       timePointer(rec.RenewAt),
 		RenewSource:   rec.RenewSource,

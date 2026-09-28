@@ -391,15 +391,16 @@ func TestCertListAndShowReportIssuanceState(t *testing.T) {
 			t.Errorf("JSON output:\n got %s\nwant %s", got, want)
 		}
 	}
-	mailJSON := fmt.Sprintf(`{"name":"mail","ca":"le","domains":["mail.example.com"],"state":"backoff","failures":2,`+
+	mailJSON := fmt.Sprintf(`{"name":"mail","ca":"le","domains":["mail.example.com"],"subscribers":[],"state":"backoff","failures":2,`+
 		`"last_error":"acme: rate limited","last_attempt_at":%q,"next_attempt_at":%q}`,
 		now.Format(time.RFC3339), nextAttempt.Format(time.RFC3339))
-	apiJSON := fmt.Sprintf(`{"name":"api-prod","ca":"le","domains":["api.example.com"],"not_after":%q,`+
+	apiJSON := fmt.Sprintf(`{"name":"api-prod","ca":"le","domains":["api.example.com"],"subscribers":["web-1","web-2"],"not_after":%q,`+
 		`"renew_at":%q,"renew_source":"ari","fingerprint":"sha256:AA",`+
 		`"issued_at":%q,"updated_at":%q,"state":"valid","failures":0}`,
 		notAfter.Format(time.RFC3339), renewAt.Format(time.RFC3339), now.Format(time.RFC3339), now.Format(time.RFC3339))
 	sameJSON(runSigils(t, "--ipc", socket, "--json", "cert", "list"), "["+mailJSON+","+apiJSON+"]")
 	sameJSON(runSigils(t, "--ipc", socket, "--json", "cert", "show", "mail"), mailJSON)
+	sameJSON(runSigils(t, "--ipc", socket, "--json", "cert", "show", "api-prod"), apiJSON)
 
 	wantShow := map[string]string{
 		"mail": "Name:         mail\n" +
