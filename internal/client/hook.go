@@ -56,6 +56,10 @@ const hookOutputLimit = 4 << 10
 //     arguments may hold credentials, and the output may repeat them.
 //   - Only the last 4 KiB of the output are kept, and they are logged only
 //     when the run fails.
+//   - A program that exits 0 succeeds even if a process it started still
+//     holds the output when WaitDelay expires. The output is closed then,
+//     which may end that process on its next write, so this is logged,
+//     naming only the certificate.
 func runHook(ctx context.Context, certName string, argv []string) error {
 	ctx, cancel := context.WithTimeoutCause(ctx, hookTimeout, fmt.Errorf("timed out after %s", hookTimeout))
 	defer cancel()
@@ -65,9 +69,14 @@ func runHook(ctx context.Context, certName string, argv []string) error {
 	cmd.Stdout, cmd.Stderr = out, out
 	cmd.WaitDelay = hookWaitDelay
 	err := cmd.Run()
-	if err == nil || errors.Is(err, exec.ErrWaitDelay) {
-		// ErrWaitDelay means the program exited 0, but a process it started
-		// still held its output when WaitDelay expired.
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// The program exited 0, but a process it started still held its
+		// output when WaitDelay expired. Closing the output may end that
+		// process on its next write, so leave a trace of it.
+		log.Printf("sigilc: on_change of certificate %s exited 0, but a process it started still held its output after %s; the output was closed", certName, hookWaitDelay)
 		return nil
 	}
 	if ctx.Err() != nil {

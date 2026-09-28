@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -32,6 +33,15 @@ const (
 	floodTail = "flood-tail-6b07"
 )
 
+// hookRecord is what the "record" mode writes about how it was run.
+type hookRecord struct {
+	Args []string
+	// Dir is its working directory.
+	Dir string
+	// StdinEOF reports whether its first read from stdin returned EOF.
+	StdinEOF bool
+}
+
 func TestMain(m *testing.M) {
 	if mode := os.Getenv(testHookEnv); mode != "" {
 		os.Exit(runTestHook(mode))
@@ -43,11 +53,17 @@ func TestMain(m *testing.M) {
 func runTestHook(mode string) int {
 	switch mode {
 	case "record":
-		// Record the arguments, and print output that a successful run must
-		// not log.
-		data, err := json.Marshal(os.Args[1:])
+		// Record how the program was run, and print output that a successful
+		// run must not log.
+		dir, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		n, readErr := os.Stdin.Read(make([]byte, 1))
+		data, err := json.Marshal(hookRecord{Args: os.Args[1:], Dir: dir, StdinEOF: n == 0 && readErr == io.EOF})
 		if err == nil {
-			err = os.WriteFile(filepath.Join(os.Getenv(testHookDirEnv), "args.json"), data, 0o600)
+			err = os.WriteFile(filepath.Join(os.Getenv(testHookDirEnv), "record.json"), data, 0o600)
 		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -68,6 +84,7 @@ func runTestHook(mode string) int {
 		return 0
 	case "orphan":
 		// Exit 0 at once, leaving a process that holds this one's output open.
+		fmt.Println(outputSecret)
 		exe, err := os.Executable()
 		if err != nil {
 			return 1
@@ -123,26 +140,55 @@ func captureLog(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
-func TestRunHookPassesArgumentsAsIs(t *testing.T) {
+// TestRunHookRunsArgvAsGiven covers how the program runs: its arguments reach
+// it unchanged, with no shell in between, its stdin is empty, and it works in
+// the working directory of sigilc.
+func TestRunHookRunsArgvAsGiven(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(testHookDirEnv, dir)
 	logs := captureLog(t)
+	// Give this process a stdin with data waiting, so that a program that
+	// inherited it would not read EOF.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("stdin")); err != nil {
+		t.Fatal(err)
+	}
+	stdin := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() {
+		os.Stdin = stdin
+		_ = r.Close()
+		_ = w.Close()
+	})
 	// A shell would split, expand, unquote or glob these.
 	args := []string{"two words", `quote"d`, `back\slash\`, "$HOME", "%PATH%", "semi;colon", "*"}
 
 	if err := runHook(context.Background(), "api-prod", hookArgv(t, "record", args...)); err != nil {
 		t.Fatalf("runHook: %v", err)
 	}
-	raw, err := os.ReadFile(filepath.Join(dir, "args.json"))
+	raw, err := os.ReadFile(filepath.Join(dir, "record.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got []string
+	var got hookRecord
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(got, args) {
-		t.Fatalf("arguments = %q, want %q", got, args)
+	if !slices.Equal(got.Args, args) {
+		t.Errorf("arguments = %q, want %q", got.Args, args)
+	}
+	if !got.StdinEOF {
+		t.Error("the program's stdin was not empty")
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Dir != wd {
+		t.Errorf("working directory = %q, want %q", got.Dir, wd)
 	}
 	// The output of a successful run is not logged.
 	if logs.Len() != 0 {
@@ -252,14 +298,25 @@ func TestRunHookKillsProgramWhenContextEnds(t *testing.T) {
 // expires, and the run succeeds, since the program exited 0.
 func TestRunHookDoesNotWaitForOutputHeldByOrphans(t *testing.T) {
 	setHookBounds(t, hookTimeout, 100*time.Millisecond)
-	captureLog(t)
+	logs := captureLog(t)
 
 	start := time.Now()
-	err := runHook(context.Background(), "api-prod", hookArgv(t, "orphan"))
+	err := runHook(context.Background(), "api-prod", hookArgv(t, "orphan", "--token="+argvSecret))
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("runHook returned after %v, want it soon after the program exited", elapsed)
 	}
 	if err != nil {
 		t.Fatalf("runHook error = %v, want success: the program exited 0", err)
+	}
+	// Closing the output may end the orphan, so the run is logged, with
+	// neither the arguments nor the output.
+	got := logs.String()
+	if !strings.Contains(got, "api-prod") {
+		t.Errorf("log does not name the certificate: %q", got)
+	}
+	for _, secret := range []string{argvSecret, outputSecret} {
+		if strings.Contains(got, secret) {
+			t.Errorf("log leaks %q: %q", secret, got)
+		}
 	}
 }
