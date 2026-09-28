@@ -12,6 +12,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/pkg/proto"
 )
 
@@ -168,6 +169,11 @@ func requestSync(ctx context.Context, httpClient *http.Client, serverURL, etag s
 }
 
 // applyViewLocked makes the store hold the certificates of the view of a 200:
+//   - A name that config.ValidateCertificateName rejects is an error, and the
+//     view is applied as if it did not list that certificate, whose stored
+//     material leaves the store too. A bad bundle leaves the stored material,
+//     still the best there is, but a bad name is itself what the status would
+//     carry to a terminal.
 //   - It downloads each certificate whose fingerprint differs from the stored
 //     one, or that is not stored, and force as well when the view lists it.
 //     The store keeps the fingerprint of the bundle, which may be newer than
@@ -192,6 +198,10 @@ func (c *Client) applyViewLocked(ctx context.Context, result *syncResult, force 
 	var errs []error
 	for _, summary := range result.view {
 		name := summary.Name
+		if err := config.ValidateCertificateName(name); err != nil {
+			errs = append(errs, err)
+			continue
+		}
 		stored, ok := c.store[name]
 		if ok && stored.Fingerprint == summary.Fingerprint && name != force {
 			next[name] = stored
@@ -202,7 +212,7 @@ func (c *Client) applyViewLocked(ctx context.Context, result *syncResult, force 
 			err = checkBundle(name, bundle)
 		}
 		if err != nil {
-			errs = append(errs, fmt.Errorf("bundle %s: %w", name, err))
+			errs = append(errs, fmt.Errorf("bundle %q: %w", name, err))
 			if ok {
 				next[name] = stored
 			}

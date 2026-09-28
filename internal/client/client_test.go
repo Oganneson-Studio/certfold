@@ -879,7 +879,7 @@ func TestFetchRejectsBadBundle(t *testing.T) {
 			serveBad.Store(true)
 			fs.setView(renewed)
 			err := c.Fetch(context.Background(), "")
-			if err == nil || !strings.Contains(err.Error(), "bundle api-prod") {
+			if err == nil || !strings.Contains(err.Error(), `bundle "api-prod"`) {
 				t.Fatalf("Fetch error = %v, want the bad bundle reported", err)
 			}
 			if got := readStore(t, cfg.Client.DataDir)["api-prod"].Fingerprint; got != old.Fingerprint {
