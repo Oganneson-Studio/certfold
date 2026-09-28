@@ -627,35 +627,3 @@ func TestClientOnlyRouterDoesNotExposeServerState(t *testing.T) {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
 	}
 }
-
-// TestServe exercises the full Serve path on a real listener.
-func TestServe(t *testing.T) {
-	db := mustOpenDB(t)
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	served := make(chan error, 1)
-	go func() { served <- Serve(ctx, l, ServerDeps{DB: db, Certificates: certDeps(testCertConfig())}) }()
-
-	c := newClient(func() (net.Conn, error) { return net.Dial("tcp", l.Addr().String()) })
-	certs, err := c.ListCerts(ctx)
-	if err != nil {
-		t.Fatalf("ListCerts: %v", err)
-	}
-	if len(certs) != 0 {
-		t.Errorf("expected empty, got %v", certs)
-	}
-
-	cancel()
-	select {
-	case err := <-served:
-		if err != nil {
-			t.Fatalf("Serve returned %v after cancellation, want nil", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Serve did not return after cancellation")
-	}
-}

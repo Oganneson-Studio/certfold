@@ -66,7 +66,9 @@ func serveEvents(t *testing.T, ring *logging.Ring) string {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go func() { _ = ipc.Serve(ctx, l, ipc.ServerDeps{Events: ring}) }()
+	srv := ipc.NewServer(ipc.ServerDeps{Events: ring})
+	context.AfterFunc(ctx, func() { _ = srv.Close() })
+	go func() { _ = srv.Serve(l) }()
 	if _, err := ipc.NewClient(socket); err != nil {
 		if runtime.GOOS == "windows" && errors.Is(err, os.ErrPermission) {
 			t.Skip("the sigilc pipe admits only SYSTEM and elevated administrators")

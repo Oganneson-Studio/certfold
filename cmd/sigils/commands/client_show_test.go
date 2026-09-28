@@ -30,7 +30,9 @@ func TestClientShowAlignsValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() { _ = ipc.Serve(ctx, l, ipc.ServerDeps{DB: db}) }()
+	srv := ipc.NewServer(ipc.ServerDeps{DB: db})
+	context.AfterFunc(ctx, func() { _ = srv.Close() })
+	go func() { _ = srv.Serve(l) }()
 	if _, err := ipc.NewClient(socket); err != nil {
 		skipWithoutPipeAccess(t, err)
 		t.Fatal(err)

@@ -2,7 +2,6 @@ package ipc
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"time"
 
@@ -67,20 +66,6 @@ type ClientControlDeps struct {
 func NewServer(deps ServerDeps) *http.Server {
 	h := &ipcHandlers{deps: deps}
 	return &http.Server{Handler: buildIPCRouter(h)}
-}
-
-// Serve accepts connections from l and serves IPC requests until ctx is done.
-func Serve(ctx context.Context, l net.Listener, deps ServerDeps) error {
-	srv := NewServer(deps)
-	go func() {
-		<-ctx.Done()
-		_ = srv.Close()
-	}()
-	err := srv.Serve(l)
-	if err == http.ErrServerClosed {
-		return nil
-	}
-	return err
 }
 
 func buildIPCRouter(h *ipcHandlers) http.Handler {
