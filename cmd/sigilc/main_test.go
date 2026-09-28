@@ -132,6 +132,9 @@ func TestErrorQuotingClientYAMLIsPrintable(t *testing.T) {
 	if !strings.Contains(printed, "error: load config: ") || !strings.Contains(printed, "cannot unmarshal !!str ` ]0;pwned `") {
 		t.Fatalf("sigilc enroll printed %q, want the type error of client.yaml with its value", printed)
 	}
+	if !strings.Contains(printed, "unmarshal errors:\n") {
+		t.Fatalf("sigilc enroll printed %q, want the lines of the error kept apart", printed)
+	}
 	if i := strings.IndexFunc(printed, func(r rune) bool { return r != '\n' && unicode.IsControl(r) }); i >= 0 {
 		t.Fatalf("sigilc enroll printed a control character: %q", printed)
 	}
