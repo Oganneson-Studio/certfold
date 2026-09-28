@@ -30,6 +30,7 @@ Use subcommands to manage certificates, clients, and enrollment tokens.`,
 		newCertCmd(),
 		newClientCmd(),
 		newTokenCmd(),
+		newEventsCmd(),
 	)
 
 	return cmd
