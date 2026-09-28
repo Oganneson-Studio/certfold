@@ -381,8 +381,8 @@ func (r *Renewer) issueLocked(ctx context.Context, current func() *config.Server
 // that the next one waits out a backoff that grows as long as the CA issues
 // such certificates, rather than follow at once.
 //
-// A renewal names the certificate it replaces in the order, as replacing
-// decides.
+// A renewal hands the certificate it replaces to the issuer, as replacing
+// decides, to name in the order.
 //
 // issue reports the attempt and its outcome as events, once genMu is
 // released.
@@ -441,6 +441,11 @@ func (r *Renewer) issue(ctx context.Context, current func() *config.ServerConfig
 			}
 			attrs := []any{"cert", name, "not_after", result.NotAfter,
 				"renew_at", renewAt, "fingerprint", certificateFingerprint(result.Certificate)}
+			// replacing=true says that the stored certificate was handed to
+			// Issue, not that the order named it: lego leaves the name out
+			// for a CA that offers no renewal info, acme for a certificate
+			// without an authority key identifier, and lego again when it
+			// orders anew after the CA answers alreadyReplaced.
 			if replacing != nil {
 				attrs = append(attrs, "replacing", true)
 			}
