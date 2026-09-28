@@ -48,10 +48,15 @@ const withheld = "(withheld)"
 // maxAttrsBytes bounds Event.Attrs.
 const maxAttrsBytes = 2 << 10
 
+// maxMessageBytes bounds Event.Message and the message of a line of
+// NewLineHandler. Only the lines of lego come near it.
+const maxMessageBytes = 1 << 10
+
 // NewHandler returns a handler that passes every record at Info and above to
 // sink unchanged, unless sink is not enabled for its level, and adds it to
-// ring with the Private values withheld. Records below Info are dropped.
-// Attributes and groups given through WithAttrs and WithGroup reach both.
+// ring with the Private values and the queries of URLs withheld. Records
+// below Info are dropped. Attributes and groups given through WithAttrs and
+// WithGroup reach both.
 func NewHandler(sink slog.Handler, ring *Ring) slog.Handler {
 	return &handler{sink: sink, ring: ring}
 }
@@ -76,7 +81,7 @@ func (h *handler) Handle(ctx context.Context, r slog.Record) error {
 	h.ring.add(Event{
 		Time:    r.Time,
 		Level:   r.Level.String(),
-		Message: clean(r.Message),
+		Message: message(r.Message),
 		Attrs:   truncate(render(h.scope.nest(recordAttrs(r)))),
 	})
 	return err
@@ -108,8 +113,8 @@ func (h *handler) WithGroup(name string) slog.Handler {
 // "message key=value ...", without the time and the level, and passes it to
 // write together with the record's level. It serves the Windows event log,
 // which keeps both. Any interactive user can read the Application log, so
-// the line withholds Private values as events do: it is rendered as events
-// are, except that it is not cut.
+// the line withholds Private values and the queries of URLs as events do: it
+// is rendered as events are, except that its attributes are not cut.
 func NewLineHandler(write func(slog.Level, string) error) slog.Handler {
 	return &lineHandler{write: write}
 }
@@ -122,7 +127,7 @@ type lineHandler struct {
 func (h *lineHandler) Enabled(context.Context, slog.Level) bool { return true }
 
 func (h *lineHandler) Handle(_ context.Context, r slog.Record) error {
-	line := clean(r.Message)
+	line := message(r.Message)
 	if attrs := render(h.scope.nest(recordAttrs(r))); attrs != "" {
 		line += " " + attrs
 	}
@@ -184,22 +189,29 @@ func recordAttrs(r slog.Record) []slog.Attr {
 }
 
 // renderOptions make a slog.TextHandler write only the attributes of a
-// record without a time, with every Private value withheld:
+// record without a time, with every Private value and the query of every URL
+// in a string or an error withheld:
 //   - A ReplaceAttr function sees each value once slog has resolved it, the
 //     values in groups too, so a Private is withheld wherever it ends up.
+//   - An error is written as its Error text.
 //   - They drop the level and the message the handler writes for every
 //     record. Attributes named level or msg outside any group are dropped
 //     with them, so these two keys are reserved.
 var renderOptions = &slog.HandlerOptions{
 	ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-		if a.Value.Kind() == slog.KindAny {
-			switch a.Value.Any().(type) {
-			case Private, *Private:
-				return slog.String(a.Key, withheld)
-			}
-		}
 		if len(groups) == 0 && (a.Key == slog.LevelKey || a.Key == slog.MessageKey) {
 			return slog.Attr{}
+		}
+		switch a.Value.Kind() {
+		case slog.KindString:
+			return slog.String(a.Key, RedactURLQueries(a.Value.String()))
+		case slog.KindAny:
+			switch v := a.Value.Any().(type) {
+			case Private, *Private:
+				return slog.String(a.Key, withheld)
+			case error:
+				return slog.String(a.Key, RedactURLQueries(v.Error()))
+			}
 		}
 		return a
 	},
@@ -215,6 +227,14 @@ func render(attrs []slog.Attr) string {
 	// Writing to a bytes.Buffer does not fail.
 	_ = slog.NewTextHandler(&buf, renderOptions).Handle(context.Background(), r)
 	return strings.TrimSuffix(buf.String(), "\n")
+}
+
+// message returns msg as events and the lines of NewLineHandler show it: on
+// one line, with the query of every URL withheld, cut to maxMessageBytes.
+// The queries are withheld before the cut, which must bound the longer text
+// of a short query.
+func message(msg string) string {
+	return cut(RedactURLQueries(clean(msg)), maxMessageBytes)
 }
 
 // clean replaces control characters with spaces, so that a message stays on
@@ -234,9 +254,16 @@ func truncate(s string) string {
 	if len(s) <= maxAttrsBytes {
 		return s
 	}
-	cut := maxAttrsBytes
-	for !utf8.RuneStart(s[cut]) {
-		cut--
+	return cut(s, maxAttrsBytes) + "..."
+}
+
+// cut returns s cut to at most n bytes at a rune boundary.
+func cut(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-	return s[:cut] + "..."
+	for !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
