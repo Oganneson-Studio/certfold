@@ -16,6 +16,7 @@ import (
 
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/sigil/internal/tui/shared"
 )
 
 // Backend is the part of the sigils IPC API that the TUI uses.
@@ -242,34 +243,27 @@ func (m Model) load() tea.Cmd {
 	return func() tea.Msg {
 		var msg refreshMsg
 		var err error
-		if msg.certs, err = within(timeout, b.ListCerts); err != nil {
+		if msg.certs, err = shared.Within(timeout, b.ListCerts); err != nil {
 			return refreshMsg{err: err}
 		}
-		if msg.clients, err = within(timeout, b.ListClients); err != nil {
+		if msg.clients, err = shared.Within(timeout, b.ListClients); err != nil {
 			return refreshMsg{err: err}
 		}
-		if msg.tokens, err = within(timeout, b.ListTokens); err != nil {
+		if msg.tokens, err = shared.Within(timeout, b.ListTokens); err != nil {
 			return refreshMsg{err: err}
 		}
-		if msg.events, err = within(timeout, eventsAfter(after)); err != nil {
+		if msg.events, err = shared.Within(timeout, eventsAfter(after)); err != nil {
 			return refreshMsg{err: err}
 		}
 		if after > 0 && !msg.events.Started.Equal(started) {
 			// The daemon has restarted: Seq started over, and the page lacks
 			// the new events up to after.
-			if msg.events, err = within(timeout, eventsAfter(0)); err != nil {
+			if msg.events, err = shared.Within(timeout, eventsAfter(0)); err != nil {
 				return refreshMsg{err: err}
 			}
 		}
 		return msg
 	}
-}
-
-// within calls f with a context that ends after timeout.
-func within[T any](timeout time.Duration, f func(context.Context) (T, error)) (T, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	return f(ctx)
 }
 
 // setLists replaces the lists, as of lastRefresh. Each table keeps its row

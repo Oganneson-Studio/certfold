@@ -12,6 +12,7 @@ import (
 
 func TestClientStateListsCertificates(t *testing.T) {
 	notAfter := time.Date(2026, 12, 27, 10, 0, 0, 0, time.UTC)
+	renewAt := time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name  string
 		certs []ClientCertState
@@ -20,11 +21,11 @@ func TestClientStateListsCertificates(t *testing.T) {
 		{
 			name: "stored certificates",
 			certs: []ClientCertState{
-				{Name: "api-prod", Fingerprint: "sha256:AA", NotAfter: notAfter, Outputs: 2, OnChange: true, HookPending: true},
+				{Name: "api-prod", Fingerprint: "sha256:AA", NotAfter: notAfter, RenewAt: renewAt, Outputs: 2, OnChange: true, HookPending: true},
 				{Name: "tls-internal", Fingerprint: "sha256:BB", NotAfter: notAfter},
 			},
-			want: `[{"name":"api-prod","fingerprint":"sha256:AA","not_after":"2026-12-27T10:00:00Z","outputs":2,"on_change":true,"hook_pending":true},` +
-				`{"name":"tls-internal","fingerprint":"sha256:BB","not_after":"2026-12-27T10:00:00Z","outputs":0,"on_change":false,"hook_pending":false}]`,
+			want: `[{"name":"api-prod","fingerprint":"sha256:AA","not_after":"2026-12-27T10:00:00Z","renew_at":"2026-11-27T10:00:00Z","outputs":2,"on_change":true,"hook_pending":true},` +
+				`{"name":"tls-internal","fingerprint":"sha256:BB","not_after":"2026-12-27T10:00:00Z","renew_at":"0001-01-01T00:00:00Z","outputs":0,"on_change":false,"hook_pending":false}]`,
 		},
 		{name: "none", want: `[]`},
 	} {

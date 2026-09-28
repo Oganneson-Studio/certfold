@@ -89,15 +89,19 @@ type ClientState struct {
 	Certs      []ClientCertState `json:"certs"`
 }
 
-// ClientCertState is a certificate in the store of sigilc. Outputs is the
-// number of outputs client.yaml configures for it, and OnChange reports
-// whether client.yaml configures an on_change program for it. HookPending
-// reports that the program has yet to succeed since the certificate or one
-// of its outputs changed.
+// ClientCertState is a certificate in the store of sigilc. RenewAt is when
+// it is due for renewal under the ratio rule of internal/renewal, and zero,
+// like NotAfter, when sigilc cannot parse it; sigils renews it later when its
+// CA suggests a later renewal window through ARI. Outputs is the number of
+// outputs client.yaml configures for it, and OnChange reports whether
+// client.yaml configures an on_change program for it. HookPending reports
+// that the program has yet to succeed since the certificate or one of its
+// outputs changed.
 type ClientCertState struct {
 	Name        string    `json:"name"`
 	Fingerprint string    `json:"fingerprint"`
 	NotAfter    time.Time `json:"not_after"`
+	RenewAt     time.Time `json:"renew_at"`
 	Outputs     int       `json:"outputs"`
 	OnChange    bool      `json:"on_change"`
 	HookPending bool      `json:"hook_pending"`

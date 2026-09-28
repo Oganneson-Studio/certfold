@@ -152,23 +152,12 @@ func runDefaultTUI(cmd *cobra.Command, args []string) error {
 }
 
 func runClientTUI(cmd *cobra.Command, _ []string) error {
-	ipcSocket := clientIPCSocket(cmd)
-	ipcClient, _ := ipc.NewClient(ipcSocket)
-
-	cfgPath, _ := cmd.Root().PersistentFlags().GetString("config")
-	if cfgPath == "" {
-		cfgPath = defaultClientCfgPath()
+	ipcClient, err := ipc.NewClient(clientIPCSocket(cmd))
+	if err != nil {
+		return fmt.Errorf("sigilc daemon is not running: %w", err)
 	}
-	clientName := "sigilc"
-	serverURL := ""
-	if cfg, err := config.LoadClient(cfgPath); err == nil {
-		clientName = cfg.Client.Name
-		serverURL = cfg.Client.ServerURL
-	}
-
-	m := tuiclient.New(clientName, serverURL, ipcClient)
-	p := tea.NewProgram(m, tea.WithAltScreen())
-	_, err := p.Run()
+	p := tea.NewProgram(tuiclient.New(ipcClient), tea.WithAltScreen())
+	_, err = p.Run()
 	return err
 }
 
