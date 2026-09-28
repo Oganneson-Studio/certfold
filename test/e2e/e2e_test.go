@@ -209,6 +209,24 @@ func TestEnrollFetchRenewAndRevoke(t *testing.T) {
 		}
 	})
 
+	step("events of the renewal", func(t *testing.T) {
+		// The server issued test-cert when it started and again for the
+		// renewal.
+		events := serverEvents(t, d)
+		if n := certEvents(events, "certificate issued", "test-cert"); n < 2 {
+			t.Errorf("the server has %d certificate issued events for test-cert, want at least 2:\n%s", n, formatEvents(events))
+		}
+		if certEvents(events, "manual renewal requested", "test-cert") == 0 {
+			t.Errorf("the server has no manual renewal requested event for test-cert:\n%s", formatEvents(events))
+		}
+		events = clientEvents(t, d)
+		for _, message := range []string{"outputs rewritten", "on_change succeeded"} {
+			if certEvents(events, message, "test-cert") == 0 {
+				t.Errorf("the client has no %s event for test-cert:\n%s", message, formatEvents(events))
+			}
+		}
+	})
+
 	step("server reload wakes sync", func(t *testing.T) {
 		// Subscribe the client to test-cert-2. Subscribers are not part of
 		// the spec fingerprint, so the server keeps the certificate it has.
@@ -355,7 +373,7 @@ func TestARIDirectedRenewal(t *testing.T) {
 		{"certificate issuance started", "cert=test-cert reason=ari"},
 		{"certificate issued", "cert=test-cert "},
 	} {
-		if !slices.ContainsFunc(events, func(e serverEvent) bool {
+		if !slices.ContainsFunc(events, func(e daemonEvent) bool {
 			return e.Message == want.message && strings.HasPrefix(e.Attrs+" ", want.attrs) &&
 				(want.message != "certificate issued" || strings.HasSuffix(e.Attrs, " replacing=true"))
 		}) {
@@ -432,12 +450,24 @@ func waitForCAWindow(t *testing.T, d *deployment) certState {
 	return cert
 }
 
-func formatEvents(events []serverEvent) string {
+func formatEvents(events []daemonEvent) string {
 	var b strings.Builder
 	for _, e := range events {
 		fmt.Fprintf(&b, "  %s %s %s\n", e.Level, e.Message, e.Attrs)
 	}
 	return b.String()
+}
+
+// certEvents returns how many of events have message and are about the
+// certificate named cert, which every such event names first.
+func certEvents(events []daemonEvent, message, cert string) int {
+	n := 0
+	for _, e := range events {
+		if e.Message == message && strings.HasPrefix(e.Attrs+" ", "cert="+cert+" ") {
+			n++
+		}
+	}
+	return n
 }
 
 // eventTime formats t as events show a time.
@@ -471,7 +501,7 @@ func TestPublicTLSCertificateReload(t *testing.T) {
 	// The server reloaded once: the harness connects only after both files
 	// are written, and the client daemon keeps its connection alive, so no
 	// handshake came while they were being written.
-	var reloads []serverEvent
+	var reloads []daemonEvent
 	for _, e := range serverEvents(t, d) {
 		if e.Message == "server TLS certificate reloaded" {
 			reloads = append(reloads, e)
@@ -484,18 +514,32 @@ func TestPublicTLSCertificateReload(t *testing.T) {
 	mustExec(t, d.clientContainer, "sigilc", "fetch")
 }
 
-// serverEvent is an entry of `sigils --json events`.
-type serverEvent struct {
+// daemonEvent is an entry of `sigils --json events` or `sigilc events --json`.
+type daemonEvent struct {
 	Level   string `json:"level"`
 	Message string `json:"message"`
 	Attrs   string `json:"attrs"`
 }
 
 // serverEvents returns the events that the server of d keeps, oldest first.
-func serverEvents(t *testing.T, d *deployment) []serverEvent {
+func serverEvents(t *testing.T, d *deployment) []daemonEvent {
 	t.Helper()
-	out := mustExec(t, d.serverContainer, "sigils", "--json", "events")
-	var events []serverEvent
+	return daemonEvents(t, d.serverContainer, "sigils", "--json", "events")
+}
+
+// clientEvents returns the events that the client daemon of d keeps, oldest
+// first.
+func clientEvents(t *testing.T, d *deployment) []daemonEvent {
+	t.Helper()
+	return daemonEvents(t, d.clientContainer, "sigilc", "events", "--json")
+}
+
+// daemonEvents runs command, the events command of a daemon, in container and
+// returns the events it prints.
+func daemonEvents(t *testing.T, container string, command ...string) []daemonEvent {
+	t.Helper()
+	out := mustExec(t, container, command...)
+	var events []daemonEvent
 	if err := json.Unmarshal([]byte(out), &events); err != nil {
 		t.Fatalf("parse events: %v\n%s", err, out)
 	}
