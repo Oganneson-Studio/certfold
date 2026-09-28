@@ -17,6 +17,7 @@ type CertificateInfo struct {
 	Name          string    `json:"name"`
 	CA            string    `json:"ca"`
 	Domains       []string  `json:"domains"`
+	Subscribers   []string  `json:"subscribers"`
 	NotAfter      time.Time `json:"not_after"`
 	Fingerprint   string    `json:"fingerprint"`
 	IssuedAt      time.Time `json:"issued_at"`
@@ -133,9 +134,10 @@ func certificateInfos(cfg *config.ServerConfig, records []*store.CertRecord, sta
 	out := make([]*CertificateInfo, 0, len(cfg.Certificates))
 	for _, spec := range cfg.Certificates {
 		info := &CertificateInfo{
-			Name:    spec.Name,
-			CA:      spec.CA,
-			Domains: append([]string{}, spec.Domains...),
+			Name:        spec.Name,
+			CA:          spec.CA,
+			Domains:     append([]string{}, spec.Domains...),
+			Subscribers: append([]string{}, spec.Subscribers...),
 		}
 		record := stored[spec.Name]
 		matched := record != nil && record.SpecFingerprint == config.CertificateSpecFingerprint(cfg, spec)
