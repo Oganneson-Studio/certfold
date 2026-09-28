@@ -38,7 +38,6 @@ var (
 	// Status indicators: • rather than ●, which some consoles draw two
 	// cells wide (see narrowGlyphs).
 	HealthyDot = lipgloss.NewStyle().Foreground(Green).SetString("•")
-	WarnDot    = lipgloss.NewStyle().Foreground(Yellow).SetString("•")
 	ErrorDot   = lipgloss.NewStyle().Foreground(Red).SetString("•")
 
 	// Header / title bar.
@@ -58,14 +57,3 @@ var (
 	// Table header.
 	TableHeader = lipgloss.NewStyle().Foreground(Blue).Bold(true)
 )
-
-// StatusDot returns the appropriate dot style string based on health.
-func StatusDot(healthy bool, warning bool) string {
-	if healthy && !warning {
-		return HealthyDot.String()
-	}
-	if warning {
-		return WarnDot.String()
-	}
-	return ErrorDot.String()
-}

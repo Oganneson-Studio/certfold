@@ -67,6 +67,12 @@ func newKeyMap() keyMap {
 	scroll := viewport.DefaultKeyMap()
 	// f fetches, so it does not page down.
 	scroll.PageDown = key.NewBinding(key.WithKeys("pgdown", " "), key.WithHelp("pgdn", "page down"))
+	// The help of the viewport names keys with ↑, ↓ and ½, which some
+	// consoles draw two cells wide (see shared.WideGlyph).
+	scroll.Up.SetHelp("k/up", "up")
+	scroll.Down.SetHelp("j/down", "down")
+	scroll.HalfPageUp.SetHelp("u", "half page up")
+	scroll.HalfPageDown.SetHelp("d", "half page down")
 	return keyMap{
 		fetch:   key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "fetch now")),
 		reload:  key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "reload client.yaml")),
@@ -311,7 +317,7 @@ func (m *Model) layout() {
 	}
 }
 
-// View renders the model.
+// View renders the model, through shared.Narrow.
 func (m Model) View() string {
 	if m.width == 0 {
 		return "Loading..."
@@ -319,7 +325,7 @@ func (m Model) View() string {
 	footer := m.footer()
 	if m.showEvents {
 		title := shared.TitleStyle.Width(m.width).Render(fmt.Sprintf("Events (%d)", len(m.events)))
-		return lipgloss.JoinVertical(lipgloss.Left, title, m.eventsView.View(), footer)
+		return shared.Narrow(lipgloss.JoinVertical(lipgloss.Left, title, m.eventsView.View(), footer))
 	}
 	parts := []string{m.header()}
 	rows := m.height - lipgloss.Height(parts[0]) - lipgloss.Height(footer)
@@ -331,7 +337,7 @@ func (m Model) View() string {
 	if events := m.recentEvents(rows); events != "" {
 		parts = append(parts, events)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, append(parts, footer)...)
+	return shared.Narrow(lipgloss.JoinVertical(lipgloss.Left, append(parts, footer)...))
 }
 
 func (m Model) header() string {

@@ -20,7 +20,7 @@ func TestWideGlyph(t *testing.T) {
 }
 
 func TestStatusDotsAreNarrow(t *testing.T) {
-	for _, dot := range []string{StatusDot(true, false), StatusDot(true, true), StatusDot(false, false)} {
+	for _, dot := range []string{HealthyDot.String(), ErrorDot.String()} {
 		if r, wide := WideGlyph(dot); wide {
 			t.Errorf("status dot %q draws %q", dot, r)
 		}
