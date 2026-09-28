@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -152,4 +153,14 @@ func (c *Client) FetchClient(ctx context.Context, name string) error {
 // ReloadClient asks sigilc to re-read and apply client.yaml.
 func (c *Client) ReloadClient(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/ipc/v1/client/reload", struct{}{}, nil)
+}
+
+// Events returns the daemon's events with a Seq greater than after, oldest
+// first, and when the daemon started. Both sigils and sigilc serve them.
+func (c *Client) Events(ctx context.Context, after uint64) (*EventsPage, error) {
+	var out EventsPage
+	if err := c.do(ctx, http.MethodGet, "/ipc/v1/events?after="+strconv.FormatUint(after, 10), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }

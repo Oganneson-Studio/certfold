@@ -234,12 +234,18 @@ func TestEnrollFetchRenewAndRevoke(t *testing.T) {
 		for {
 			out := mustExec(t, d.clientContainer, "sigilc", "status", "--json")
 			var status struct {
-				Certs map[string]string `json:"certs"`
+				Certs []struct {
+					Name string `json:"name"`
+				} `json:"certs"`
 			}
 			if err := json.Unmarshal([]byte(out), &status); err != nil {
 				t.Fatalf("parse client status: %v\n%s", err, out)
 			}
-			if _, ok := status.Certs["test-cert-2"]; ok {
+			delivered := false
+			for _, cert := range status.Certs {
+				delivered = delivered || cert.Name == "test-cert-2"
+			}
+			if delivered {
 				break
 			}
 			if time.Since(start) > 15*time.Second {

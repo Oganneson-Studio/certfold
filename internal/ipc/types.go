@@ -4,6 +4,8 @@ import (
 	"time"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/sigil/internal/renewal"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
@@ -16,7 +18,9 @@ type CertificateInfo struct {
 	Name          string    `json:"name"`
 	CA            string    `json:"ca"`
 	Domains       []string  `json:"domains"`
+	Subscribers   []string  `json:"subscribers"`
 	NotAfter      time.Time `json:"not_after"`
+	RenewAt       time.Time `json:"renew_at"`
 	Fingerprint   string    `json:"fingerprint"`
 	IssuedAt      time.Time `json:"issued_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -72,14 +76,39 @@ type CreateTokenResponse struct {
 	PublicURLConfigured bool   `json:"public_url_configured"`
 }
 
-// ClientState is the runtime status returned by a sigilc daemon.
+// ClientState is the runtime status returned by a sigilc daemon. Certs lists
+// the certificates in its store in name order, and is never null.
 type ClientState struct {
 	Name       string            `json:"name"`
 	ServerURL  string            `json:"server_url"`
 	Online     bool              `json:"online"`
 	LastPullAt time.Time         `json:"last_pull_at,omitempty"`
 	LastError  string            `json:"last_error,omitempty"`
-	Certs      map[string]string `json:"certs"`
+	Certs      []ClientCertState `json:"certs"`
+}
+
+// ClientCertState is a certificate in the store of sigilc. Outputs is the
+// number of outputs client.yaml configures for it, and OnChange reports
+// whether client.yaml configures an on_change program for it. HookPending
+// reports that the program has yet to succeed since the certificate or one
+// of its outputs changed.
+type ClientCertState struct {
+	Name        string    `json:"name"`
+	Fingerprint string    `json:"fingerprint"`
+	NotAfter    time.Time `json:"not_after"`
+	Outputs     int       `json:"outputs"`
+	OnChange    bool      `json:"on_change"`
+	HookPending bool      `json:"hook_pending"`
+}
+
+// EventsPage is returned by GET /ipc/v1/events. Events holds the events with
+// a Seq greater than the after parameter, oldest first, and is never null.
+// Seq starts over when the daemon restarts, so a caller that polls with the
+// last Seq it has seen must also compare Started: when it changes, the caller
+// drops the events it has and asks again with after=0.
+type EventsPage struct {
+	Started time.Time       `json:"started"`
+	Events  []logging.Event `json:"events"`
 }
 
 // FetchClientRequest is the body of POST /ipc/v1/client/fetch. The fetch is a
@@ -93,8 +122,9 @@ type FetchClientRequest struct {
 
 // certificateInfos lists the certificates of cfg in configuration order.
 // Stored material is reported only when its spec fingerprint matches the
-// running configuration, so it is the material clients can fetch. Records of
-// certificates that are no longer configured are left out.
+// running configuration, so it is the material clients can fetch; RenewAt
+// stays zero as well when the stored certificate cannot be parsed. Records
+// of certificates that are no longer configured are left out.
 func certificateInfos(cfg *config.ServerConfig, records []*store.CertRecord, statuses []*store.IssuanceStatus, issuing func(string) bool, now time.Time) []*CertificateInfo {
 	stored := make(map[string]*store.CertRecord, len(records))
 	for _, record := range records {
@@ -107,9 +137,10 @@ func certificateInfos(cfg *config.ServerConfig, records []*store.CertRecord, sta
 	out := make([]*CertificateInfo, 0, len(cfg.Certificates))
 	for _, spec := range cfg.Certificates {
 		info := &CertificateInfo{
-			Name:    spec.Name,
-			CA:      spec.CA,
-			Domains: append([]string{}, spec.Domains...),
+			Name:        spec.Name,
+			CA:          spec.CA,
+			Domains:     append([]string{}, spec.Domains...),
+			Subscribers: append([]string{}, spec.Subscribers...),
 		}
 		record := stored[spec.Name]
 		matched := record != nil && record.SpecFingerprint == config.CertificateSpecFingerprint(cfg, spec)
@@ -118,6 +149,9 @@ func certificateInfos(cfg *config.ServerConfig, records []*store.CertRecord, sta
 			info.Fingerprint = record.Fingerprint
 			info.IssuedAt = record.IssuedAt
 			info.UpdatedAt = record.UpdatedAt
+			if renewAt, err := renewal.RenewAt(record.FullchainPEM); err == nil {
+				info.RenewAt = renewAt
+			}
 		}
 		if status := attempts[spec.Name]; status != nil {
 			info.Failures = status.Failures

@@ -142,22 +142,22 @@ func TestListCertsReportsConfiguredCertificatesAndState(t *testing.T) {
 
 	want := []*CertificateInfo{
 		// Issuing wins over a backoff and a stored certificate.
-		{Name: "renewing", CA: "le", Domains: []string{"renewing.example.com"},
+		{Name: "renewing", CA: "le", Domains: []string{"renewing.example.com"}, Subscribers: []string{},
 			NotAfter: notAfter, Fingerprint: "sha256:renewing", IssuedAt: issuedAt, UpdatedAt: issuedAt,
 			State: CertStateIssuing, Failures: 1, LastError: "order failed",
 			LastAttemptAt: now.Add(-time.Minute), NextAttemptAt: now.Add(4 * time.Minute)},
-		{Name: "api", CA: "le", Domains: []string{"api.example.com"},
+		{Name: "api", CA: "le", Domains: []string{"api.example.com"}, Subscribers: []string{},
 			NotAfter: notAfter, Fingerprint: "sha256:api", IssuedAt: issuedAt, UpdatedAt: issuedAt,
 			State: CertStateValid},
 		// Material issued for other domains is not reported.
-		{Name: "stale", CA: "le", Domains: []string{"stale.example.com"}, State: CertStatePending},
-		{Name: "new", CA: "le", Domains: []string{"new.example.com"}, State: CertStatePending},
+		{Name: "stale", CA: "le", Domains: []string{"stale.example.com"}, Subscribers: []string{}, State: CertStatePending},
+		{Name: "new", CA: "le", Domains: []string{"new.example.com"}, Subscribers: []string{}, State: CertStatePending},
 		// A backoff wins over a stored certificate.
-		{Name: "failing", CA: "le", Domains: []string{"failing.example.com"},
+		{Name: "failing", CA: "le", Domains: []string{"failing.example.com"}, Subscribers: []string{},
 			NotAfter: notAfter, Fingerprint: "sha256:failing", IssuedAt: issuedAt, UpdatedAt: issuedAt,
 			State: CertStateBackoff, Failures: 3, LastError: "rate limited",
 			LastAttemptAt: now.Add(-5 * time.Minute), NextAttemptAt: now.Add(15 * time.Minute)},
-		{Name: "retry", CA: "le", Domains: []string{"retry.example.com"},
+		{Name: "retry", CA: "le", Domains: []string{"retry.example.com"}, Subscribers: []string{},
 			State: CertStatePending, Failures: 2, LastError: "dns timeout",
 			LastAttemptAt: now.Add(-20 * time.Minute), NextAttemptAt: now.Add(-10 * time.Minute)},
 	}
@@ -575,7 +575,7 @@ func TestClientControlEndpoints(t *testing.T) {
 				Name:      "web-1",
 				ServerURL: "https://sigil.example.com",
 				Online:    true,
-				Certs:     map[string]string{"api-prod": "sha256:AA"},
+				Certs:     []ClientCertState{{Name: "api-prod", Fingerprint: "sha256:AA"}},
 			}, nil
 		},
 		Fetch: func(_ context.Context, name string) error {
