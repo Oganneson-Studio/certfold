@@ -23,8 +23,8 @@ var syncMaxWait = proto.SyncMaxWait
 // syncCertificates answers with the client's view and its ETag. A request
 // whose If-None-Match equals that ETag waits up to syncMaxWait for the view to
 // change, and answers 304 if it does not. If-None-Match is compared as a
-// whole, so a weak or wildcard value or a list never matches and the request
-// answers at once.
+// whole, so a weak or wildcard value or a list, in one field line or several,
+// never matches and the request answers at once.
 func (h *handlers) syncCertificates(w http.ResponseWriter, r *http.Request) {
 	cert := peerCert(r)
 	if cert == nil {
@@ -32,7 +32,10 @@ func (h *handlers) syncCertificates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientName := cert.Subject.CommonName
-	ifNoneMatch := r.Header.Get("If-None-Match")
+	var ifNoneMatch string
+	if values := r.Header.Values("If-None-Match"); len(values) == 1 {
+		ifNoneMatch = values[0]
+	}
 
 	// The wait outlasts the server's WriteTimeout, past which HTTP/1.1 cuts
 	// the response off and HTTP/2 resets the stream. Only this request's write

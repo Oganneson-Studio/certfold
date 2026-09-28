@@ -868,10 +868,22 @@ func TestSyncWaitsOnlyForItsExactETag(t *testing.T) {
 	handler := NewInsecure(deps).Handler
 	_, etag := syncView(t, handler, identity)
 
-	for _, ifNoneMatch := range []string{"W/" + etag, "*", etag + `, "other"`, `"other", ` + etag, strings.Trim(etag, `"`)} {
-		rec := awaitSync(t, startSync(handler, syncRequest(identity, ifNoneMatch)))
+	for _, ifNoneMatch := range [][]string{
+		{"W/" + etag},
+		{"*"},
+		{etag + `, "other"`},
+		{`"other", ` + etag},
+		{strings.Trim(etag, `"`)},
+		// A list over several field lines.
+		{etag, `"other"`},
+	} {
+		req := syncRequest(identity, "")
+		for _, value := range ifNoneMatch {
+			req.Header.Add("If-None-Match", value)
+		}
+		rec := awaitSync(t, startSync(handler, req))
 		if rec.Code != http.StatusOK || rec.Header().Get("ETag") != etag {
-			t.Errorf("If-None-Match %s: status = %d, ETag = %s; want 200 with %s", ifNoneMatch, rec.Code, rec.Header().Get("ETag"), etag)
+			t.Errorf("If-None-Match %q: status = %d, ETag = %s; want 200 with %s", ifNoneMatch, rec.Code, rec.Header().Get("ETag"), etag)
 		}
 	}
 }
