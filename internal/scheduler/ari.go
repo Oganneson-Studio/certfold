@@ -236,7 +236,7 @@ func (r *Renewer) recordRenewalInfo(ctx context.Context, current func() *config.
 		var err error
 		r.genMu.RLock()
 		if current() == c.cfg {
-			err = r.db.Issuance.Upsert(context.WithoutCancel(ctx), guard, nil)
+			err = r.storeGuard(context.WithoutCancel(ctx), c.fingerprint, guard)
 		}
 		r.genMu.RUnlock()
 		if err != nil {
@@ -246,6 +246,27 @@ func (r *Renewer) recordRenewalInfo(ctx context.Context, current func() *config.
 	for _, event := range events {
 		event()
 	}
+}
+
+// storeGuard stores status, the backoff of the passed window of the certificate
+// with the given fingerprint, unless another certificate has been stored since
+// the tick, as by a manual renewal: the window is not about that one. The
+// transaction orders it against save, which also runs under genMu for reading.
+// The caller holds genMu for reading.
+func (r *Renewer) storeGuard(ctx context.Context, fingerprint string, status *store.IssuanceStatus) error {
+	tx, err := r.db.BeginTx(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }() // does nothing once committed
+	rec, err := r.db.Certs.Get(ctx, status.Name, tx)
+	if err != nil || rec.Fingerprint != fingerprint {
+		return err
+	}
+	if err := r.db.Issuance.Upsert(ctx, status, tx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func windowUpdatedEvent(name string, info *acme.RenewalInfo, renewAt time.Time) func() {

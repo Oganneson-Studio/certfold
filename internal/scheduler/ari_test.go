@@ -999,6 +999,43 @@ func TestPassedWindowBackoffIsNotStoredAcrossAReload(t *testing.T) {
 	assertStatus(t, db, store.IssuanceStatus{Name: "api-prod", LastAttemptAt: ariStart})
 }
 
+// A manual renewal can store a new certificate while the first renewal info
+// query about the certificate it replaces is under way, with no tick in
+// between to follow the new one. A passed window in the answer is about the
+// replaced certificate: the guard must not store its backoff over the status
+// of the new one, which would show its error and, with failures above 0, have
+// the next renewal name no certificate it replaces.
+func TestPassedWindowOfReplacedCertificateSparesTheNewOne(t *testing.T) {
+	ctx := context.Background()
+	db := mustOpenDB(t)
+	clock := newTestClock(ariStart)
+	iss := newARIIssuer(t, clock.Now)
+	r := New(iss, db, nil, clock.Now)
+	cfg := minimalCfg("api-prod", nil)
+	tickAndCheck(t, r, cfg) // issues, in this process
+	asked, release := make(chan struct{}, 1), make(chan struct{})
+	iss.setAnswer(func([]byte) (*acme.RenewalInfo, error) {
+		asked <- struct{}{}
+		<-release
+		return window(ariStart.Add(-2*time.Hour), ariStart.Add(-time.Hour), 0), nil
+	})
+	if _, err := r.tick(ctx, static(cfg)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-asked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stored certificate was not asked about")
+	}
+
+	if err := r.RenewNamed(ctx, static(cfg), "api-prod"); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	waitForChecks(t, r)
+	assertStatus(t, db, store.IssuanceStatus{Name: "api-prod", LastAttemptAt: ariStart})
+}
+
 // Shutdown does not wait for a query, which lego cannot interrupt, and no
 // other certificate is asked about afterwards.
 func TestShutdownDoesNotWaitForRenewalInfo(t *testing.T) {
