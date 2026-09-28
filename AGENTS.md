@@ -190,6 +190,6 @@ go test -race ./internal/api ./internal/client ./internal/ipc ./internal/schedul
 
 - 先读现有实现和测试，再做局部改动；不要把未实现功能写成已完成。
 - 安全边界、跨模块契约和用户工作流必须增加回归测试。
-- 手工文件修改使用 `apply_patch`。
+- 手工文件修改：Codex 用 `apply_patch`；Claude Code 没有这个工具，用 Edit/Write。
 - 仓库已于 2026-09-27 初始化 Git（基线提交 `d0151bf`，`.gitattributes` 固定 LF）；变更可用 `git diff` 审阅，验证仍以格式化、单元测试、静态检查和 WSLC E2E 为准。
 - 容器测试结束后确认 WSLC 容器与网络为空，并移除本轮生成的镜像。
