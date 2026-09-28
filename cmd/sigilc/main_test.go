@@ -110,29 +110,59 @@ func enrollThroughManInTheMiddle(t *testing.T, dnsName string) string {
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 	})
-	payload, err := json.Marshal(map[string]string{
+	token := enrollmentToken(t, map[string]string{
 		"server_url": "https://localhost:" + port,
 		"name":       "web-1",
 		"ca_cert":    string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Certificate[0]})),
 	})
+	return failingSigilc(t, "enroll", "--token", token, "--config", filepath.Join(t.TempDir(), "client.yaml"))
+}
+
+// main prints errors that quote local files too, such as the type error of
+// a client.yaml, which quotes the value: without control characters, and
+// with the newlines between the lines of the error.
+func TestErrorQuotingClientYAMLIsPrintable(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "client.yaml")
+	// A YAML escape: a raw control character would fail the YAML parser.
+	if err := os.WriteFile(cfgPath, []byte("identity: \"\\e]0;pwned\\a\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	token := enrollmentToken(t, map[string]string{"server_url": "https://sigil.example.com", "name": "web-1"})
+	printed := failingSigilc(t, "enroll", "--token", token, "--config", cfgPath)
+	if !strings.Contains(printed, "error: load config: ") || !strings.Contains(printed, "cannot unmarshal !!str ` ]0;pwned `") {
+		t.Fatalf("sigilc enroll printed %q, want the type error of client.yaml with its value", printed)
+	}
+	if i := strings.IndexFunc(printed, func(r rune) bool { return r != '\n' && unicode.IsControl(r) }); i >= 0 {
+		t.Fatalf("sigilc enroll printed a control character: %q", printed)
+	}
+}
+
+// enrollmentToken encodes payload as the token of sigils token create.
+func enrollmentToken(t *testing.T, payload map[string]string) string {
+	t.Helper()
+	raw, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+// failingSigilc runs main with args in a process of its own, which must exit
+// with status 1, and returns what it printed to stderr.
+func failingSigilc(t *testing.T, args ...string) string {
+	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(exe, "enroll",
-		"--token", base64.RawURLEncoding.EncodeToString(payload),
-		"--config", filepath.Join(t.TempDir(), "client.yaml"))
+	cmd := exec.Command(exe, args...)
 	cmd.Env = append(os.Environ(), runMainEnv+"=1")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	err = cmd.Run()
-
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
-		t.Fatalf("sigilc enroll: %v, want exit status 1; stderr:\n%s", err, stderr.String())
+		t.Fatalf("sigilc %s: %v, want exit status 1; stderr:\n%s", strings.Join(args, " "), err, stderr.String())
 	}
 	return stderr.String()
 }
