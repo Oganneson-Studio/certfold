@@ -12,7 +12,9 @@ import (
 // Printed as they are, the escape sequences in them could retitle the
 // terminal, rewrite what it shows or set its clipboard. unicode.IsControl
 // covers C0, DEL and C1, whose U+009B some terminals take for CSI, as 8-bit
-// terminals take a bare 0x9B byte.
+// terminals take a bare 0x9B byte. A newline that the network put into the
+// text would start a line of its choosing, so text from the network goes
+// through OneLine first, and Printable keeps only the newlines between it.
 func Printable(s string) string {
 	// strings.Map also turns invalid UTF-8 into U+FFFD.
 	return strings.Map(func(r rune) rune {

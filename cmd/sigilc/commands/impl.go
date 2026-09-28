@@ -90,7 +90,10 @@ func runEnroll(cmd *cobra.Command, _ []string) (err error) {
 
 	resp, err := enroll.PostEnroll(payload.ServerURL, tokenStr, kc.CSRDER)
 	if err != nil {
-		return fmt.Errorf("enroll: %w", err)
+		// The error can quote the network, such as the DNS names in the
+		// certificate of a man in the middle: a newline there must not start
+		// a line under the one main prints, which keeps newlines.
+		return fmt.Errorf("enroll: %s", logging.OneLine(err.Error()))
 	}
 
 	if err := enroll.SaveIdentity(cfgPath, resp.CACert, resp.ClientCert, string(kc.KeyPEM)); err != nil {

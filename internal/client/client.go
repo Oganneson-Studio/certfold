@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -103,7 +104,7 @@ type RuntimeStatus struct {
 	Online     bool
 	LastPullAt time.Time
 	// LastError is the joined error of the last round or IPC fetch, as
-	// logging.Printable makes it, or empty if it had none. A reload, or the
+	// printable makes it, or empty if it had none. A reload, or the
 	// reconcile at startup, sets it only when its reconcile fails.
 	LastError string
 	// Certs lists the stored certificates in name order.
@@ -561,7 +562,7 @@ func (c *Client) recordReconcile(err error) {
 func (c *Client) setLastErrorLocked(err error) {
 	lastError := ""
 	if err != nil {
-		lastError = logging.Printable(err.Error())
+		lastError = printable(err)
 	}
 	if lastError == c.status.LastError {
 		return
@@ -574,14 +575,31 @@ func (c *Client) setLastErrorLocked(err error) {
 	}
 }
 
-// printableError reads as logging.Printable makes the text of err, as
-// LastError does. The errors of Fetch and Reload go to terminals through the
-// IPC API, and those of Fetch quote the network, such as the names in the
-// certificate of a man in the middle. Unwrap keeps err for errors.Is and
-// errors.As.
+// printable returns the text of err ready to print to a terminal: each error
+// errors.Join joined on a line of its own, as logging.OneLine makes it. The
+// text of an error can quote the network, such as the DNS names in the
+// certificate of a man in the middle, which may hold an escape sequence or a
+// newline, and a newline of theirs would start a line of their choosing,
+// such as a fake status line. An error of fmt.Errorf with several %w, which
+// the errors of this package do not use, would read as its parts alone.
+func printable(err error) string {
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return logging.OneLine(err.Error())
+	}
+	var lines []string
+	for _, e := range joined.Unwrap() {
+		lines = append(lines, printable(e))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// printableError reads as printable makes err, as LastError does: the errors
+// of Fetch and Reload go to terminals through the IPC API. Unwrap keeps err
+// for errors.Is and errors.As.
 type printableError struct{ err error }
 
-func (e printableError) Error() string { return logging.Printable(e.err.Error()) }
+func (e printableError) Error() string { return printable(e.err) }
 func (e printableError) Unwrap() error { return e.err }
 
 // certStatuses describes the certificates in certs, in name order, with the

@@ -53,15 +53,40 @@ func selfSigned(t *testing.T, template *x509.Certificate) tls.Certificate {
 
 // sigilc enroll prints the error of its own TLS handshake, which quotes the
 // DNS names in the certificate the server presents. A man in the middle, who
-// needs no certificate the client trusts for this, must not reach the
-// terminal through them.
+// needs no certificate the client trusts for this, must reach the terminal
+// through them neither with an escape sequence nor with a line of its own,
+// such as a fake success.
 func TestEnrollErrorIsPrintable(t *testing.T) {
+	for _, tc := range []struct{ name, dnsName, quoted string }{
+		{"escape sequence", "x\x1b]0;pwned\a", "certificate is valid for x ]0;pwned , not localhost"},
+		{"newline", "x\nenrolled as \"web-1\"", `certificate is valid for x enrolled as "web-1", not localhost`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			printed := enrollThroughManInTheMiddle(t, tc.dnsName)
+			if !strings.Contains(printed, "error: enroll: ") || !strings.Contains(printed, tc.quoted) {
+				t.Fatalf("sigilc enroll printed %q, want the host name error with the DNS name of the certificate", printed)
+			}
+			if i := strings.IndexFunc(printed, func(r rune) bool { return r != '\n' && unicode.IsControl(r) }); i >= 0 {
+				t.Fatalf("sigilc enroll printed a control character: %q", printed)
+			}
+			if n := strings.Count(printed, "\n"); n != 1 {
+				t.Fatalf("sigilc enroll printed %d lines, want the error on one: %q", n, printed)
+			}
+		})
+	}
+}
+
+// enrollThroughManInTheMiddle runs sigilc enroll against a TLS server whose
+// certificate holds the DNS name dnsName, and returns what it printed to
+// stderr as it failed.
+func enrollThroughManInTheMiddle(t *testing.T, dnsName string) string {
+	t.Helper()
 	now := time.Now()
 	ts := httptest.NewUnstartedServer(http.NotFoundHandler())
 	ts.TLS = &tls.Config{Certificates: []tls.Certificate{selfSigned(t, &x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject:      pkix.Name{CommonName: "man in the middle"},
-		DNSNames:     []string{"x\x1b]0;pwned\a"},
+		DNSNames:     []string{dnsName},
 		NotBefore:    now.Add(-time.Hour),
 		NotAfter:     now.Add(time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
@@ -109,11 +134,5 @@ func TestEnrollErrorIsPrintable(t *testing.T) {
 	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
 		t.Fatalf("sigilc enroll: %v, want exit status 1; stderr:\n%s", err, stderr.String())
 	}
-	printed := stderr.String()
-	if !strings.Contains(printed, "error: enroll: ") || !strings.Contains(printed, "certificate is valid for x ]0;pwned , not localhost") {
-		t.Fatalf("sigilc enroll printed %q, want the host name error with the DNS name of the certificate", printed)
-	}
-	if i := strings.IndexFunc(printed, func(r rune) bool { return r != '\n' && unicode.IsControl(r) }); i >= 0 {
-		t.Fatalf("sigilc enroll printed a control character: %q", printed)
-	}
+	return stderr.String()
 }

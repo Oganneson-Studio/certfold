@@ -22,12 +22,12 @@ import (
 )
 
 // manInTheMiddle starts a TLS server whose certificate, which no CA signed,
-// holds a DNS name with an escape sequence, and returns its URL with the
-// host localhost, which that name does not match. crypto/x509 checks the
-// host name before it builds a chain, so the error of the handshake quotes
-// the DNS names of the certificate. On Windows it does so only when the
-// roots hold more than the system pool, as those of an enrolled client do.
-func manInTheMiddle(t *testing.T) string {
+// holds the DNS name dnsName, and returns its URL with the host localhost,
+// which that name does not match. crypto/x509 checks the host name before it
+// builds a chain, so the error of the handshake quotes the DNS names of the
+// certificate. On Windows it does so only when the roots hold more than the
+// system pool, as those of an enrolled client do.
+func manInTheMiddle(t *testing.T, dnsName string) string {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -37,7 +37,7 @@ func manInTheMiddle(t *testing.T) string {
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject:      pkix.Name{CommonName: "man in the middle"},
-		DNSNames:     []string{"x\x1b]0;pwned\a"},
+		DNSNames:     []string{dnsName},
 		NotBefore:    now.Add(-time.Hour),
 		NotAfter:     now.Add(time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
@@ -73,7 +73,7 @@ func assertPrintable(t *testing.T, what, text string) {
 // characters.
 func TestManInTheMiddleErrorIsPrintable(t *testing.T) {
 	now := time.Now()
-	cfg := buildTestCfg(t, manInTheMiddle(t))
+	cfg := buildTestCfg(t, manInTheMiddle(t, "x\x1b]0;pwned\a"))
 	withIdentity(t, cfg, newTestIdentityCA(t, now), now, now.Add(90*24*time.Hour))
 	c := newTestClient(t, cfg)
 
@@ -88,6 +88,29 @@ func TestManInTheMiddleErrorIsPrintable(t *testing.T) {
 	}
 	if got := c.Status().LastError; got != err.Error() {
 		t.Fatalf("LastError = %q, want the error of Fetch", got)
+	}
+}
+
+// A man in the middle may put a newline into a DNS name, followed by a line
+// of its choosing, such as a status line that says online. Only the newlines
+// errors.Join puts between errors survive in the error of Fetch and in
+// LastError.
+func TestErrorsKeepOnlyTheNewlinesOfJoin(t *testing.T) {
+	now := time.Now()
+	cfg := buildTestCfg(t, manInTheMiddle(t, "x\nServer       : https://forged.example (online)"))
+	// An identity due for renewal without a saver gives the fetch a second
+	// error, so that one newline must survive.
+	withIdentity(t, cfg, newTestIdentityCA(t, now), now, now.Add(time.Hour))
+	c := newTestClient(t, cfg)
+
+	err := c.Fetch(context.Background(), "")
+	if err == nil || !strings.Contains(err.Error(), "forged.example") || !strings.Contains(err.Error(), "renew client identity") {
+		t.Fatalf("Fetch error = %q, want the renewal error and the host name error of the man in the middle", err)
+	}
+	for what, text := range map[string]string{"Fetch error": err.Error(), "LastError": c.Status().LastError} {
+		if n := strings.Count(text, "\n"); n != 1 {
+			t.Errorf("%s holds %d newlines, want the one between its two errors: %q", what, n, text)
+		}
 	}
 }
 
