@@ -748,9 +748,11 @@ func TestRenewalInfoEventsAreNotRepeated(t *testing.T) {
 	var got []string
 	for _, e := range events.Since(0) {
 		got = append(got, e.Level+" "+e.Message)
+		// The events withhold URL queries themselves, and would show the
+		// control character escaped.
 		if e.Message == "renewal info query failed" && strings.Contains(e.Attrs, "503") &&
-			(strings.Contains(e.Attrs, "secret") || strings.ContainsRune(e.Attrs, '\x1b') || !strings.Contains(e.Attrs, "?REDACTED")) {
-			t.Errorf("error not sanitized: %s", e.Attrs)
+			!strings.Contains(e.Attrs, `error="GET https://ca.example/renewal-info/x?REDACTED 503 [2J"`) {
+			t.Errorf("error not sanitized as last_error: %s", e.Attrs)
 		}
 		if e.Message == "renewal window updated" && !strings.Contains(e.Attrs, "explanation_url=https://ca.example/incident") {
 			t.Errorf("window event without its explanation: %s", e.Attrs)
