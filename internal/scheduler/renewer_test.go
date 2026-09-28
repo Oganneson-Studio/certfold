@@ -634,8 +634,21 @@ func TestTimerWakesAtEarliestRetry(t *testing.T) {
 	}
 }
 
+// heldRenewalInfo is a gatedIssuer whose renewal info queries wait until
+// release is closed, so that their end does not wake the loop.
+type heldRenewalInfo struct {
+	*gatedIssuer
+	release chan struct{}
+}
+
+func (h heldRenewalInfo) RenewalInfo(*config.ServerConfig, config.CertificateSpec, []byte) (*acme.RenewalInfo, error) {
+	<-h.release
+	return nil, acme.ErrNoRenewalInfo
+}
+
 // ⑰ A failure's retry time is stored after the tick that started the
 // issuance has set its timer, so storing it wakes the loop to plan again.
+// The query about api-stage is held, lest its end wake the loop instead.
 func TestRecordedBackoffWakesScheduler(t *testing.T) {
 	ctx := context.Background()
 	db := mustOpenDB(t)
@@ -657,7 +670,9 @@ func TestRecordedBackoffWakesScheduler(t *testing.T) {
 		t.Fatal(err)
 	}
 	iss := newGatedIssuer(t, start.Add(90*24*time.Hour))
-	r := New(iss, db, nil, now)
+	held := heldRenewalInfo{gatedIssuer: iss, release: make(chan struct{})}
+	t.Cleanup(func() { close(held.release) })
+	r := New(held, db, nil, now)
 	runCtx, cancel := context.WithCancel(ctx)
 	t.Cleanup(cancel)
 	done := make(chan error, 1)
