@@ -15,10 +15,14 @@ import (
 // NewHandler and NewLineHandler show its text, while events show
 // "(in service log)" in its place. Use it for the output of on_change and exec
 // DNS programs, which may repeat credentials, and for panic stacks.
+//
+// Private is not a slog.LogValuer on purpose: slog resolves a LogValuer
+// before a ReplaceAttr function sees it, which would leave only its text. As a
+// plain value it stays a Private however it reaches a handler: given
+// directly, bound with With, inside a group, or returned by another
+// LogValuer. Events withhold a *Private as well; the service log prints it as
+// a pointer.
 type Private string
-
-// LogValue returns the text of p.
-func (p Private) LogValue() slog.Value { return slog.StringValue(string(p)) }
 
 // withheld stands for a Private value in events.
 const withheld = "(in service log)"
@@ -30,10 +34,6 @@ const maxAttrsBytes = 2 << 10
 // sink unchanged, unless sink is not enabled for its level, and adds it to
 // ring with the Private values withheld. Records below Info are dropped.
 // Attributes and groups given through WithAttrs and WithGroup reach both.
-//
-// A Private value is recognized in the attribute as the caller gave it,
-// before slog resolves it: the built-in handlers resolve a value before they
-// call ReplaceAttr, so a ReplaceAttr function only ever sees its text.
 func NewHandler(sink slog.Handler, ring *Ring) slog.Handler {
 	return &handler{sink: sink, ring: ring}
 }
@@ -41,8 +41,8 @@ func NewHandler(sink slog.Handler, ring *Ring) slog.Handler {
 type handler struct {
 	sink slog.Handler
 	ring *Ring
-	// scope holds the attributes and groups given to this handler, with the
-	// Private values already withheld; sink has them as given.
+	// scope holds the attributes and groups given to this handler, which
+	// sink has as well.
 	scope scope
 }
 
@@ -59,7 +59,7 @@ func (h *handler) Handle(ctx context.Context, r slog.Record) error {
 		Time:    r.Time,
 		Level:   r.Level.String(),
 		Message: clean(r.Message),
-		Attrs:   truncate(render(h.scope.nest(withhold(recordAttrs(r))))),
+		Attrs:   truncate(render(h.scope.nest(recordAttrs(r)), eventOptions)),
 	})
 	return err
 }
@@ -71,7 +71,7 @@ func (h *handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &handler{
 		sink:  h.sink.WithAttrs(attrs),
 		ring:  h.ring,
-		scope: h.scope.with(groupOrAttrs{attrs: withhold(attrs)}),
+		scope: h.scope.with(groupOrAttrs{attrs: attrs}),
 	}
 }
 
@@ -104,7 +104,7 @@ func (h *lineHandler) Enabled(context.Context, slog.Level) bool { return true }
 
 func (h *lineHandler) Handle(_ context.Context, r slog.Record) error {
 	line := clean(r.Message)
-	if attrs := render(h.scope.nest(recordAttrs(r))); attrs != "" {
+	if attrs := render(h.scope.nest(recordAttrs(r)), lineOptions); attrs != "" {
 		line += " " + attrs
 	}
 	return h.write(r.Level, line)
@@ -164,47 +164,45 @@ func recordAttrs(r slog.Record) []slog.Attr {
 	return attrs
 }
 
-// withhold returns attrs with every Private value, in groups too, replaced
-// by the withheld placeholder. It must look at the attributes as the caller
-// gave them: once slog resolves a Private value, only its text is left.
-func withhold(attrs []slog.Attr) []slog.Attr {
-	out := make([]slog.Attr, len(attrs))
-	for i, a := range attrs {
-		switch a.Value.Kind() {
-		case slog.KindLogValuer:
-			if _, ok := a.Value.Any().(Private); ok {
-				a.Value = slog.StringValue(withheld)
-			}
-		case slog.KindGroup:
-			a.Value = slog.GroupValue(withhold(a.Value.Group())...)
-		}
-		out[i] = a
+// dropBuiltIns makes a slog.TextHandler write only the attributes of a record
+// without a time: it drops the level and the message the handler writes for
+// every record. Attributes named level or msg outside any group are dropped
+// with them, so these two keys are reserved.
+func dropBuiltIns(groups []string, a slog.Attr) slog.Attr {
+	if len(groups) == 0 && (a.Key == slog.LevelKey || a.Key == slog.MessageKey) {
+		return slog.Attr{}
 	}
-	return out
+	return a
 }
 
-// renderOptions make a slog.TextHandler write only the attributes of a record
-// without a time: they drop the level and the message it writes for every
-// record. Attributes named level or msg outside any group are dropped with
-// them, so these two keys are reserved.
-var renderOptions = &slog.HandlerOptions{
+// lineOptions render the attributes of a line of the service log.
+var lineOptions = &slog.HandlerOptions{ReplaceAttr: dropBuiltIns}
+
+// eventOptions render the attributes of an event: as lineOptions do, with
+// every Private value withheld. A ReplaceAttr function sees each value once
+// slog has resolved it, the values in groups too, so a Private is withheld
+// wherever it ends up.
+var eventOptions = &slog.HandlerOptions{
 	ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-		if len(groups) == 0 && (a.Key == slog.LevelKey || a.Key == slog.MessageKey) {
-			return slog.Attr{}
+		if a.Value.Kind() == slog.KindAny {
+			switch a.Value.Any().(type) {
+			case Private, *Private:
+				return slog.String(a.Key, withheld)
+			}
 		}
-		return a
+		return dropBuiltIns(groups, a)
 	},
 }
 
-// render writes attrs as slog.TextHandler does: key=value separated by
-// spaces, a value quoted when it holds spaces, quotes, control characters or
-// invalid UTF-8, and the keys in a group written g.k.
-func render(attrs []slog.Attr) string {
+// render writes attrs as slog.TextHandler does with opts: key=value separated
+// by spaces, a value quoted when it holds spaces, quotes, control characters
+// or invalid UTF-8, and the keys in a group written g.k.
+func render(attrs []slog.Attr, opts *slog.HandlerOptions) string {
 	var buf bytes.Buffer
 	r := slog.NewRecord(time.Time{}, slog.LevelInfo, "", 0)
 	r.AddAttrs(attrs...)
 	// Writing to a bytes.Buffer does not fail.
-	_ = slog.NewTextHandler(&buf, renderOptions).Handle(context.Background(), r)
+	_ = slog.NewTextHandler(&buf, opts).Handle(context.Background(), r)
 	return strings.TrimSuffix(buf.String(), "\n")
 }
 

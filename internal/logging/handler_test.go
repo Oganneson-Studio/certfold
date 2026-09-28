@@ -107,6 +107,50 @@ func TestPrivateValuesStayInServiceLog(t *testing.T) {
 	}
 }
 
+// privateResult is a LogValuer that resolves to a Private value.
+type privateResult string
+
+func (p privateResult) LogValue() slog.Value { return slog.AnyValue(Private(p)) }
+
+// privateRun is a LogValuer that resolves to a group holding a Private value.
+type privateRun string
+
+func (p privateRun) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("cert", "api-prod"), slog.Any("output", Private(p)))
+}
+
+// TestPrivateValuesStayInServiceLogWhenResolved covers Private values that
+// only appear once slog resolves another value: returned by a LogValuer that
+// is given with the record or bound with With, inside the group a LogValuer
+// returns, and behind a pointer.
+func TestPrivateValuesStayInServiceLogWhenResolved(t *testing.T) {
+	var sink bytes.Buffer
+	logger, ring := newTestLogger(&sink)
+	pointer := Private("secret-pointer")
+	logger.With("bound", privateResult("secret-bound")).
+		Warn("on_change failed",
+			"result", privateResult("secret-result"),
+			"run", privateRun("secret-run"),
+			"pointer", &pointer)
+
+	e := onlyEvent(t, ring)
+	for _, secret := range []string{"secret-bound", "secret-result", "secret-run", "secret-pointer"} {
+		if strings.Contains(e.Attrs, secret) {
+			t.Errorf("event holds %q: %+v", secret, e)
+		}
+	}
+	// The service log prints a *Private as a pointer.
+	for _, secret := range []string{"secret-bound", "secret-result", "secret-run"} {
+		if !strings.Contains(sink.String(), secret) {
+			t.Errorf("service log lacks %q: %s", secret, sink.String())
+		}
+	}
+	want := `bound="(in service log)" result="(in service log)" run.cert=api-prod run.output="(in service log)" pointer="(in service log)"`
+	if e.Attrs != want {
+		t.Fatalf("event attrs:\n got %s\nwant %s", e.Attrs, want)
+	}
+}
+
 // TestEventAttrsFollowTextHandler checks the attributes of events against
 // what slog.TextHandler writes for the same records, which also checks that
 // WithAttrs and WithGroup nest as slog defines.
