@@ -990,6 +990,46 @@ func TestSyncAnswersReloadedSubscriptionAtOnce(t *testing.T) {
 	}
 }
 
+// A reload published while a waiting sync reads the configuration must still
+// wake it, which holds only if the sync took its wake-up channel before the
+// read. CurrentServer publishes the new configuration and notifies during that
+// read, and still returns the old one.
+func TestSyncWakesForReloadPublishedDuringItsRead(t *testing.T) {
+	setSyncMaxWait(t, time.Minute)
+	deps := buildDeps(t)
+	next := *deps.ServerCfg
+	next.Certificates = append([]config.CertificateSpec(nil), deps.ServerCfg.Certificates...)
+	next.Certificates[0].Subscribers = []string{"web-1", "web-2"}
+	var current atomic.Pointer[config.ServerConfig]
+	current.Store(deps.ServerCfg)
+	var reloadDuringRead atomic.Bool
+	changes := deps.Changes
+	deps.CurrentServer = func() *config.ServerConfig {
+		cfg := current.Load()
+		if reloadDuringRead.CompareAndSwap(true, false) {
+			current.Store(&next)
+			changes.Notify()
+		}
+		return cfg
+	}
+	seedCert(t, deps, deps.ServerCfg, deps.ServerCfg.Certificates[0], "sha256:API")
+	identity := makeEnrolledClientCert(t, deps, "web-2")
+	handler := NewInsecure(deps).Handler
+	view, etag := syncView(t, handler, identity)
+	if len(view) != 0 {
+		t.Fatalf("view before reload = %+v", view)
+	}
+
+	reloadDuringRead.Store(true)
+	rec := awaitSync(t, startSync(handler, syncRequest(identity, etag)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if view := decodeView(t, rec); len(view) != 1 || view[0].Name != "api-prod" {
+		t.Fatalf("view after reload = %+v", view)
+	}
+}
+
 func TestSyncRejectsClientRemovedWhileWaiting(t *testing.T) {
 	setSyncMaxWait(t, time.Minute)
 	deps := buildDeps(t)

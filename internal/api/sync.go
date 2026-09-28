@@ -46,8 +46,10 @@ func (h *handlers) syncCertificates(w http.ResponseWriter, r *http.Request) {
 	for {
 		// Take the channel before reading the configuration and the store: a
 		// reload or a stored certificate that lands between those reads and
-		// the wait would otherwise go unnoticed until the deadline. No test
-		// can observe the wrong order.
+		// the wait would otherwise go unnoticed until the deadline. A test
+		// checks the order for the configuration read; the store read has no
+		// test of its own and is covered only while it shares the
+		// certificateView call.
 		changed := h.deps.Changes.wait()
 		view, err := h.certificateView(r.Context(), clientName)
 		if err != nil {
