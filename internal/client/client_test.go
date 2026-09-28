@@ -1173,6 +1173,46 @@ func TestStoppingRunKillsHook(t *testing.T) {
 	}
 }
 
+// TestHooksAfterRunEndsAreCancelled covers a fetch or reload that runs an
+// on_change program after Run returned, while the daemon stops: the program
+// gets the cancelled ctx of Run rather than context.Background, so it cannot
+// outlive the daemon.
+func TestHooksAfterRunEndsAreCancelled(t *testing.T) {
+	bundle := newTestBundle(t, "api-prod")
+	cfg := buildTestCfg(t, "https://sigil.example.test")
+	seedStore(t, cfg.Client.DataDir, bundle)
+	c := newTestClient(t, cfg)
+	ran := false
+	var hookErr error
+	c.hook = func(ctx context.Context, _ string, _ []string) error {
+		ran = true
+		hookErr = ctx.Err()
+		return hookErr
+	}
+	// With its ctx already cancelled, Run reconciles, its first request fails
+	// at once, and it returns.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := c.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run = %v, want context.Canceled", err)
+	}
+
+	// The reloaded configuration adds an output with an on_change program, so
+	// the reload's reconcile runs it.
+	updated := *cfg
+	updated.Certificates = map[string]config.CertificateOutputs{}
+	fullchainOutput(&updated, t.TempDir(), "api-prod", "/usr/sbin/reload")
+	if err := c.Reload(&updated); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if !ran {
+		t.Fatal("the reload did not run on_change")
+	}
+	if !errors.Is(hookErr, context.Canceled) {
+		t.Fatalf("on_change ran after Run returned with ctx error %v, want context.Canceled", hookErr)
+	}
+}
+
 // TestRoundReconcilesAfterNotModified covers an output deleted while nothing
 // changes on the server: a round that gets 304 brings it back from the store.
 func TestRoundReconcilesAfterNotModified(t *testing.T) {

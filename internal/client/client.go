@@ -64,8 +64,11 @@ type Client struct {
 	// etag for the request, so Reload and an identity switch cancel every
 	// request made with what they replace. Guarded by pullMu.
 	syncCancel context.CancelFunc
-	// runCtx is the ctx of Run while Run runs; on_change programs run under
-	// it, or under context.Background without Run. Guarded by pullMu.
+	// runCtx is the ctx of Run from the start of Run on; on_change programs
+	// run under it, or under context.Background before Run starts. It stays
+	// set after Run returns, so a fetch or reload that takes pullMu after
+	// that cancels its programs at once instead of leaving them to outlive
+	// the daemon. Guarded by pullMu.
 	runCtx   context.Context
 	reloadCh chan struct{}
 
@@ -165,7 +168,6 @@ func (c *Client) Run(ctx context.Context) error {
 	// An IPC fetch, push or reload may still be writing outputs or the store.
 	// Take pullMu once so Run returns after it ends.
 	c.pullMu.Lock()
-	c.runCtx = nil
 	c.pullMu.Unlock()
 	return err
 }
