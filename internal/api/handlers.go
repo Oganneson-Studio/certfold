@@ -220,26 +220,6 @@ func (h *handlers) enroll(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
-// GET /v1/certificates
-// ---------------------------------------------------------------------------
-
-func (h *handlers) listCertificates(w http.ResponseWriter, r *http.Request) {
-	cert := peerCert(r)
-	if cert == nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	clientName := cert.Subject.CommonName
-
-	view, err := h.certificateView(r.Context(), clientName)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, http.StatusOK, view)
-}
-
-// ---------------------------------------------------------------------------
 // GET /v1/certificates/{name}/bundle
 // ---------------------------------------------------------------------------
 
@@ -280,39 +260,6 @@ func (h *handlers) getCertBundle(w http.ResponseWriter, r *http.Request) {
 		FullchainPEM: rec.FullchainPEM,
 		KeyPEM:       rec.KeyPEM,
 	})
-}
-
-// ---------------------------------------------------------------------------
-// POST /v1/heartbeat
-// ---------------------------------------------------------------------------
-
-func (h *handlers) heartbeat(w http.ResponseWriter, r *http.Request) {
-	cert := peerCert(r)
-	if cert == nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	clientName := cert.Subject.CommonName
-
-	var req proto.HeartbeatRequest
-	if err := readJSON(r, &req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	// A single conditional write: the client may have been removed, or its
-	// identity changed, since requireActiveClient looked it up.
-	err := h.deps.DB.Clients.MarkSeen(r.Context(), clientName, ca.Fingerprint(cert.Raw), time.Now().UTC())
-	if err == sql.ErrNoRows {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---------------------------------------------------------------------------

@@ -106,9 +106,7 @@ func buildRouter(h *handlers) http.Handler {
 		r.Use(requireMTLS)
 		r.Use(h.requireActiveClient)
 		r.Get("/v1/sync", h.syncCertificates)
-		r.Get("/v1/certificates", h.listCertificates)
 		r.Get("/v1/certificates/{name}/bundle", h.getCertBundle)
-		r.With(limitRequestBody(maxAPIRequestBody)).Post("/v1/heartbeat", h.heartbeat)
 		r.With(limitRequestBody(maxAPIRequestBody)).Post("/v1/identity/renew", h.renewIdentity)
 	})
 

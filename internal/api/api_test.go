@@ -570,163 +570,6 @@ func TestRenewIdentityRejectsInvalidCSR(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// GET /v1/certificates — requires mTLS
-// ---------------------------------------------------------------------------
-
-func TestListCertificates_NoMTLS(t *testing.T) {
-	deps := buildDeps(t)
-	req := httptest.NewRequest(http.MethodGet, "/v1/certificates", nil)
-	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 without mTLS, got %d", rec.Code)
-	}
-}
-
-func TestListCertificates_WithMTLS(t *testing.T) {
-	deps := buildDeps(t)
-
-	// Seed a certificate record that web-1 is subscribed to.
-	_ = deps.DB.Certs.Upsert(context.Background(), &store.CertRecord{
-		Name:            "api-prod",
-		CA:              "letsencrypt",
-		Domains:         []string{"api.example.com"},
-		SpecFingerprint: config.CertificateSpecFingerprint(deps.ServerCfg, deps.ServerCfg.Certificates[0]),
-		Fingerprint:     "sha256:AABB",
-		NotAfter:        time.Now().Add(90 * 24 * time.Hour),
-		UpdatedAt:       time.Now(),
-	}, nil)
-
-	clientCert := makeEnrolledClientCert(t, deps, "web-1")
-	req := httptest.NewRequest(http.MethodGet, "/v1/certificates", nil)
-	req = simulateMTLS(req, clientCert)
-	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: got %d, body: %s", rec.Code, rec.Body.String())
-	}
-	var certs []proto.CertSummary
-	if err := json.NewDecoder(rec.Body).Decode(&certs); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(certs) != 1 || certs[0].Name != "api-prod" {
-		t.Errorf("expected [api-prod], got %v", certs)
-	}
-}
-
-func TestListCertificates_FilterBySubscriber(t *testing.T) {
-	deps := buildDeps(t)
-
-	// web-2 is NOT in subscribers for api-prod.
-	clientCert := makeEnrolledClientCert(t, deps, "web-2")
-	req := httptest.NewRequest(http.MethodGet, "/v1/certificates", nil)
-	req = simulateMTLS(req, clientCert)
-	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: got %d", rec.Code)
-	}
-	var certs []proto.CertSummary
-	_ = json.NewDecoder(rec.Body).Decode(&certs)
-	if len(certs) != 0 {
-		t.Errorf("web-2 should see 0 certs, got %d", len(certs))
-	}
-}
-
-func TestSubscriptionMatchIsExact(t *testing.T) {
-	deps := buildDeps(t)
-	if err := deps.DB.Certs.Upsert(context.Background(), &store.CertRecord{
-		Name:            "api-prod",
-		CA:              "letsencrypt",
-		Domains:         []string{"api.example.com"},
-		SpecFingerprint: config.CertificateSpecFingerprint(deps.ServerCfg, deps.ServerCfg.Certificates[0]),
-		FullchainPEM:    "chain",
-		KeyPEM:          "private-key-for-web-1",
-		UpdatedAt:       time.Now(),
-	}, nil); err != nil {
-		t.Fatalf("seed certificate: %v", err)
-	}
-
-	// A client enrolled under another spelling of the subscriber "web-1" is a
-	// different client and must not receive its certificates.
-	clientCert := makeEnrolledClientCert(t, deps, "WEB-1")
-	handler := NewInsecure(deps).Handler
-
-	listRec := httptest.NewRecorder()
-	handler.ServeHTTP(listRec, simulateMTLS(httptest.NewRequest(http.MethodGet, "/v1/certificates", nil), clientCert))
-	if listRec.Code != http.StatusOK {
-		t.Fatalf("list status = %d", listRec.Code)
-	}
-	var certs []proto.CertSummary
-	if err := json.NewDecoder(listRec.Body).Decode(&certs); err != nil {
-		t.Fatal(err)
-	}
-	if len(certs) != 0 {
-		t.Fatalf("WEB-1 sees certificates subscribed by web-1: %+v", certs)
-	}
-
-	syncRec := httptest.NewRecorder()
-	handler.ServeHTTP(syncRec, syncRequest(clientCert, ""))
-	if syncRec.Code != http.StatusOK {
-		t.Fatalf("sync status = %d", syncRec.Code)
-	}
-	if view := decodeView(t, syncRec); len(view) != 0 {
-		t.Fatalf("WEB-1 syncs certificates subscribed by web-1: %+v", view)
-	}
-
-	bundleRec := httptest.NewRecorder()
-	handler.ServeHTTP(bundleRec, simulateMTLS(httptest.NewRequest(http.MethodGet, "/v1/certificates/api-prod/bundle", nil), clientCert))
-	if bundleRec.Code != http.StatusNotFound || strings.Contains(bundleRec.Body.String(), "private-key-for-web-1") {
-		t.Fatalf("bundle status = %d, body = %s", bundleRec.Code, bundleRec.Body.String())
-	}
-}
-
-func TestListCertificatesReflectsRuntimeSubscriptionReload(t *testing.T) {
-	deps := buildDeps(t)
-	var current atomic.Pointer[config.ServerConfig]
-	current.Store(deps.ServerCfg)
-	deps.CurrentServer = current.Load
-	_ = deps.DB.Certs.Upsert(context.Background(), &store.CertRecord{
-		Name:            "api-prod",
-		CA:              "letsencrypt",
-		Domains:         []string{"api.example.com"},
-		SpecFingerprint: config.CertificateSpecFingerprint(deps.ServerCfg, deps.ServerCfg.Certificates[0]),
-		Fingerprint:     "sha256:AABB",
-		NotAfter:        time.Now().Add(90 * 24 * time.Hour),
-		UpdatedAt:       time.Now(),
-	}, nil)
-	clientCert := makeEnrolledClientCert(t, deps, "web-2")
-	handler := NewInsecure(deps).Handler
-
-	list := func() []proto.CertSummary {
-		req := simulateMTLS(httptest.NewRequest(http.MethodGet, "/v1/certificates", nil), clientCert)
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
-		}
-		var certs []proto.CertSummary
-		if err := json.NewDecoder(rec.Body).Decode(&certs); err != nil {
-			t.Fatal(err)
-		}
-		return certs
-	}
-
-	if got := list(); len(got) != 0 {
-		t.Fatalf("certificates before reload = %+v", got)
-	}
-	next := *deps.ServerCfg
-	next.Certificates = append([]config.CertificateSpec(nil), deps.ServerCfg.Certificates...)
-	next.Certificates[0].Subscribers = []string{"web-1", "web-2"}
-	current.Store(&next)
-	if got := list(); len(got) != 1 || got[0].Name != "api-prod" {
-		t.Fatalf("certificates after reload = %+v", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // GET /v1/sync — requires mTLS
 // ---------------------------------------------------------------------------
 
@@ -858,6 +701,41 @@ func TestSyncListsSubscribedCurrentCertificatesWithETag(t *testing.T) {
 	}
 	if view := decodeView(t, rec); len(view) != 1 || view[0].Name != "api-prod" || view[0].Fingerprint != "sha256:API" {
 		t.Fatalf("view = %+v, want only api-prod", view)
+	}
+}
+
+func TestSubscriptionMatchIsExact(t *testing.T) {
+	deps := buildDeps(t)
+	if err := deps.DB.Certs.Upsert(context.Background(), &store.CertRecord{
+		Name:            "api-prod",
+		CA:              "letsencrypt",
+		Domains:         []string{"api.example.com"},
+		SpecFingerprint: config.CertificateSpecFingerprint(deps.ServerCfg, deps.ServerCfg.Certificates[0]),
+		FullchainPEM:    "chain",
+		KeyPEM:          "private-key-for-web-1",
+		UpdatedAt:       time.Now(),
+	}, nil); err != nil {
+		t.Fatalf("seed certificate: %v", err)
+	}
+
+	// A client enrolled under another spelling of the subscriber "web-1" is a
+	// different client and must not receive its certificates.
+	clientCert := makeEnrolledClientCert(t, deps, "WEB-1")
+	handler := NewInsecure(deps).Handler
+
+	syncRec := httptest.NewRecorder()
+	handler.ServeHTTP(syncRec, syncRequest(clientCert, ""))
+	if syncRec.Code != http.StatusOK {
+		t.Fatalf("sync status = %d", syncRec.Code)
+	}
+	if view := decodeView(t, syncRec); len(view) != 0 {
+		t.Fatalf("WEB-1 syncs certificates subscribed by web-1: %+v", view)
+	}
+
+	bundleRec := httptest.NewRecorder()
+	handler.ServeHTTP(bundleRec, simulateMTLS(httptest.NewRequest(http.MethodGet, "/v1/certificates/api-prod/bundle", nil), clientCert))
+	if bundleRec.Code != http.StatusNotFound || strings.Contains(bundleRec.Body.String(), "private-key-for-web-1") {
+		t.Fatalf("bundle status = %d, body = %s", bundleRec.Code, bundleRec.Body.String())
 	}
 }
 
@@ -1304,137 +1182,6 @@ func TestGetCertBundle_Unauthorized(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// POST /v1/heartbeat
-// ---------------------------------------------------------------------------
-
-func TestHeartbeat_Success(t *testing.T) {
-	deps := buildDeps(t)
-	clientCert := makeEnrolledClientCert(t, deps, "web-1")
-
-	body, _ := json.Marshal(proto.HeartbeatRequest{Fingerprint: "sha256:NEWF"})
-	req := httptest.NewRequest(http.MethodPost, "/v1/heartbeat", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req = simulateMTLS(req, clientCert)
-	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("expected 204, got %d", rec.Code)
-	}
-	cl, err := deps.DB.Clients.Get(context.Background(), "web-1", nil)
-	if err != nil {
-		t.Fatalf("client not found after heartbeat: %v", err)
-	}
-	if cl.Fingerprint != ca.Fingerprint(clientCert.Certificate[0]) {
-		t.Errorf("identity fingerprint was overwritten: %s", cl.Fingerprint)
-	}
-	if cl.LastSeen.IsZero() {
-		t.Error("last seen was not updated")
-	}
-}
-
-func TestHeartbeatDoesNotRecreateClientRemovedDuringRequest(t *testing.T) {
-	deps, other := buildFileDeps(t)
-	identity := makeEnrolledClientCert(t, deps, "web-1")
-	ctx := context.Background()
-
-	tx, err := other.BeginTx(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if err := other.Clients.Delete(ctx, "web-1", tx); err != nil {
-		t.Fatal(err)
-	}
-
-	body, _ := json.Marshal(proto.HeartbeatRequest{})
-	req := simulateMTLS(httptest.NewRequest(http.MethodPost, "/v1/heartbeat", bytes.NewReader(body)), identity)
-	rec := requestDuringWrite(t, NewInsecure(deps).Handler, req, tx)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
-	}
-	if _, err := deps.DB.Clients.Get(ctx, "web-1", nil); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("heartbeat recreated a removed client: Get error = %v", err)
-	}
-}
-
-func TestHeartbeatKeepsIdentityStagedDuringRequest(t *testing.T) {
-	deps, other := buildFileDeps(t)
-	identity := makeEnrolledClientCert(t, deps, "web-1")
-	ctx := context.Background()
-
-	staged, err := deps.DB.Clients.Get(ctx, "web-1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	staged.PendingFingerprint = "sha256:renewed"
-	staged.PendingNotAfter = time.Now().UTC().Add(90 * 24 * time.Hour)
-	tx, err := other.BeginTx(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if err := other.Clients.Upsert(ctx, staged, tx); err != nil {
-		t.Fatal(err)
-	}
-
-	body, _ := json.Marshal(proto.HeartbeatRequest{})
-	req := simulateMTLS(httptest.NewRequest(http.MethodPost, "/v1/heartbeat", bytes.NewReader(body)), identity)
-	rec := requestDuringWrite(t, NewInsecure(deps).Handler, req, tx)
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rec.Code)
-	}
-	got, err := deps.DB.Clients.Get(ctx, "web-1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.PendingFingerprint != "sha256:renewed" {
-		t.Fatalf("heartbeat discarded the staged identity: %+v", got)
-	}
-	if got.LastSeen.IsZero() {
-		t.Error("last seen was not updated")
-	}
-}
-
-func TestRemovedClientCannotUseMTLSAPI(t *testing.T) {
-	deps := buildDeps(t)
-	clientCert := makeEnrolledClientCert(t, deps, "web-1")
-	if err := deps.DB.Clients.Delete(context.Background(), "web-1", nil); err != nil {
-		t.Fatalf("delete client: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/v1/sync", nil)
-	req = simulateMTLS(req, clientCert)
-	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("removed client: expected 401, got %d", rec.Code)
-	}
-
-	body, _ := json.Marshal(proto.HeartbeatRequest{})
-	req = httptest.NewRequest(http.MethodPost, "/v1/heartbeat", bytes.NewReader(body))
-	req = simulateMTLS(req, clientCert)
-	rec = httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("removed client heartbeat: expected 401, got %d", rec.Code)
-	}
-	if _, err := deps.DB.Clients.Get(context.Background(), "web-1", nil); err == nil {
-		t.Fatal("heartbeat recreated a removed client")
-	}
-}
-
-func TestHeartbeat_NoMTLS(t *testing.T) {
-	deps := buildDeps(t)
-	req := httptest.NewRequest(http.MethodPost, "/v1/heartbeat", nil)
-	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", rec.Code)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // mTLS client check: identity and last_seen
 // ---------------------------------------------------------------------------
 
@@ -1594,6 +1341,25 @@ func TestAuthenticatedRequestIsServedWhenLastSeenCannotBeWritten(t *testing.T) {
 
 	request()
 	assertNotSeen()
+}
+
+func TestRemovedClientCannotUseMTLSAPI(t *testing.T) {
+	deps := buildDeps(t)
+	clientCert := makeEnrolledClientCert(t, deps, "web-1")
+	if err := deps.DB.Clients.Delete(context.Background(), "web-1", nil); err != nil {
+		t.Fatalf("delete client: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/sync", nil)
+	req = simulateMTLS(req, clientCert)
+	rec := httptest.NewRecorder()
+	NewInsecure(deps).Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("removed client: expected 401, got %d", rec.Code)
+	}
+	if _, err := deps.DB.Clients.Get(context.Background(), "web-1", nil); err == nil {
+		t.Fatal("the request recreated a removed client")
+	}
 }
 
 func TestAuthenticatedRequestDoesNotRecreateClientRemovedDuringRequest(t *testing.T) {
