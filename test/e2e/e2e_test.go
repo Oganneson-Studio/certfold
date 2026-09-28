@@ -8,6 +8,7 @@ package e2e
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -18,11 +19,8 @@ import (
 	"strings"
 	"testing"
 	"time"
-)
 
-const (
-	certPollTimeout  = 60 * time.Second
-	certPollInterval = time.Second
+	"gopkg.in/yaml.v3"
 )
 
 func TestMain(m *testing.M) {
@@ -51,34 +49,220 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// TestEnrollFetchRenewAndRevoke follows the client of the mini-CA server
+// through its life. Each step checks how many times in all test-cert's
+// on_change program has run, not whether its own command replaced an output:
+// the sync loop reconciles after every answer to GET /v1/sync, so it may
+// restore an output before a fetch does.
 func TestEnrollFetchRenewAndRevoke(t *testing.T) {
 	d := stack.miniCA
-	issued := enrollAndFetch(t, d)
-
-	status := mustExec(t, d.clientContainer, "sigilc", "status")
-	if !strings.Contains(status, "Certificates : 1") {
-		t.Fatalf("client status did not report fetched certificate:\n%s", status)
+	fullchain := testCertOutputs + "/fullchain.pem"
+	// step stops the test at the first step that fails: each step builds on
+	// the state, and the on_change count, that the steps before it left.
+	step := func(name string, f func(t *testing.T)) {
+		if !t.Run(name, f) {
+			t.FailNow()
+		}
 	}
 
-	// A manual renewal issues a new certificate, which the next fetch writes.
-	fingerprint := certFingerprint(t, d)
-	mustExec(t, d.serverContainer, "sigils", "cert", "renew", "test-cert")
-	if renewed := certFingerprint(t, d); renewed == fingerprint {
-		t.Fatalf("cert list still shows fingerprint %s after renewal", fingerprint)
-	}
-	mustExec(t, d.clientContainer, "sigilc", "fetch", "--cert", "test-cert")
-	if renewed := verifyOutput(t, d); renewed.SerialNumber.Cmp(issued.SerialNumber) == 0 {
-		t.Fatalf("client output still holds serial %s after renewal and fetch", issued.SerialNumber)
-	}
+	var issued *x509.Certificate
+	step("enroll and fetch", func(t *testing.T) {
+		issued = enrollAndFetch(t, d)
+		status := mustExec(t, d.clientContainer, "sigilc", "status")
+		if !strings.Contains(status, "Certificates : 1") {
+			t.Fatalf("client status did not report fetched certificate:\n%s", status)
+		}
+		// The program hashed the fullchain.pem in place, so it ran after the
+		// outputs were written.
+		runs := hookRuns(t, d)
+		if len(runs) != 1 {
+			t.Fatalf("on_change ran %d times, want 1", len(runs))
+		}
+		if sum := strings.Fields(mustExec(t, d.clientContainer, "sha256sum", fullchain))[0]; runs[0] != sum {
+			t.Fatalf("on_change logged sha256 %s, but fullchain.pem has %s", runs[0], sum)
+		}
+	})
 
-	mustExec(t, d.serverContainer, "sigils", "client", "remove", d.clientName)
-	out, err := stack.exec(d.clientContainer, "sigilc", "fetch", "--cert", "test-cert")
-	if err == nil {
-		t.Fatalf("revoked client still fetched certificates:\n%s", out)
-	}
-	if !strings.Contains(out, "401") && !strings.Contains(out, "403") {
-		t.Fatalf("revoked client failed for an unexpected reason:\n%s", out)
-	}
+	step("last seen", func(t *testing.T) {
+		// The mTLS client check records it for the client's requests.
+		out := mustExec(t, d.serverContainer, "sigils", "--json", "client", "show", d.clientName)
+		var client struct {
+			LastSeen *time.Time `json:"last_seen"`
+		}
+		if err := json.Unmarshal([]byte(out), &client); err != nil {
+			t.Fatalf("parse client show: %v\n%s", err, out)
+		}
+		if client.LastSeen == nil {
+			t.Fatalf("server recorded no last_seen for %s:\n%s", d.clientName, out)
+		}
+	})
+
+	step("fetch again", func(t *testing.T) {
+		before := mustExec(t, d.clientContainer, "cat", fullchain)
+		mustExec(t, d.clientContainer, "sigilc", "fetch")
+		if after := mustExec(t, d.clientContainer, "cat", fullchain); after != before {
+			t.Fatal("fetch changed fullchain.pem although the certificate did not change")
+		}
+		if runs := hookRuns(t, d); len(runs) != 1 {
+			t.Fatalf("on_change ran %d times, want still 1", len(runs))
+		}
+	})
+
+	step("fetch restores deleted output", func(t *testing.T) {
+		mustExec(t, d.clientContainer, "rm", fullchain)
+		mustExec(t, d.clientContainer, "sigilc", "fetch")
+		if leaf := verifyOutput(t, d); leaf.SerialNumber.Cmp(issued.SerialNumber) != 0 {
+			t.Fatalf("restored fullchain.pem holds serial %s, want %s", leaf.SerialNumber, issued.SerialNumber)
+		}
+		if runs := hookRuns(t, d); len(runs) != 2 {
+			t.Fatalf("on_change ran %d times, want 2", len(runs))
+		}
+	})
+
+	step("fetch restores changed output", func(t *testing.T) {
+		mustExec(t, d.clientContainer, "sh", "-c", `printf garbage > "$1"`, "sh", testCertOutputs+"/key.pem")
+		mustExec(t, d.clientContainer, "sigilc", "fetch")
+		verifyOutput(t, d)
+		if runs := hookRuns(t, d); len(runs) != 3 {
+			t.Fatalf("on_change ran %d times, want 3", len(runs))
+		}
+	})
+
+	// Before the revocation: the loop backs off once its requests fail, and
+	// would restore the output later.
+	step("sync loop restores deleted output", func(t *testing.T) {
+		mustExec(t, d.clientContainer, "rm", fullchain)
+		start := time.Now()
+		// No fetch: the loop reconciles after each answer to GET /v1/sync,
+		// which an idle client gets at least every 55 seconds. on_change
+		// runs once the outputs are in place, so its count shows the round
+		// is over.
+		runs := hookRuns(t, d)
+		for ; len(runs) < 4; runs = hookRuns(t, d) {
+			if time.Since(start) > 70*time.Second {
+				_, err := stack.exec(d.clientContainer, "test", "-e", fullchain)
+				status, _ := stack.exec(d.clientContainer, "sigilc", "status")
+				t.Fatalf("on_change ran %d times within 70s of deleting fullchain.pem, want 4; fullchain.pem restored: %t\nclient status:\n%s\nclient logs:\n%s",
+					len(runs), err == nil, status, stack.logs(d.clientContainer))
+			}
+			time.Sleep(time.Second)
+		}
+		t.Logf("the sync loop restored fullchain.pem %s after it was deleted", time.Since(start).Round(100*time.Millisecond))
+		if len(runs) != 4 {
+			t.Fatalf("on_change ran %d times, want 4", len(runs))
+		}
+		verifyOutput(t, d)
+	})
+
+	step("reload adds output", func(t *testing.T) {
+		der := testCertOutputs + "/cert.der"
+		editClientConfig(t, d, func(doc map[string]any) {
+			cert := doc["certificates"].(map[string]any)["test-cert"].(map[string]any)
+			cert["outputs"] = append(cert["outputs"].([]any), map[string]any{"format": "der", "path": der})
+		})
+		mustExec(t, d.clientContainer, "sigilc", "reload")
+		// Reload reconciles the outputs before it returns.
+		if _, err := stack.exec(d.clientContainer, "test", "-s", der); err != nil {
+			t.Fatalf("reload returned before it wrote %s", der)
+		}
+		if runs := hookRuns(t, d); len(runs) != 5 {
+			t.Fatalf("on_change ran %d times, want 5", len(runs))
+		}
+	})
+
+	// This step must directly follow the reload, which has just restarted the
+	// loop's GET /v1/sync. Only the scheduler's stored callback wakes that
+	// request when the renewed certificate is stored. No unit test covers the
+	// callback: without it the request, and this step, would wait the full 55
+	// seconds.
+	step("sync delivers renewal", func(t *testing.T) {
+		fingerprint := certFingerprint(t, d)
+		mustExec(t, d.serverContainer, "sigils", "cert", "renew", "test-cert")
+		start := time.Now()
+		// The client has no periodic pull and this step runs no fetch, so
+		// only GET /v1/sync can deliver the renewal. on_change runs once all
+		// outputs are replaced.
+		runs := hookRuns(t, d)
+		for ; len(runs) < 6; runs = hookRuns(t, d) {
+			if time.Since(start) > 15*time.Second {
+				status, _ := stack.exec(d.clientContainer, "sigilc", "status", "--json")
+				t.Fatalf("on_change ran %d times within 15s of the renewal, want 6; the server lists fingerprint %s\nclient status:\n%s\nclient logs:\n%s",
+					len(runs), certFingerprint(t, d), status, stack.logs(d.clientContainer))
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		t.Logf("sync delivered the renewal %s after sigils cert renew returned", time.Since(start).Round(100*time.Millisecond))
+		if len(runs) != 6 {
+			t.Fatalf("on_change ran %d times, want 6", len(runs))
+		}
+		if renewed := certFingerprint(t, d); renewed == fingerprint {
+			t.Fatalf("cert list still shows fingerprint %s after renewal", fingerprint)
+		}
+		if leaf := verifyOutput(t, d); leaf.SerialNumber.Cmp(issued.SerialNumber) == 0 {
+			t.Fatalf("fullchain.pem still holds serial %s after renewal", issued.SerialNumber)
+		}
+		if sum := strings.Fields(mustExec(t, d.clientContainer, "sha256sum", fullchain))[0]; runs[5] != sum {
+			t.Fatalf("on_change last logged sha256 %s, but the renewed fullchain.pem has %s", runs[5], sum)
+		}
+	})
+
+	step("server reload wakes sync", func(t *testing.T) {
+		// Subscribe the client to test-cert-2. Subscribers are not part of
+		// the spec fingerprint, so the server keeps the certificate it has.
+		path := d.hostPath("server.yaml")
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cfg map[string]any
+		if err := yaml.Unmarshal(raw, &cfg); err != nil {
+			t.Fatalf("parse server.yaml: %v", err)
+		}
+		for _, cert := range cfg["certificates"].([]any) {
+			if cert := cert.(map[string]any); cert["name"] == "test-cert-2" {
+				cert["subscribers"] = []string{d.clientName}
+			}
+		}
+		if raw, err = yaml.Marshal(cfg); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		mustExec(t, d.serverContainer, "sigils", "reload")
+		start := time.Now()
+		for {
+			out := mustExec(t, d.clientContainer, "sigilc", "status", "--json")
+			var status struct {
+				Certs map[string]string `json:"certs"`
+			}
+			if err := json.Unmarshal([]byte(out), &status); err != nil {
+				t.Fatalf("parse client status: %v\n%s", err, out)
+			}
+			if _, ok := status.Certs["test-cert-2"]; ok {
+				break
+			}
+			if time.Since(start) > 15*time.Second {
+				t.Fatalf("client did not get test-cert-2 within 15s of the server reload; client status:\n%s", out)
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		// client.yaml has no outputs and no on_change for test-cert-2.
+		if runs := hookRuns(t, d); len(runs) != 6 {
+			t.Fatalf("on_change ran %d times, want still 6", len(runs))
+		}
+	})
+
+	step("revoke", func(t *testing.T) {
+		mustExec(t, d.serverContainer, "sigils", "client", "remove", d.clientName)
+		out, err := stack.exec(d.clientContainer, "sigilc", "fetch", "--cert", "test-cert")
+		if err == nil {
+			t.Fatalf("revoked client still fetched certificates:\n%s", out)
+		}
+		if !strings.Contains(out, "401") && !strings.Contains(out, "403") {
+			t.Fatalf("revoked client failed for an unexpected reason:\n%s", out)
+		}
+	})
 }
 
 // TestPublicTLSEnrollAndFetch covers a server that presents a publicly trusted
@@ -123,21 +307,18 @@ func enrollAndFetch(t *testing.T, d *deployment) *x509.Certificate {
 		t.Fatal(err)
 	}
 	waitForClientDaemon(t, d)
+	// The fetch returns once the outputs are written.
 	mustExec(t, d.clientContainer, "sigilc", "fetch", "--cert", "test-cert")
-
-	waitForFile(t, d.hostPath("cert-output", "test-cert", "fullchain.pem"), certPollTimeout)
 	return verifyOutput(t, d)
 }
 
 // verifyOutput checks the test-cert output of the client of d: a chain from
 // the root pebble issues from to a certificate for test-cert's domain, and
-// the key of that certificate. It returns the certificate.
+// the key of that certificate. It returns the certificate. The outputs are
+// in the client container, so they are read there.
 func verifyOutput(t *testing.T, d *deployment) *x509.Certificate {
 	t.Helper()
-	chainPEM, err := os.ReadFile(d.hostPath("cert-output", "test-cert", "fullchain.pem"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	chainPEM := []byte(mustExec(t, d.clientContainer, "cat", testCertOutputs+"/fullchain.pem"))
 	var chain []*x509.Certificate
 	for rest := chainPEM; ; {
 		var block *pem.Block
@@ -172,9 +353,7 @@ func verifyOutput(t *testing.T, d *deployment) *x509.Certificate {
 	}); err != nil {
 		t.Fatalf("output is not a certificate pebble issued for %s: %v", domain, err)
 	}
-	// Read in the container: on Linux the key output belongs to the
-	// container's root and only it can read the file.
-	keyPEM := mustExec(t, d.clientContainer, "cat", d.containerPath("cert-output", "test-cert", "key.pem"))
+	keyPEM := mustExec(t, d.clientContainer, "cat", testCertOutputs+"/key.pem")
 	if _, err := tls.X509KeyPair(chainPEM, []byte(keyPEM)); err != nil {
 		t.Fatalf("key output does not belong to the certificate output: %v", err)
 	}
@@ -197,6 +376,41 @@ func certFingerprint(t *testing.T, d *deployment) string {
 	}
 	t.Fatalf("cert list has no fingerprint for test-cert:\n%s", out)
 	return ""
+}
+
+// hookRuns returns the sha256 that each run of test-cert's on_change program
+// logged to hook.log of d, oldest first. The program runs as the container's
+// root, so the log is read in the client container.
+func hookRuns(t *testing.T, d *deployment) []string {
+	t.Helper()
+	// sha256sum ends each line with a newline, so the last element is empty
+	// or a line still being written.
+	lines := strings.Split(mustExec(t, d.clientContainer, "cat", d.containerPath("hook.log")), "\n")
+	runs := make([]string, 0, len(lines)-1)
+	for _, line := range lines[:len(lines)-1] {
+		sum, _, _ := strings.Cut(line, " ")
+		runs = append(runs, sum)
+	}
+	return runs
+}
+
+// editClientConfig applies edit to the client.yaml of d. Enrollment rewrote
+// that file as the container's root with mode 0600, so it is read and written
+// in the client container; the shell's > keeps its owner and mode.
+func editClientConfig(t *testing.T, d *deployment, edit func(doc map[string]any)) {
+	t.Helper()
+	path := d.containerPath("client-data", "client.yaml")
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(mustExec(t, d.clientContainer, "cat", path)), &doc); err != nil {
+		t.Fatalf("parse client.yaml: %v", err)
+	}
+	edit(doc)
+	data, err := yaml.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, d.clientContainer, "sh", "-c", `printf %s "$1" | base64 -d > "$2"`, "sh",
+		base64.StdEncoding.EncodeToString(data), path)
 }
 
 func TestExpiredTokenIsRejected(t *testing.T) {
@@ -296,16 +510,4 @@ func waitForClientDaemon(t *testing.T, d *deployment) {
 	}
 	t.Fatalf("sigilc daemon did not become ready:\n%s\ncontainer logs:\n%s",
 		lastOutput, stack.logs(d.clientContainer))
-}
-
-func waitForFile(t *testing.T, path string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if info, err := os.Stat(path); err == nil && info.Size() > 0 {
-			return
-		}
-		time.Sleep(certPollInterval)
-	}
-	t.Fatalf("timed out waiting for %s", path)
 }

@@ -64,7 +64,8 @@ type e2eStack struct {
 }
 
 // deployment is one sigils server and the sigilc client enrolled with it.
-// Its files live in hostDir, which its containers see as containerDir.
+// Its files live in hostDir, which its containers see as containerDir, except
+// the client's outputs, which stay in the client container.
 type deployment struct {
 	hostDir         string
 	containerDir    string
@@ -87,6 +88,12 @@ type certificate struct {
 	name   string
 	domain string
 }
+
+// testCertOutputs is the directory of test-cert's outputs in a client
+// container. It is not in the bind mount: WSLC reports every file there as
+// mode 0777 whatever chmod sets, so the client would find the modes of its
+// outputs wrong in every reconcile and set them again, in vain.
+const testCertOutputs = "/cert-output/test-cert"
 
 var stack *e2eStack
 
@@ -192,7 +199,7 @@ func (s *e2eStack) newDeployment(dir, alias, clientName, suffix string, port int
 		serverPort:      port,
 		certs:           []certificate{{name: "test-cert", domain: alias + ".example.com"}},
 	}
-	for _, sub := range []string{"server-data", "client-data", "cert-output"} {
+	for _, sub := range []string{"server-data", "client-data"} {
 		if err := os.MkdirAll(d.hostPath(sub), 0o700); err != nil {
 			return nil, err
 		}
@@ -466,6 +473,10 @@ dns_providers:
 
 certificates:
 %s`, d.containerPath("server-data"), d.alias, tlsFiles, dnsHookPath, certs.String())
+	// test-cert's on_change program appends the sha256 of fullchain.pem to
+	// hook.log, one line per run. client.yaml expands ${VAR} in every value,
+	// so the program has no $ in it.
+	hook := fmt.Sprintf("sha256sum %s/fullchain.pem >> %s", testCertOutputs, d.containerPath("hook.log"))
 	clientConfig := fmt.Sprintf(`client:
   name: %s
   server_url: "https://%s:18443"
@@ -478,9 +489,9 @@ certificates:
         path: %s
       - format: pem-key
         path: %s
+    on_change: ["/bin/sh", "-c", %q]
 `, d.clientName, d.alias, d.containerPath("client-data"),
-		d.containerPath("cert-output", "test-cert", "fullchain.pem"),
-		d.containerPath("cert-output", "test-cert", "key.pem"))
+		testCertOutputs+"/fullchain.pem", testCertOutputs+"/key.pem", hook)
 	if err := os.WriteFile(d.hostPath("server.yaml"), []byte(serverConfig), 0o600); err != nil {
 		return err
 	}
