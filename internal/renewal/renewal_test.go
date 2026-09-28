@@ -1,4 +1,4 @@
-package scheduler
+package renewal
 
 import (
 	"crypto/ecdsa"

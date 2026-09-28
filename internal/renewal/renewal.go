@@ -1,4 +1,8 @@
-package scheduler
+// Package renewal decides when a certificate is due for renewal. The
+// scheduler, the IPC listing of certificates and the server's own TLS
+// certificate use it. It imports only the standard library: sigilc links it
+// through the IPC package, and must not link the ACME client with it.
+package renewal
 
 import (
 	"crypto/x509"

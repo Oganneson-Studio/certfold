@@ -5,7 +5,7 @@ import (
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/logging"
-	"github.com/Oganneson-Studio/sigil/internal/scheduler"
+	"github.com/Oganneson-Studio/sigil/internal/renewal"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
@@ -149,7 +149,7 @@ func certificateInfos(cfg *config.ServerConfig, records []*store.CertRecord, sta
 			info.Fingerprint = record.Fingerprint
 			info.IssuedAt = record.IssuedAt
 			info.UpdatedAt = record.UpdatedAt
-			if renewAt, err := scheduler.RenewAt(record.FullchainPEM); err == nil {
+			if renewAt, err := renewal.RenewAt(record.FullchainPEM); err == nil {
 				info.RenewAt = renewAt
 			}
 		}
