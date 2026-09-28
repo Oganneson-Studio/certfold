@@ -80,7 +80,7 @@ Enrollment tokens carry the expected client name, server URL, and mini-CA certif
 sigils --config /etc/sigil/server.yaml serve
 
 # Create a short-lived enrollment token
-sigils token create --name web-1 --expires 10m
+sigils --config /etc/sigil/server.yaml token create --name web-1 --expires 10m
 
 # Enroll and run a client
 sigilc --config /etc/sigil/client.yaml enroll --token <token>
@@ -92,7 +92,7 @@ sigilc fetch --cert api-prod
 sigilc reload
 
 # Validate and apply supported server.yaml changes through local IPC
-sigils reload
+sigils --config /etc/sigil/server.yaml reload
 ```
 
 `token create` and `reload` are served by the running daemon over local IPC and fail when it is not running. `token create` also refuses to run when `server.public_url` is unset and `server.listen` names no host clients can reach. `cert add` and `cert remove` edit `server.yaml` and then tell a running daemon to reload.
@@ -205,7 +205,7 @@ Renewal is automatic; there is nothing to configure. `renew_days_before` has bee
 
 **When a CA announces a mass revocation**, run `sigils reload` to make every certificate re-query ARI immediately. Without this, the next query may be up to 6 hours away.
 
-An issued certificate whose renewal moment has already passed is stored and delivered, but counts as a failure with an error of the form `issued certificate was stored, but is already due for renewal (lifetime ..., renewal due ...)`. The backoff prevents a tight retry loop. Fix the underlying cause (the CA or its ARI endpoint) and clear the backoff with `sigils cert renew <name>` or `sigils reload`.
+An issued certificate whose renewal moment has already passed is stored and delivered, but counts as a failure with an error of the form `issued certificate was stored, but is already due for renewal (lifetime ..., renewal due ...)`. The backoff prevents a tight retry loop. Fix the underlying cause (the CA or its ARI endpoint) and clear the backoff with `sigils cert renew <name>`. A `sigils reload` clears the database backoff, but if the ARI window has not changed, the in-memory guard still blocks renewal until the backoff would have expired.
 
 ## Events and logging
 
@@ -246,7 +246,7 @@ Keys:
 
 | Key | Action |
 |---|---|
-| `1`--`5` | Switch tab |
+| `1`-`5` | Switch tab |
 | `tab` / `shift+tab` | Next / previous tab |
 | `k`/`up`, `j`/`down` | Move in tables and events |
 | `pgup`, `pgdn` | Page in events |
@@ -258,7 +258,7 @@ Keys:
 | `?` | Show all keys |
 | `q` / `ctrl+c` | Quit (ctrl+c works inside dialogs too) |
 
-The token is shown in the result dialog after creation, together with the install commands. Closing the dialog discards the token; for a complete command on one line, revoke it and use `sigils token create` on the command line. The selected row is marked with `>` so it is visible without color.
+The token is shown in the result dialog after creation, together with the install commands. Closing the dialog discards the token; for a complete command on one line, revoke it and use `sigils token create` on the command line. The selected row is marked with `›` so it is visible without color.
 
 ### sigilc
 
@@ -349,7 +349,7 @@ The database schema only migrates forward. After an upgrade, an older `sigils` c
 
 ## Naming rules
 
-All names in `server.yaml` -- certificate names, `acme.cas` keys, `dns_providers` keys -- and client names follow the same rule: a lowercase DNS label of 1 to 63 characters from `a-z`, `0-9` and `-`, not starting or ending with `-`.
+All names in `server.yaml` --- certificate names, `acme.cas` keys, `dns_providers` keys --- and client names follow the same rule: a lowercase DNS label of 1 to 63 characters from `a-z`, `0-9` and `-`, not starting or ending with `-`.
 
 **Upgrading from a build before these rules**: names that contain uppercase letters, dots or underscores must be renamed before upgrading. A certificate name appears in `server.yaml` and in every subscriber's `client.yaml` under `certificates.<name>`; rename both together. A CA or provider name appears as a key in `acme.cas` or `dns_providers` and in the references that use it; rename the key and its references together. After upgrading, `server.yaml` is rejected at startup and reload if any name is invalid. A new `sigilc` connected to an old `sigils` reports an error for each invalid certificate name and stops delivering those certificates; their stored material is removed, but output files are left in place.
 
