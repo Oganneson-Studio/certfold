@@ -420,8 +420,8 @@ func (c *Client) heartbeat(ctx context.Context, st *state) error {
 
 // writeOutputs renders the bundle into each configured output for certName.
 func (c *Client) writeOutputs(certName string, bundle *proto.CertBundle) error {
-	specs, ok := c.cfg.Outputs[certName]
-	if !ok || len(specs) == 0 {
+	specs := c.cfg.Certificates[certName].Outputs
+	if len(specs) == 0 {
 		// Cache to data_dir/cache/ even if no output specs.
 		return c.cacheBundle(certName, bundle)
 	}

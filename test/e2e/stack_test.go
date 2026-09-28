@@ -472,12 +472,13 @@ certificates:
   pull_interval: 30s
   data_dir: %q
 
-outputs:
+certificates:
   test-cert:
-    - format: pem-fullchain
-      path: %s
-    - format: pem-key
-      path: %s
+    outputs:
+      - format: pem-fullchain
+        path: %s
+      - format: pem-key
+        path: %s
 `, d.clientName, d.alias, d.containerPath("client-data"),
 		d.containerPath("cert-output", "test-cert", "fullchain.pem"),
 		d.containerPath("cert-output", "test-cert", "key.pem"))
