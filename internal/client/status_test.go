@@ -2,9 +2,13 @@ package client
 
 import (
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
+	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,26 +40,49 @@ func bundleNotAfter(t *testing.T, bundle *proto.CertBundle) time.Time {
 }
 
 func TestStatusDescribesStoredCertificates(t *testing.T) {
-	a, b := newTestBundle(t, "a"), newTestBundle(t, "b")
 	cfg := buildTestCfg(t, "https://sigil.example.test")
 	dir := t.TempDir()
+	// a has two outputs and an on_change program, c one output; client.yaml
+	// configures nothing for b and d.
 	fullchainOutput(cfg, dir, "a", "/usr/sbin/reload")
 	outputs := cfg.Certificates["a"]
 	outputs.Outputs = append(outputs.Outputs, config.OutputSpec{Format: "pem-key", Path: filepath.Join(dir, "a.key")})
 	cfg.Certificates["a"] = outputs
-	if err := saveStore(cfg.Client.DataDir, map[string]storedCert{
-		"b": {Fingerprint: b.Fingerprint, FullchainPEM: b.FullchainPEM, KeyPEM: b.KeyPEM},
-		"a": {Fingerprint: a.Fingerprint, FullchainPEM: a.FullchainPEM, KeyPEM: a.KeyPEM, HookPending: true},
-	}); err != nil {
+	fullchainOutput(cfg, dir, "c")
+
+	var want []CertStatus
+	stored := make(map[string]storedCert)
+	for _, name := range []string{"a", "b", "c", "d"} {
+		bundle := newTestBundle(t, name)
+		stored[name] = storedCert{Fingerprint: bundle.Fingerprint, FullchainPEM: bundle.FullchainPEM, KeyPEM: bundle.KeyPEM, HookPending: name == "a"}
+		want = append(want, CertStatus{Name: name, Fingerprint: bundle.Fingerprint, NotAfter: bundleNotAfter(t, bundle)})
+	}
+	want[0].Outputs, want[0].OnChange, want[0].HookPending = 2, true, true
+	want[2].Outputs = 1
+
+	// certs.json lists the certificates in reverse name order. Go iterates a
+	// map of up to 8 entries in a rotation of the order they were added, and
+	// no rotation of d, c, b, a is in name order: a status that is not sorted
+	// fails every run. saveStore would write the names in order, which the
+	// rotation keeps for most starting points.
+	var file strings.Builder
+	file.WriteString(`{"certs":{`)
+	for i, name := range []string{"d", "c", "b", "a"} {
+		entry, err := json.Marshal(stored[name])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i > 0 {
+			file.WriteString(",")
+		}
+		fmt.Fprintf(&file, "%q:%s", name, entry)
+	}
+	file.WriteString("}}")
+	if err := os.WriteFile(filepath.Join(cfg.Client.DataDir, storeFileName), []byte(file.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	c := newTestClient(t, cfg)
-	want := []CertStatus{
-		{Name: "a", Fingerprint: a.Fingerprint, NotAfter: bundleNotAfter(t, a), Outputs: 2, OnChange: true, HookPending: true},
-		// client.yaml configures nothing for b.
-		{Name: "b", Fingerprint: b.Fingerprint, NotAfter: bundleNotAfter(t, b)},
-	}
 	if got := c.Status().Certs; !slices.Equal(got, want) {
 		t.Fatalf("certificates:\n got %+v\nwant %+v", got, want)
 	}
