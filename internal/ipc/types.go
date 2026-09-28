@@ -84,10 +84,11 @@ type ClientState struct {
 	Certs      map[string]string `json:"certs"`
 }
 
-// FetchClientRequest is the body of POST /ipc/v1/client/fetch. An empty name
-// runs a full pull: it fetches the certificates whose fingerprints changed, or
-// every subscribed certificate while the rewrite that follows startup or a
-// reload is pending.
+// FetchClientRequest is the body of POST /ipc/v1/client/fetch. The fetch is a
+// full pull: sigilc downloads the certificates whose fingerprints changed,
+// reconciles every output and runs the pending on_change programs before it
+// answers. A non-empty name also downloads that certificate again; its
+// outputs are rewritten only if they differ from it.
 type FetchClientRequest struct {
 	Name string `json:"name,omitempty"`
 }

@@ -47,7 +47,7 @@ func runReload(cmd *cobra.Command, _ []string) error {
 	if err := c.ReloadClient(context.Background()); err != nil {
 		return err
 	}
-	fmt.Println("configuration applied; rewriting certificate outputs in the background (see sigilc status)")
+	fmt.Println("configuration applied and outputs reconciled; see sigilc status for errors")
 	return nil
 }
 
@@ -138,7 +138,7 @@ func runFetch(cmd *cobra.Command, _ []string) error {
 	if err := c.FetchClient(context.Background(), certName); err != nil {
 		return err
 	}
-	fmt.Println("fetch triggered")
+	fmt.Println("pulled from sigils; outputs reconciled")
 	return nil
 }
 

@@ -60,9 +60,9 @@ func newStatusCmd() *cobra.Command {
 func newFetchCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "fetch",
-		Short: "Force an immediate pull from sigils, bypassing pull_interval",
+		Short: "Pull from sigils now and reconcile the outputs before returning",
 		RunE:  runFetch,
 	}
-	cmd.Flags().String("cert", "", "only fetch the named certificate (default: all subscribed)")
+	cmd.Flags().String("cert", "", "also download the named certificate again; its outputs are rewritten only if they differ")
 	return cmd
 }

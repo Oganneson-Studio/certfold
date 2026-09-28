@@ -141,9 +141,10 @@ func (c *Client) GetClientState(ctx context.Context) (*ClientState, error) {
 	return &out, c.do(ctx, http.MethodGet, "/ipc/v1/client/state", nil, &out)
 }
 
-// FetchClient asks sigilc to pull immediately. An empty name runs a full pull:
-// it fetches the certificates whose fingerprints changed, or every subscribed
-// certificate while the rewrite that follows startup or a reload is pending.
+// FetchClient asks sigilc to pull now, and returns once it has reconciled
+// the outputs and run the pending on_change programs. A non-empty name also
+// downloads that certificate again; its outputs are rewritten only if they
+// differ from it.
 func (c *Client) FetchClient(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodPost, "/ipc/v1/client/fetch", FetchClientRequest{Name: name}, nil)
 }
