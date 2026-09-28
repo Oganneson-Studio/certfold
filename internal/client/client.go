@@ -386,9 +386,10 @@ func (c *Client) heartbeat(ctx context.Context) error {
 // its material, then runs the pending on_change programs in name order, and
 // returns the joined errors of both.
 //
-// A certificate one of whose outputs was replaced gets hook_pending if it has
-// an on_change program; the new bits are written to the store before any
-// program runs. A program does not run while its certificate's outputs
+// When Reconcile rewrites the content of an output of a certificate that has
+// an on_change program, the certificate gets hook_pending; repairing only the
+// mode or owner of an output does not set it. The new bits are written to the
+// store before any program runs. A program does not run while its certificate's outputs
 // failed to reconcile, since they may be incomplete. A program that exits 0
 // clears the bit, and so does the lack of a program; a failure keeps it, so
 // the program runs again after the next reconcile. The cleared bits are

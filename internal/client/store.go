@@ -22,8 +22,8 @@ type storedCert struct {
 	FullchainPEM string `json:"fullchain_pem"`
 	KeyPEM       string `json:"key_pem"`
 	// HookPending records that the certificate's on_change program must run:
-	// its material changed or one of its outputs was replaced, and the
-	// program has not succeeded since.
+	// its material changed or the content of one of its outputs was
+	// rewritten, and the program has not succeeded since.
 	HookPending bool `json:"hook_pending,omitempty"`
 }
 
