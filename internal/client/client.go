@@ -3,7 +3,6 @@ package client
 import (
 	"bytes"
 	"context"
-	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -16,15 +15,12 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/enroll"
 	"github.com/Oganneson-Studio/sigil/internal/output"
-	"github.com/Oganneson-Studio/sigil/internal/version"
 	"github.com/Oganneson-Studio/sigil/pkg/proto"
 )
 
@@ -76,8 +72,6 @@ type Client struct {
 	statusMu sync.RWMutex
 	status   RuntimeStatus
 
-	pushInFlight atomic.Bool
-
 	identitySaver IdentitySaver
 	now           func() time.Time
 	// hook runs the on_change program of a certificate: runHook, or a
@@ -115,9 +109,6 @@ type RuntimeStatus struct {
 // New constructs a Client with an mTLS-capable HTTP client built from
 // cfg.Identity, and reads the store in cfg.Client.DataDir.
 func New(cfg *config.ClientConfig, options ...Option) (*Client, error) {
-	if err := config.ValidatePushListen(cfg.Client.PushListen); err != nil {
-		return nil, fmt.Errorf("client.push_listen: %w", err)
-	}
 	httpClient, err := buildHTTPClient(cfg)
 	if err != nil {
 		return nil, err
@@ -145,14 +136,9 @@ func New(cfg *config.ClientConfig, options ...Option) (*Client, error) {
 	return c, nil
 }
 
-// Run reconciles the outputs with the store, then runs the sync loop (and the
-// optional push receiver) until ctx is cancelled.
+// Run reconciles the outputs with the store, then runs the sync loop until
+// ctx is cancelled.
 func (c *Client) Run(ctx context.Context) error {
-	pushListen := c.pushListen()
-	if err := config.ValidatePushListen(pushListen); err != nil {
-		return fmt.Errorf("client.push_listen: %w", err)
-	}
-
 	// Restore the outputs before the first request: they come back even
 	// while the server is unreachable.
 	c.pullMu.Lock()
@@ -160,13 +146,8 @@ func (c *Client) Run(ctx context.Context) error {
 	c.recordReconcile(c.reconcileLocked())
 	c.pullMu.Unlock()
 
-	// Push receiver (optional).
-	if pushListen != "" {
-		go c.startPushReceiver(ctx, pushListen)
-	}
-
 	err := c.syncLoop(ctx)
-	// An IPC fetch, push or reload may still be writing outputs or the store.
+	// An IPC fetch or reload may still be writing outputs or the store.
 	// Take pullMu once so Run returns after it ends.
 	c.pullMu.Lock()
 	c.pullMu.Unlock()
@@ -208,9 +189,6 @@ func (c *Client) Fetch(ctx context.Context, name string) error {
 			if err := c.applyViewLocked(ctx, result, name); err != nil {
 				errs = append(errs, err)
 			}
-		}
-		if err := c.heartbeat(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("heartbeat: %w", err))
 		}
 	}
 	if err := c.reconcileLocked(); err != nil {
@@ -354,34 +332,6 @@ func (c *Client) getBundle(ctx context.Context, name string) (*proto.CertBundle,
 	return &b, nil
 }
 
-// heartbeat calls POST /v1/heartbeat with one of the stored fingerprints.
-func (c *Client) heartbeat(ctx context.Context) error {
-	fp := ""
-	for _, cert := range c.store {
-		fp = cert.Fingerprint
-		break
-	}
-	body, _ := json.Marshal(proto.HeartbeatRequest{
-		Version:     version.Version,
-		Fingerprint: fp,
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.cfg.Client.ServerURL+"/v1/heartbeat", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("server returned %d", resp.StatusCode)
-	}
-	return nil
-}
-
 // reconcileLocked brings the outputs of every stored certificate in line with
 // its material, then runs the pending on_change programs in name order, and
 // returns the joined errors of both.
@@ -465,69 +415,6 @@ func (c *Client) writeStoreLocked() error {
 	return nil
 }
 
-// startPushReceiver starts a minimal HTTP server on push_listen that triggers
-// a full pull when it receives POST /v1/push/notify.
-func (c *Client) startPushReceiver(ctx context.Context, listenAddr string) {
-	srv := &http.Server{
-		Addr:              listenAddr,
-		Handler:           c.pushHandler(ctx),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
-		IdleTimeout:       30 * time.Second,
-	}
-	go func() {
-		<-ctx.Done()
-		_ = srv.Close()
-	}()
-	_ = srv.ListenAndServe()
-}
-
-func (c *Client) pushHandler(ctx context.Context) http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/push/notify", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if !validPushAuthorization(r.Header.Get("Authorization"), c.pushToken()) {
-			w.Header().Set("WWW-Authenticate", "Bearer")
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
-		var notification proto.PushNotify
-		if err := json.NewDecoder(r.Body).Decode(&notification); err != nil && err != io.EOF {
-			http.Error(w, "invalid request", http.StatusBadRequest)
-			return
-		}
-		if !c.pushInFlight.CompareAndSwap(false, true) {
-			w.WriteHeader(http.StatusAccepted)
-			return
-		}
-		go func(name string) {
-			defer c.pushInFlight.Store(false)
-			pullCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-			defer cancel()
-			_ = c.Fetch(pullCtx, name)
-		}(notification.CertName)
-		w.WriteHeader(http.StatusAccepted)
-	})
-	return mux
-}
-
-func validPushAuthorization(header, expected string) bool {
-	const prefix = "Bearer "
-	if expected == "" || !strings.HasPrefix(header, prefix) {
-		return false
-	}
-	provided := strings.TrimPrefix(header, prefix)
-	if len(provided) != len(expected) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
-}
-
 // Status returns a copy of the current runtime status.
 func (c *Client) Status() RuntimeStatus {
 	c.cfgMu.RLock()
@@ -544,10 +431,9 @@ func (c *Client) Status() RuntimeStatus {
 	return status
 }
 
-// Reload applies a newly parsed client configuration. Changing the IPC or
-// push listener or the data directory requires a service restart: Run and
-// the command process own the listeners, and New read the store from the data
-// directory.
+// Reload applies a newly parsed client configuration. Changing the IPC socket
+// or the data directory requires a service restart: the command process owns
+// the IPC listener, and New read the store from the data directory.
 //
 // Before it returns, Reload reconciles the outputs with the store under the
 // new configuration and runs the pending on_change programs. Their errors go
@@ -571,10 +457,6 @@ func (c *Client) Reload(cfg *config.ClientConfig) error {
 	if cfg.Client.DataDir != c.cfg.Client.DataDir {
 		c.cfgMu.Unlock()
 		return fmt.Errorf("client.data_dir changed; restart sigilc to apply it")
-	}
-	if cfg.Client.PushListen != c.cfg.Client.PushListen {
-		c.cfgMu.Unlock()
-		return fmt.Errorf("client.push_listen changed; restart sigilc to apply it")
 	}
 	c.cfg = cfg
 	c.http = httpClient
@@ -626,18 +508,6 @@ func (c *Client) setLastErrorLocked(err error) {
 	} else {
 		c.status.LastError = err.Error()
 	}
-}
-
-func (c *Client) pushListen() string {
-	c.cfgMu.RLock()
-	defer c.cfgMu.RUnlock()
-	return c.cfg.Client.PushListen
-}
-
-func (c *Client) pushToken() string {
-	c.cfgMu.RLock()
-	defer c.cfgMu.RUnlock()
-	return c.cfg.Client.PushToken
 }
 
 // fingerprints maps the name of each certificate in certs to its fingerprint.

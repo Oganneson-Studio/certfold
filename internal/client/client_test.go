@@ -340,7 +340,6 @@ type fakeServer struct {
 	answers      int
 	abandons     int
 	bundleNames  []string
-	heartbeats   int
 }
 
 // syncRecord is a sync request the fake server received.
@@ -391,12 +390,6 @@ func (f *fakeServer) handler() http.Handler {
 			return
 		}
 		writeJSON(w, bundle)
-	})
-	mux.HandleFunc("/v1/heartbeat", func(w http.ResponseWriter, _ *http.Request) {
-		f.mu.Lock()
-		f.heartbeats++
-		f.mu.Unlock()
-		w.WriteHeader(http.StatusNoContent)
 	})
 	return mux
 }
@@ -504,12 +497,6 @@ func (f *fakeServer) bundleRequests() []string {
 	return slices.Clone(f.bundleNames)
 }
 
-func (f *fakeServer) heartbeatCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.heartbeats
-}
-
 // fakeHook stands in for runHook: it records the certificate of each run,
 // which succeeds.
 type fakeHook struct {
@@ -556,9 +543,6 @@ func TestFetchWritesOutputsAndStore(t *testing.T) {
 	status := c.Status()
 	if !status.Online || status.LastPullAt.IsZero() || status.LastError != "" || status.Certs["api-prod"] != bundle.Fingerprint {
 		t.Fatalf("status = %+v", status)
-	}
-	if got := fs.heartbeatCount(); got != 1 {
-		t.Fatalf("heartbeats = %d, want 1", got)
 	}
 }
 
@@ -1829,8 +1813,8 @@ func TestLoopDoesNotRevertFetchedView(t *testing.T) {
 	}
 }
 
-// TestRunWaitsForInFlightPull covers a pull started by IPC or push that is
-// still running when the daemon stops.
+// TestRunWaitsForInFlightPull covers a pull started by IPC that is still
+// running when the daemon stops.
 func TestRunWaitsForInFlightPull(t *testing.T) {
 	var blockNext atomic.Bool
 	blocked := make(chan struct{})
@@ -1954,104 +1938,6 @@ func TestReloadRejectsRestartOnlyChanges(t *testing.T) {
 				t.Fatalf("failed reload changed live config to %q", got)
 			}
 		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Push
-// ---------------------------------------------------------------------------
-
-func TestNewRejectsNonLoopbackPushListener(t *testing.T) {
-	cfg := buildTestCfg(t, "https://sigil.example.com")
-	cfg.Client.PushListen = ":9443"
-	cfg.Client.PushToken = "0123456789abcdef0123456789abcdef"
-	if _, err := New(cfg); err == nil || !strings.Contains(err.Error(), "client.push_listen") {
-		t.Fatalf("expected non-loopback push listener to be rejected, got %v", err)
-	}
-}
-
-func TestRunRejectsPushListenerChangedAfterNew(t *testing.T) {
-	cfg := buildTestCfg(t, "https://sigil.example.com")
-	c, err := New(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Client.PushListen = ":9443"
-	if err := c.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "client.push_listen") {
-		t.Fatalf("expected mutated non-loopback push listener to be rejected, got %v", err)
-	}
-}
-
-func TestPushHandlerRequiresBearerAndCoalescesPulls(t *testing.T) {
-	var syncRequests atomic.Int32
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	unblock := func() { releaseOnce.Do(func() { close(release) }) }
-	fs := newFakeServer()
-	fs.syncStatus = func(string) int {
-		syncRequests.Add(1)
-		<-release
-		return 0
-	}
-	apiServer := httptest.NewServer(fs.handler())
-	t.Cleanup(apiServer.Close)
-	t.Cleanup(unblock)
-
-	cfg := buildTestCfg(t, apiServer.URL)
-	cfg.Client.PushToken = "0123456789abcdef0123456789abcdef"
-	c := newTestClient(t, cfg)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	pushServer := httptest.NewServer(c.pushHandler(ctx))
-	defer pushServer.Close()
-
-	unauthorized, err := http.Post(pushServer.URL+"/v1/push/notify", "application/json", strings.NewReader(`{}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	unauthorized.Body.Close()
-	if unauthorized.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("unauthorized status = %d, want 401", unauthorized.StatusCode)
-	}
-
-	postAuthorized := func() *http.Response {
-		req, err := http.NewRequest(http.MethodPost, pushServer.URL+"/v1/push/notify", strings.NewReader(`{}`))
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Header.Set("Authorization", "Bearer "+cfg.Client.PushToken)
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return resp
-	}
-	first := postAuthorized()
-	first.Body.Close()
-	second := postAuthorized()
-	second.Body.Close()
-	if first.StatusCode != http.StatusAccepted || second.StatusCode != http.StatusAccepted {
-		t.Fatalf("push statuses = %d, %d; want 202", first.StatusCode, second.StatusCode)
-	}
-
-	deadline := time.Now().Add(time.Second)
-	for syncRequests.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if got := syncRequests.Load(); got != 1 {
-		t.Fatalf("concurrent push notifications started %d pulls, want 1", got)
-	}
-	unblock()
-
-	// The pull writes the store into the test's data directory; let it
-	// finish before the directory is removed.
-	deadline = time.Now().Add(5 * time.Second)
-	for c.pushInFlight.Load() && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if c.pushInFlight.Load() {
-		t.Fatal("push-triggered pull did not finish")
 	}
 }
 
