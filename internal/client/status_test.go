@@ -61,6 +61,26 @@ func TestStatusDescribesStoredCertificates(t *testing.T) {
 	}
 }
 
+// TestStatusDoesNotWaitForPullMu covers the status while a round, fetch or
+// reload holds pullMu, which it keeps while on_change programs run for up to
+// 2 minutes each: Status answers at once.
+func TestStatusDoesNotWaitForPullMu(t *testing.T) {
+	c := newTestClient(t, buildTestCfg(t, "https://sigil.example.test"))
+	c.pullMu.Lock()
+	defer c.pullMu.Unlock()
+
+	answered := make(chan struct{})
+	go func() {
+		c.Status()
+		close(answered)
+	}()
+	select {
+	case <-answered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Status waited for pullMu")
+	}
+}
+
 // TestStatusFollowsReloadAtOnce covers the outputs and on_change program a
 // reload configures: the status shows them when Reload returns, before any
 // round of the loop.
