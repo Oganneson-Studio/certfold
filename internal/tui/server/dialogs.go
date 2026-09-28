@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -55,7 +56,7 @@ func (c *confirmation) view(width int) string {
 
 // tokenForm asks for the client name and the lifetime of a new enrollment
 // token. Typing and backspace edit the end of the focused field; a paste
-// arrives as typing.
+// arrives as typing, without its control characters.
 type tokenForm struct {
 	name  string
 	ttl   string
@@ -94,7 +95,13 @@ func (m *Model) updateForm(msg tea.KeyMsg) tea.Cmd {
 		}
 		switch msg.Type {
 		case tea.KeyRunes, tea.KeySpace:
-			*value += string(msg.Runes)
+			// A paste keeps every rune, so drop those that control the
+			// terminal, which the view would write to it.
+			for _, r := range msg.Runes {
+				if !unicode.IsControl(r) {
+					*value += string(r)
+				}
+			}
 		case tea.KeyBackspace:
 			if r := []rune(*value); len(r) > 0 {
 				*value = string(r[:len(r)-1])
