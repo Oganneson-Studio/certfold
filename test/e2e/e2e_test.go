@@ -303,8 +303,37 @@ func TestPublicTLSCertificateReload(t *testing.T) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+	// Only the pair as a whole loads, so however the server saw the two
+	// writes, it reloaded once.
+	var reloads []serverEvent
+	for _, e := range serverEvents(t, d) {
+		if e.Message == "server TLS certificate reloaded" {
+			reloads = append(reloads, e)
+		}
+	}
+	if len(reloads) != 1 || reloads[0].Level != "INFO" || !strings.HasPrefix(reloads[0].Attrs, "not_after=") {
+		t.Fatalf("server TLS certificate reloaded events: %+v, want one at INFO with not_after", reloads)
+	}
 	// The client trusts the new certificate through the same root.
 	mustExec(t, d.clientContainer, "sigilc", "fetch")
+}
+
+// serverEvent is an entry of `sigils --json events`.
+type serverEvent struct {
+	Level   string `json:"level"`
+	Message string `json:"message"`
+	Attrs   string `json:"attrs"`
+}
+
+// serverEvents returns the events that the server of d keeps, oldest first.
+func serverEvents(t *testing.T, d *deployment) []serverEvent {
+	t.Helper()
+	out := mustExec(t, d.serverContainer, "sigils", "--json", "events")
+	var events []serverEvent
+	if err := json.Unmarshal([]byte(out), &events); err != nil {
+		t.Fatalf("parse events: %v\n%s", err, out)
+	}
+	return events
 }
 
 // servedSerial returns the serial of the certificate that the server of d
