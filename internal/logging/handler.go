@@ -3,6 +3,8 @@ package logging
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"log/slog"
 	"slices"
 	"strings"
@@ -18,13 +20,26 @@ import (
 // "(withheld)" in its place. A slog.TextHandler sink, whose output journald
 // keeps on Linux, shows its text.
 //
-// Private is not a slog.LogValuer on purpose: slog resolves a LogValuer
-// before a ReplaceAttr function sees it, which would leave only its text. As a
-// plain value it stays a Private however it reaches a handler: given
-// directly, bound with With, inside a group, or returned by another
-// LogValuer. A *Private is withheld as well; a slog.TextHandler prints it as
-// a pointer.
+// Pass a Private, or a *Private, directly as the value of an attribute:
+//   - It is not a slog.LogValuer on purpose: slog resolves a LogValuer before
+//     a ReplaceAttr function sees it, which would leave only its text. As a
+//     plain value it stays a Private however it reaches a handler: given
+//     directly, bound with With, inside a group, or returned by another
+//     LogValuer.
+//   - MarshalText returns its text, which a slog.TextHandler prints for such
+//     an attribute value.
+//   - Format prints "(withheld)" for every fmt verb. slog prints a slice, map
+//     or struct with fmt, so a Private inside one is withheld by every
+//     handler, the TextHandler sink included; so is a Private formatted into
+//     a message or an error. fmt cannot call a method of an unexported struct
+//     field, so a Private held in one is printed in full.
 type Private string
+
+// Format writes "(withheld)" whatever the verb and flags.
+func (Private) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, withheld) }
+
+// MarshalText returns the text of p.
+func (p Private) MarshalText() ([]byte, error) { return []byte(p), nil }
 
 // withheld stands for a Private value in events and in the lines of
 // NewLineHandler.

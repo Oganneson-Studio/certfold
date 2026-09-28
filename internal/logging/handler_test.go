@@ -139,9 +139,6 @@ func TestPrivateValuesAreWithheldWhenResolved(t *testing.T) {
 		if strings.Contains(e.Attrs, secret) {
 			t.Errorf("event holds %q: %+v", secret, e)
 		}
-	}
-	// A slog.TextHandler prints a *Private as a pointer.
-	for _, secret := range []string{"secret-bound", "secret-result", "secret-run"} {
 		if !strings.Contains(sink.String(), secret) {
 			t.Errorf("service log lacks %q: %s", secret, sink.String())
 		}
@@ -149,6 +146,62 @@ func TestPrivateValuesAreWithheldWhenResolved(t *testing.T) {
 	want := `bound=(withheld) result=(withheld) run.cert=api-prod run.output=(withheld) pointer=(withheld)`
 	if e.Attrs != want {
 		t.Fatalf("event attrs:\n got %s\nwant %s", e.Attrs, want)
+	}
+}
+
+// TestServiceLogShowsPrivateText covers a Private and a *Private given as
+// attribute values: a slog.TextHandler sink prints their text through
+// MarshalText, as a value rather than a pointer.
+func TestServiceLogShowsPrivateText(t *testing.T) {
+	var sink bytes.Buffer
+	logger, ring := newTestLogger(&sink)
+	pointer := Private("secret-pointer")
+	logger.Warn("on_change failed", "output", Private("secret-output"), "pointer", &pointer)
+
+	if want := `output=secret-output pointer=secret-pointer`; !strings.Contains(sink.String(), want) {
+		t.Fatalf("service log lacks %s: %s", want, sink.String())
+	}
+	if got, want := onlyEvent(t, ring).Attrs, `output=(withheld) pointer=(withheld)`; got != want {
+		t.Fatalf("event attrs:\n got %s\nwant %s", got, want)
+	}
+}
+
+// privateOutput holds a Private in a field.
+type privateOutput struct{ Out Private }
+
+// TestPrivateValuesInContainersAreWithheld covers a Private inside a slice, a
+// map or a struct, which slog prints with fmt: events, the lines of
+// NewLineHandler and a slog.TextHandler sink all show the placeholder.
+func TestPrivateValuesInContainersAreWithheld(t *testing.T) {
+	logContainers := func(logger *slog.Logger) {
+		logger.Warn("on_change failed",
+			"slice", []Private{"secret-slice"},
+			"map", map[string]Private{"out": "secret-map"},
+			"struct", privateOutput{Out: "secret-struct"})
+	}
+	var sink bytes.Buffer
+	logger, ring := newTestLogger(&sink)
+	logContainers(logger)
+	var line string
+	logContainers(slog.New(NewLineHandler(func(_ slog.Level, text string) error {
+		line = text
+		return nil
+	})))
+
+	want := `slice=[(withheld)] map=map[out:(withheld)] struct={Out:(withheld)}`
+	if got := onlyEvent(t, ring).Attrs; got != want {
+		t.Errorf("event attrs:\n got %s\nwant %s", got, want)
+	}
+	if line != "on_change failed "+want {
+		t.Errorf("event log line:\n got %s\nwant on_change failed %s", line, want)
+	}
+	if !strings.Contains(sink.String(), want) {
+		t.Errorf("service log lacks %s: %s", want, sink.String())
+	}
+	for _, secret := range []string{"secret-slice", "secret-map", "secret-struct"} {
+		if strings.Contains(line+sink.String(), secret) {
+			t.Errorf("%q was printed: line %s; service log %s", secret, line, sink.String())
+		}
 	}
 }
 
