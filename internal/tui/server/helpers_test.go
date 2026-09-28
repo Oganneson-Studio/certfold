@@ -45,7 +45,8 @@ func newFake(n uint64) *fakeBackend {
 			{
 				Name: "api-prod", CA: "le", Domains: []string{"api.example.com", "www.example.com"},
 				Subscribers: []string{"web-1", "web-2"}, State: ipc.CertStateValid, Fingerprint: "sha256:AA",
-				IssuedAt: now.Add(-30 * 24 * time.Hour), NotAfter: now.Add(60 * 24 * time.Hour), RenewAt: now.Add(30 * 24 * time.Hour),
+				IssuedAt: now.Add(-30 * 24 * time.Hour), NotAfter: now.Add(60 * 24 * time.Hour),
+				RenewAt: now.Add(30 * 24 * time.Hour), RenewSource: "ratio",
 			},
 			{
 				Name: "mail", CA: "le", Domains: []string{"mail.example.com"}, Subscribers: []string{"web-2"},

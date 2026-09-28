@@ -501,10 +501,15 @@ func formatTime(t time.Time, layout, none string) string {
 	return t.Local().Format(layout)
 }
 
-// renewAt formats when c is due for renewal with layout, or returns "-"
-// without stored material.
+// renewAt formats when c is due for renewal with layout, followed by the
+// source of that time, "(ari)" or "(ratio)"; without stored material it
+// returns "-".
 func renewAt(c *ipc.CertificateInfo, layout string) string {
-	return formatTime(c.RenewAt, layout, "-")
+	at := formatTime(c.RenewAt, layout, "-")
+	if c.RenewSource != "" {
+		at += " (" + c.RenewSource + ")"
+	}
+	return at
 }
 
 // tokenStatus reports whether t has enrolled a client, has expired unused,
