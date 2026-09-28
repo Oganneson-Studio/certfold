@@ -35,6 +35,12 @@ var _ Backend = (*ipc.Client)(nil)
 // refreshInterval is how often the TUI reloads what it shows.
 const refreshInterval = 2 * time.Second
 
+// refreshTimeout bounds each IPC call of a refresh, so that a daemon that
+// does not answer shows on the status line rather than stopping the TUI until
+// the IPC client gives up after five minutes. A variable only so tests can
+// shorten it.
+var refreshTimeout = 10 * time.Second
+
 const (
 	tabOverview = iota
 	tabCertificates
@@ -226,34 +232,44 @@ func (m *Model) startRefresh() tea.Cmd {
 	return m.load()
 }
 
-// load returns a command that reads the lists and the events after lastSeq.
+// load returns a command that reads the lists and the events after lastSeq,
+// each within refreshTimeout.
 func (m Model) load() tea.Cmd {
-	b, started, after := m.backend, m.started, m.lastSeq
+	b, started, after, timeout := m.backend, m.started, m.lastSeq, refreshTimeout
+	eventsAfter := func(after uint64) func(context.Context) (*ipc.EventsPage, error) {
+		return func(ctx context.Context) (*ipc.EventsPage, error) { return b.Events(ctx, after) }
+	}
 	return func() tea.Msg {
-		ctx := context.Background()
 		var msg refreshMsg
 		var err error
-		if msg.certs, err = b.ListCerts(ctx); err != nil {
+		if msg.certs, err = within(timeout, b.ListCerts); err != nil {
 			return refreshMsg{err: err}
 		}
-		if msg.clients, err = b.ListClients(ctx); err != nil {
+		if msg.clients, err = within(timeout, b.ListClients); err != nil {
 			return refreshMsg{err: err}
 		}
-		if msg.tokens, err = b.ListTokens(ctx); err != nil {
+		if msg.tokens, err = within(timeout, b.ListTokens); err != nil {
 			return refreshMsg{err: err}
 		}
-		if msg.events, err = b.Events(ctx, after); err != nil {
+		if msg.events, err = within(timeout, eventsAfter(after)); err != nil {
 			return refreshMsg{err: err}
 		}
 		if after > 0 && !msg.events.Started.Equal(started) {
 			// The daemon has restarted: Seq started over, and the page lacks
 			// the new events up to after.
-			if msg.events, err = b.Events(ctx, 0); err != nil {
+			if msg.events, err = within(timeout, eventsAfter(0)); err != nil {
 				return refreshMsg{err: err}
 			}
 		}
 		return msg
 	}
+}
+
+// within calls f with a context that ends after timeout.
+func within[T any](timeout time.Duration, f func(context.Context) (T, error)) (T, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return f(ctx)
 }
 
 // setLists replaces the lists, as of lastRefresh. Each table keeps its row

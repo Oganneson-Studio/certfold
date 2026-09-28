@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -32,8 +33,11 @@ type fakeBackend struct {
 	// listErr fails every read and actionErr every change while set.
 	listErr   error
 	actionErr error
-	calls     []string // the changes asked for, such as "DeleteClient web-1"
-	afters    []uint64 // the after of each Events call
+	// hang makes ListCerts answer like a daemon that does not: only the end
+	// of its context ends the call.
+	hang   bool
+	calls  []string // the changes asked for, such as "DeleteClient web-1"
+	afters []uint64 // the after of each Events call
 }
 
 // newFake returns a fakeBackend with three certificates, clients and
@@ -103,6 +107,12 @@ func (f *fakeBackend) setListErr(err error) {
 	f.listErr = err
 }
 
+func (f *fakeBackend) setHang(hang bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hang = hang
+}
+
 func (f *fakeBackend) setActionErr(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -134,7 +144,18 @@ func (f *fakeBackend) change(call string) error {
 	return f.actionErr
 }
 
-func (f *fakeBackend) ListCerts(context.Context) ([]*ipc.CertificateInfo, error) {
+func (f *fakeBackend) ListCerts(ctx context.Context) ([]*ipc.CertificateInfo, error) {
+	f.mu.Lock()
+	hang := f.hang
+	f.mu.Unlock()
+	if hang {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(5 * time.Second):
+			return nil, errors.New("no deadline ended the call")
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.certs, f.listErr
