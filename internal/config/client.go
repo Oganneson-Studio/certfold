@@ -4,18 +4,21 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"maps"
 	"net/netip"
 	"net/url"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
 
 // ClientConfig is the in-memory representation of client.yaml.
 type ClientConfig struct {
-	Client   ClientSection           `yaml:"client"`
-	Identity IdentitySection         `yaml:"identity,omitempty"`
-	Outputs  map[string][]OutputSpec `yaml:"outputs,omitempty"`
+	Client       ClientSection                 `yaml:"client"`
+	Identity     IdentitySection               `yaml:"identity,omitempty"`
+	Certificates map[string]CertificateOutputs `yaml:"certificates,omitempty"`
 }
 
 type ClientSection struct {
@@ -35,6 +38,16 @@ type IdentitySection struct {
 	CACert     string `yaml:"ca_cert,omitempty"`
 	ClientCert string `yaml:"client_cert,omitempty"`
 	ClientKey  string `yaml:"client_key,omitempty"`
+}
+
+// CertificateOutputs is what the client does with one subscribed certificate,
+// keyed by its name under certificates in client.yaml.
+type CertificateOutputs struct {
+	Outputs []OutputSpec `yaml:"outputs"`
+	// OnChange is the argv of a program to run after any of Outputs was
+	// replaced, starting with its absolute path; it does not go through a
+	// shell. Empty, whether absent, null or [], means no program.
+	OnChange []string `yaml:"on_change,omitempty"`
 }
 
 type OutputSpec struct {
@@ -129,26 +142,44 @@ func (c *ClientConfig) Validate() error {
 
 	c.validateIdentity(v)
 
-	for certName, outs := range c.Outputs {
+	// Two outputs at one path would overwrite each other on every reconcile,
+	// running their on_change programs each time.
+	outputPaths := make(map[string]string)
+	for _, certName := range slices.Sorted(maps.Keys(c.Certificates)) {
+		cert := c.Certificates[certName]
+		path := "certificates." + certName
 		if certName == "" {
-			v.Add("outputs", "certificate name key must not be empty")
+			v.Add("certificates", "certificate name key must not be empty")
 		}
-		if len(outs) == 0 {
-			v.Add(fmt.Sprintf("outputs.%s", certName), "must have at least one output")
+		if len(cert.Outputs) == 0 {
+			v.Add(path+".outputs", "must have at least one output")
 		}
-		for i, o := range outs {
-			base := fmt.Sprintf("outputs.%s[%d]", certName, i)
+		for i, o := range cert.Outputs {
+			base := fmt.Sprintf("%s.outputs[%d]", path, i)
 			if !validOutputFormats[o.Format] {
 				v.Add(base+".format", "invalid format %q (supported: pem-cert, pem-key, pem-fullchain, pem-bundle, pkcs12, der)", o.Format)
 			}
 			if o.Path == "" {
 				v.Add(base+".path", "must be set")
+			} else if prev, dup := outputPaths[filepath.Clean(o.Path)]; dup {
+				v.Add(base+".path", "duplicate output path %q (also at %s)", o.Path, prev)
+			} else {
+				outputPaths[filepath.Clean(o.Path)] = base
 			}
 			if o.Mode != 0 && (o.Mode < 0 || o.Mode > 0o777) {
 				v.Add(base+".mode", "must be a valid octal file mode (got %#o)", o.Mode)
 			}
 			if o.Format == "pkcs12" && o.Password == "" {
 				v.Add(base+".password", "required for pkcs12 format")
+			}
+		}
+		// Whether the program exists is not checked: that can change between
+		// runs, and a failed run is reported by sigilc status.
+		for i, arg := range cert.OnChange {
+			if arg == "" {
+				v.Add(fmt.Sprintf("%s.on_change[%d]", path, i), "must not be empty")
+			} else if i == 0 && !filepath.IsAbs(arg) {
+				v.Add(path+".on_change[0]", "must be an absolute program path, got %q", arg)
 			}
 		}
 	}

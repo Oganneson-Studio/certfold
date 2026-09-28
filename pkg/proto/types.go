@@ -2,6 +2,12 @@ package proto
 
 import "time"
 
+// SyncMaxWait is how long GET /v1/sync holds a request whose If-None-Match
+// equals the client's current view before it answers 304. A client must wait
+// longer than this for the response, and a proxy between client and server
+// needs an idle timeout above 60 seconds.
+const SyncMaxWait = 55 * time.Second
+
 // EnrollRequest is the JSON body for POST /v1/enroll.
 type EnrollRequest struct {
 	Token string `json:"token"`
@@ -26,7 +32,8 @@ type RenewIdentityResponse struct {
 	ClientCert string `json:"client_cert"` // PEM
 }
 
-// CertSummary is one entry in the GET /v1/certificates response.
+// CertSummary is one entry in the GET /v1/sync and GET /v1/certificates
+// responses.
 type CertSummary struct {
 	Name        string    `json:"name"`
 	Fingerprint string    `json:"fingerprint"`
@@ -35,7 +42,11 @@ type CertSummary struct {
 
 // CertBundle is returned by GET /v1/certificates/:name/bundle.
 type CertBundle struct {
-	Name         string `json:"name"`
+	Name string `json:"name"`
+	// Fingerprint identifies the material, as in CertSummary. It is read from
+	// the same database row as the PEM fields, so it matches them even when
+	// the certificate was renewed after the client's last sync.
+	Fingerprint  string `json:"fingerprint"`
 	FullchainPEM string `json:"fullchain_pem"`
 	KeyPEM       string `json:"key_pem"`
 }

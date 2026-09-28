@@ -66,6 +66,10 @@ type Renewer struct {
 	certs  *store.CertRepo
 	status *store.IssuanceRepo
 	push   PushNotifier
+	// stored is called once for every issued certificate stored, after genMu
+	// is released and before push notifications go out. The daemon passes a
+	// function that wakes the clients waiting in GET /v1/sync.
+	stored func()
 	clock  func() time.Time
 
 	// genMu orders storing an issuance outcome (read) against publishing a
@@ -81,19 +85,24 @@ type Renewer struct {
 	wake chan struct{}
 }
 
-// New creates a Renewer. clock may be nil (defaults to time.Now).
-func New(iss issuer, certs *store.CertRepo, status *store.IssuanceRepo, push PushNotifier, clock func() time.Time) *Renewer {
+// New creates a Renewer. stored may be nil (does nothing) and must not block;
+// clock may be nil (defaults to time.Now).
+func New(iss issuer, certs *store.CertRepo, status *store.IssuanceRepo, push PushNotifier, stored func(), clock func() time.Time) *Renewer {
 	if clock == nil {
 		clock = time.Now
 	}
 	if push == nil {
 		push = noopNotifier{}
 	}
+	if stored == nil {
+		stored = func() {}
+	}
 	return &Renewer{
 		issuer: iss,
 		certs:  certs,
 		status: status,
 		push:   push,
+		stored: stored,
 		clock:  clock,
 		locks:  make(map[string]chan struct{}),
 		slots:  make(chan struct{}, maxConcurrentIssuance),
@@ -348,6 +357,7 @@ func (r *Renewer) issue(ctx context.Context, current func() *config.ServerConfig
 		}
 		if err = r.save(dbCtx, spec, fp, result, now); err == nil {
 			r.genMu.RUnlock()
+			r.stored()
 			for _, sub := range spec.Subscribers {
 				if err := r.push.Notify(ctx, latest, sub, name); err != nil {
 					log.Printf("sigils: push notification for certificate %s to client %s failed: %v", name, sub, err)

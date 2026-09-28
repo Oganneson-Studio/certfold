@@ -143,7 +143,7 @@ func buildTestCfg(t *testing.T, serverURL string) *config.ClientConfig {
 			PullInterval: time.Hour,
 			DataDir:      t.TempDir(),
 		},
-		Outputs: map[string][]config.OutputSpec{},
+		Certificates: map[string]config.CertificateOutputs{},
 	}
 }
 
@@ -235,9 +235,9 @@ func TestPullOnce_FetchAndWrite(t *testing.T) {
 	cfg := buildTestCfg(t, ts.URL)
 	// Add an output spec for api-prod.
 	outPath := filepath.Join(t.TempDir(), "cert.pem")
-	cfg.Outputs["api-prod"] = []config.OutputSpec{
+	cfg.Certificates["api-prod"] = config.CertificateOutputs{Outputs: []config.OutputSpec{
 		{Format: "pem-fullchain", Path: outPath},
-	}
+	}}
 
 	c := &Client{cfg: cfg, http: ts.Client()}
 	if err := c.pullOnce(context.Background()); err != nil {
@@ -275,9 +275,9 @@ func TestPullOnce_NoChangeSkipsWrite(t *testing.T) {
 
 	outPath := filepath.Join(t.TempDir(), "cert.pem")
 	cfg := buildTestCfg(t, ts.URL)
-	cfg.Outputs["api-prod"] = []config.OutputSpec{
+	cfg.Certificates["api-prod"] = config.CertificateOutputs{Outputs: []config.OutputSpec{
 		{Format: "pem-fullchain", Path: outPath},
-	}
+	}}
 
 	c := &Client{cfg: cfg, http: ts.Client()}
 
@@ -529,7 +529,7 @@ func newRewriteServer() *fakeServer {
 func newRewriteClient(t *testing.T, serverURL, outPath string) *Client {
 	t.Helper()
 	cfg := buildTestCfg(t, serverURL)
-	cfg.Outputs["api-prod"] = []config.OutputSpec{{Format: "pem-fullchain", Path: outPath}}
+	cfg.Certificates["api-prod"] = config.CertificateOutputs{Outputs: []config.OutputSpec{{Format: "pem-fullchain", Path: outPath}}}
 	c, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -562,7 +562,7 @@ func TestReloadRewritesOutputsImmediately(t *testing.T) {
 	dir := t.TempDir()
 	firstPath := filepath.Join(dir, "cert.pem")
 	addedPath := filepath.Join(dir, "added.pem")
-	cfg.Outputs["api-prod"] = []config.OutputSpec{{Format: "pem-fullchain", Path: firstPath}}
+	cfg.Certificates["api-prod"] = config.CertificateOutputs{Outputs: []config.OutputSpec{{Format: "pem-fullchain", Path: firstPath}}}
 	c, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -572,10 +572,10 @@ func TestReloadRewritesOutputsImmediately(t *testing.T) {
 
 	// An output added to client.yaml after the certificate was written.
 	updated := *cfg
-	updated.Outputs = map[string][]config.OutputSpec{"api-prod": {
+	updated.Certificates = map[string]config.CertificateOutputs{"api-prod": {Outputs: []config.OutputSpec{
 		{Format: "pem-fullchain", Path: firstPath},
 		{Format: "pem-fullchain", Path: addedPath},
-	}}
+	}}}
 	if err := c.Reload(&updated); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
@@ -715,7 +715,7 @@ func TestNamedFetchKeepsPendingRewrite(t *testing.T) {
 	defer ts.Close()
 	cfg := buildTestCfg(t, ts.URL)
 	stagePath := filepath.Join(t.TempDir(), "stage.pem")
-	cfg.Outputs["api-stage"] = []config.OutputSpec{{Format: "pem-fullchain", Path: stagePath}}
+	cfg.Certificates["api-stage"] = config.CertificateOutputs{Outputs: []config.OutputSpec{{Format: "pem-fullchain", Path: stagePath}}}
 	c, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)

@@ -8,6 +8,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -204,90 +205,211 @@ func TestParseClient_IdentityInvalidPEM(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Outputs: valid / invalid format / pkcs12 password
+// Certificates: outputs and on_change
 // ---------------------------------------------------------------------------
 
 func TestParseClient_OutputsValid(t *testing.T) {
+	src := validClientYAML + `
+certificates:
+  api-prod:
+    outputs:
+      - format: pem-fullchain
+        path: /etc/nginx/certs/api.crt
+        mode: 420
+      - format: pem-key
+        path: /etc/nginx/certs/api.key
+        mode: 384
+      - format: pkcs12
+        path: /etc/app/keystore.p12
+        password: "secret"
+    on_change: ['` + hookPath() + `', '-s', 'reload']
+  api-stage:
+    outputs:
+      - format: pem-bundle
+        path: /etc/nginx/certs/stage.pem
+`
+	cfg, err := ParseClient([]byte(src))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := map[string]CertificateOutputs{
+		"api-prod": {
+			Outputs: []OutputSpec{
+				{Format: "pem-fullchain", Path: "/etc/nginx/certs/api.crt", Mode: 0o644},
+				{Format: "pem-key", Path: "/etc/nginx/certs/api.key", Mode: 0o600},
+				{Format: "pkcs12", Path: "/etc/app/keystore.p12", Password: "secret"},
+			},
+			OnChange: []string{hookPath(), "-s", "reload"},
+		},
+		"api-stage": {
+			Outputs: []OutputSpec{{Format: "pem-bundle", Path: "/etc/nginx/certs/stage.pem"}},
+		},
+	}
+	if !reflect.DeepEqual(cfg.Certificates, want) {
+		t.Fatalf("certificates = %+v, want %+v", cfg.Certificates, want)
+	}
+}
+
+// Releases before the certificates section had a top-level outputs; it is
+// rejected as an unknown field, not read.
+func TestParseClient_TopLevelOutputsRejected(t *testing.T) {
 	src := validClientYAML + `
 outputs:
   api-prod:
     - format: pem-fullchain
       path: /etc/nginx/certs/api.crt
-      mode: 420
-    - format: pem-key
-      path: /etc/nginx/certs/api.key
-      mode: 384
-    - format: pkcs12
-      path: /etc/app/keystore.p12
-      password: "secret"
 `
 	_, err := ParseClient([]byte(src))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "field outputs not found") {
+		t.Fatalf("expected top-level outputs to be rejected as an unknown field, got %v", err)
 	}
 }
 
-func TestParseClient_OutputsInvalidFormat(t *testing.T) {
-	src := validClientYAML + `
-outputs:
+func TestParseClient_OnChangeEmptyMeansNoProgram(t *testing.T) {
+	for _, tt := range []struct{ name, onChange string }{
+		{name: "absent"},
+		{name: "null", onChange: "    on_change: null\n"},
+		{name: "empty list", onChange: "    on_change: []\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			src := validClientYAML + `
+certificates:
   api-prod:
-    - format: jks
-      path: /etc/app/keystore.jks
-`
-	_, err := ParseClient([]byte(src))
-	if err == nil {
-		t.Fatal("expected error for unsupported format jks, got nil")
-	}
-	if !strings.Contains(err.Error(), "format") {
-		t.Fatalf("expected error mentioning format, got: %v", err)
+    outputs:
+      - format: pem-fullchain
+        path: /etc/nginx/certs/api.crt
+` + tt.onChange
+			cfg, err := ParseClient([]byte(src))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := cfg.Certificates["api-prod"].OnChange; len(got) != 0 {
+				t.Fatalf("on_change = %q, want no program", got)
+			}
+		})
 	}
 }
 
-func TestParseClient_OutputsMissingPath(t *testing.T) {
-	src := validClientYAML + `
-outputs:
-  api-prod:
-    - format: pem-cert
-`
-	_, err := ParseClient([]byte(src))
-	if err == nil {
-		t.Fatal("expected error for missing path, got nil")
+func TestParseClient_CertificatesValidationErrors(t *testing.T) {
+	tests := []struct {
+		name  string
+		block string // entries under certificates:
+		want  string
+	}{
+		{
+			name: "invalid format",
+			block: `  api-prod:
+    outputs:
+      - format: jks
+        path: /etc/app/keystore.jks
+`,
+			want: `certificates.api-prod.outputs[0].format: invalid format "jks"`,
+		},
+		{
+			name: "missing path",
+			block: `  api-prod:
+    outputs:
+      - format: pem-cert
+`,
+			want: "certificates.api-prod.outputs[0].path: must be set",
+		},
+		{
+			name: "pkcs12 without password",
+			block: `  api-prod:
+    outputs:
+      - format: pkcs12
+        path: /etc/app/keystore.p12
+`,
+			want: "certificates.api-prod.outputs[0].password: required for pkcs12 format",
+		},
+		{
+			name: "invalid mode",
+			block: `  api-prod:
+    outputs:
+      - format: pem-cert
+        path: /etc/nginx/certs/api.crt
+        mode: 1000
+`,
+			want: "certificates.api-prod.outputs[0].mode: must be a valid octal file mode",
+		},
+		{
+			name: "no outputs",
+			block: `  api-prod:
+    on_change: ['` + hookPath() + `']
+`,
+			want: "certificates.api-prod.outputs: must have at least one output",
+		},
+		{
+			name: "empty certificate name",
+			block: `  "":
+    outputs:
+      - format: pem-cert
+        path: /etc/nginx/certs/api.crt
+`,
+			want: "certificates: certificate name key must not be empty",
+		},
+		{
+			name: "relative program path",
+			block: `  api-prod:
+    outputs:
+      - format: pem-cert
+        path: /etc/nginx/certs/api.crt
+    on_change: ['bin/reload', '--all']
+`,
+			want: "certificates.api-prod.on_change[0]: must be an absolute program path",
+		},
+		{
+			name: "empty program path",
+			block: `  api-prod:
+    outputs:
+      - format: pem-cert
+        path: /etc/nginx/certs/api.crt
+    on_change: ['']
+`,
+			want: "certificates.api-prod.on_change[0]: must not be empty",
+		},
+		{
+			name: "empty argument",
+			block: `  api-prod:
+    outputs:
+      - format: pem-cert
+        path: /etc/nginx/certs/api.crt
+    on_change: ['` + hookPath() + `', '']
+`,
+			want: "certificates.api-prod.on_change[1]: must not be empty",
+		},
+		{
+			name: "duplicate output path",
+			block: `  api-prod:
+    outputs:
+      - format: pem-cert
+        path: /etc/nginx/certs/api.pem
+      - format: pem-key
+        path: /etc/nginx/certs/api.pem
+`,
+			want: `certificates.api-prod.outputs[1].path: duplicate output path "/etc/nginx/certs/api.pem" (also at certificates.api-prod.outputs[0])`,
+		},
+		{
+			name: "output path equal once cleaned",
+			block: `  api-prod:
+    outputs:
+      - format: pem-cert
+        path: /etc/nginx/certs/api.pem
+  api-stage:
+    outputs:
+      - format: pem-cert
+        path: /etc/nginx/./certs/api.pem
+`,
+			want: `certificates.api-stage.outputs[0].path: duplicate output path "/etc/nginx/./certs/api.pem" (also at certificates.api-prod.outputs[0])`,
+		},
 	}
-	if !strings.Contains(err.Error(), "path") {
-		t.Fatalf("expected error mentioning path, got: %v", err)
-	}
-}
-
-func TestParseClient_OutputsPkcs12RequiresPassword(t *testing.T) {
-	src := validClientYAML + `
-outputs:
-  api-prod:
-    - format: pkcs12
-      path: /etc/app/keystore.p12
-`
-	_, err := ParseClient([]byte(src))
-	if err == nil {
-		t.Fatal("expected error for pkcs12 without password, got nil")
-	}
-	if !strings.Contains(err.Error(), "password") {
-		t.Fatalf("expected error mentioning password, got: %v", err)
-	}
-}
-
-func TestParseClient_OutputInvalidMode(t *testing.T) {
-	src := validClientYAML + `
-outputs:
-  api-prod:
-    - format: pem-cert
-      path: /etc/nginx/certs/api.crt
-      mode: 1000
-`
-	_, err := ParseClient([]byte(src))
-	if err == nil {
-		t.Fatal("expected error for invalid mode, got nil")
-	}
-	if !strings.Contains(err.Error(), "mode") {
-		t.Fatalf("expected error mentioning mode, got: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseClient([]byte(validClientYAML + "certificates:\n" + tt.block))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected error containing %q, got %v", tt.want, err)
+			}
+		})
 	}
 }
 

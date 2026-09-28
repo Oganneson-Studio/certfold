@@ -73,7 +73,7 @@ func Run(ctx context.Context, configPath string) error {
 	// restart.
 	acme.SetDNSResolvers(cfg.ACME.DNSResolvers)
 	pushNotifier := scheduler.NewHTTPPushNotifier(nil)
-	r := scheduler.New(acme.NewIssuer(db.Accounts), db.Certs, db.Issuance, pushNotifier, nil)
+	r := scheduler.New(acme.NewIssuer(db.Accounts), db.Certs, db.Issuance, pushNotifier, nil, nil)
 	runtimeConfig := newServerConfigRuntime(configPath, cfg, r)
 	schedulerDone := make(chan struct{})
 	go func() {
