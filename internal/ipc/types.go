@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/sigil/internal/logging"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
@@ -80,6 +81,16 @@ type ClientState struct {
 	LastPullAt time.Time         `json:"last_pull_at,omitempty"`
 	LastError  string            `json:"last_error,omitempty"`
 	Certs      map[string]string `json:"certs"`
+}
+
+// EventsPage is returned by GET /ipc/v1/events. Events holds the events with
+// a Seq greater than the after parameter, oldest first, and is never null.
+// Seq starts over when the daemon restarts, so a caller that polls with the
+// last Seq it has seen must also compare Started: when it changes, the caller
+// drops the events it has and asks again with after=0.
+type EventsPage struct {
+	Started time.Time       `json:"started"`
+	Events  []logging.Event `json:"events"`
 }
 
 // FetchClientRequest is the body of POST /ipc/v1/client/fetch. The fetch is a

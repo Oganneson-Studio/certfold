@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/sigil/internal/logging"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
@@ -24,6 +25,8 @@ type ServerDeps struct {
 	Certificates *CertificateControlDeps
 	Tokens       *TokenControlDeps
 	Client       *ClientControlDeps
+	// Events holds the recent events of the daemon, sigils or sigilc.
+	Events *logging.Ring
 }
 
 // ServerControlDeps exposes runtime operations implemented by sigils.
@@ -103,6 +106,10 @@ func buildIPCRouter(h *ipcHandlers) http.Handler {
 		r.Get("/ipc/v1/client/state", h.getClientState)
 		r.Post("/ipc/v1/client/fetch", h.fetchClient)
 		r.Post("/ipc/v1/client/reload", h.reloadClient)
+	}
+
+	if h.deps.Events != nil {
+		r.Get("/ipc/v1/events", h.listEvents)
 	}
 
 	return r
