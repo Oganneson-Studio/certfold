@@ -75,7 +75,7 @@ func Run(ctx context.Context, configPath string) error {
 	// Stored certificates and published reloads wake the clients waiting in
 	// GET /v1/sync.
 	changes := api.NewChanges()
-	r := scheduler.New(acme.NewIssuer(db.Accounts), db.Certs, db.Issuance, changes.Notify, nil)
+	r := scheduler.New(acme.NewIssuer(db.Accounts), db, changes.Notify, nil)
 	runtimeConfig := newServerConfigRuntime(configPath, cfg, changes.Notify, r)
 	schedulerDone := make(chan struct{})
 	go func() {

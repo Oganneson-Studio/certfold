@@ -50,8 +50,7 @@ type issuer interface {
 // cannot deadlock.
 type Renewer struct {
 	issuer issuer
-	certs  *store.CertRepo
-	status *store.IssuanceRepo
+	db     *store.DB
 	// stored is called once for every issued certificate stored, after genMu
 	// is released. The daemon passes a function that wakes the clients
 	// waiting in GET /v1/sync.
@@ -73,7 +72,7 @@ type Renewer struct {
 
 // New creates a Renewer. stored may be nil (does nothing) and must not block;
 // clock may be nil (defaults to time.Now).
-func New(iss issuer, certs *store.CertRepo, status *store.IssuanceRepo, stored func(), clock func() time.Time) *Renewer {
+func New(iss issuer, db *store.DB, stored func(), clock func() time.Time) *Renewer {
 	if clock == nil {
 		clock = time.Now
 	}
@@ -82,8 +81,7 @@ func New(iss issuer, certs *store.CertRepo, status *store.IssuanceRepo, stored f
 	}
 	return &Renewer{
 		issuer: iss,
-		certs:  certs,
-		status: status,
+		db:     db,
 		stored: stored,
 		clock:  clock,
 		locks:  make(map[string]chan struct{}),
@@ -142,11 +140,11 @@ func (r *Renewer) tick(ctx context.Context, current func() *config.ServerConfig)
 	if cfg == nil {
 		return time.Time{}, fmt.Errorf("scheduler configuration is unavailable")
 	}
-	recs, err := r.certs.List(ctx, nil)
+	recs, err := r.db.Certs.List(ctx, nil)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("list certs: %w", err)
 	}
-	statuses, err := r.status.List(ctx, nil)
+	statuses, err := r.db.Issuance.List(ctx, nil)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("list issuance status: %w", err)
 	}
@@ -215,7 +213,7 @@ func (r *Renewer) PublishConfig(ctx context.Context, publish func()) error {
 		r.genMu.Unlock()
 		return err
 	}
-	if err := r.status.ClearBackoff(ctx, nil); err != nil {
+	if err := r.db.Issuance.ClearBackoff(ctx, nil); err != nil {
 		r.genMu.Unlock()
 		return fmt.Errorf("clear issuance backoff: %w", err)
 	}
@@ -363,9 +361,20 @@ func (r *Renewer) issue(ctx context.Context, current func() *config.ServerConfig
 }
 
 // save stores a certificate issued for spec and records the attempt as a
-// success. The caller holds genMu for reading.
+// success, in one transaction: otherwise a failure to record the status would
+// leave the certificate stored, and fetched by clients, while the attempt
+// counts as failed and the stored callback does not run. The caller holds
+// genMu for reading.
+//
+// The store has a single connection, which the transaction holds until it
+// ends: a call inside it that is not given tx waits forever.
 func (r *Renewer) save(ctx context.Context, spec config.CertificateSpec, fp string, result *acme.Result, now time.Time) error {
-	if err := r.certs.Upsert(ctx, &store.CertRecord{
+	tx, err := r.db.BeginTx(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // does nothing once committed
+	if err := r.db.Certs.Upsert(ctx, &store.CertRecord{
 		Name:            spec.Name,
 		CA:              spec.CA,
 		Domains:         spec.Domains,
@@ -376,11 +385,14 @@ func (r *Renewer) save(ctx context.Context, spec config.CertificateSpec, fp stri
 		Fingerprint:     certificateFingerprint(result.Certificate),
 		IssuedAt:        now,
 		UpdatedAt:       now,
-	}, nil); err != nil {
+	}, tx); err != nil {
 		return fmt.Errorf("upsert cert: %w", err)
 	}
-	if err := r.status.Upsert(ctx, &store.IssuanceStatus{Name: spec.Name, LastAttemptAt: now}, nil); err != nil {
+	if err := r.db.Issuance.Upsert(ctx, &store.IssuanceStatus{Name: spec.Name, LastAttemptAt: now}, tx); err != nil {
 		return fmt.Errorf("record issuance status: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
 	}
 	return nil
 }
@@ -389,14 +401,14 @@ func (r *Renewer) save(ctx context.Context, spec config.CertificateSpec, fp stri
 // next retry time. The caller holds genMu for reading.
 func (r *Renewer) backoff(ctx context.Context, name string, now time.Time, cause error) error {
 	failures := 1
-	prev, err := r.status.Get(ctx, name, nil)
+	prev, err := r.db.Issuance.Get(ctx, name, nil)
 	switch {
 	case err == nil:
 		failures = prev.Failures + 1
 	case !errors.Is(err, sql.ErrNoRows):
 		return err
 	}
-	return r.status.Upsert(ctx, &store.IssuanceStatus{
+	return r.db.Issuance.Upsert(ctx, &store.IssuanceStatus{
 		Name:          name,
 		Failures:      failures,
 		LastError:     lastError(cause),

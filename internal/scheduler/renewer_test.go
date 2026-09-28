@@ -248,7 +248,7 @@ func TestTick_DueRenewal(t *testing.T) {
 	notAfter := now.Add(20 * 24 * time.Hour) // 20 days → below 30-day threshold
 
 	mi := &mockIssuer{result: successResult(now.Add(90 * 24 * time.Hour))}
-	r := New(mi, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(mi, db, nil, func() time.Time { return now })
 
 	cfg := minimalCfg("api-prod", 30, []string{"web-1"})
 
@@ -295,7 +295,7 @@ func TestRunDynamic_TicksImmediately(t *testing.T) {
 		result: successResult(time.Now().Add(90 * 24 * time.Hour)),
 		called: called,
 	}
-	r := New(mi, db.Certs, db.Issuance, nil, time.Now)
+	r := New(mi, db, nil, time.Now)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
@@ -323,7 +323,7 @@ func TestTick_NotDue(t *testing.T) {
 	notAfter := now.Add(60 * 24 * time.Hour) // 60 days → above 30-day threshold
 
 	mi := &mockIssuer{}
-	r := New(mi, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(mi, db, nil, func() time.Time { return now })
 
 	cfg := minimalCfg("api-prod", 30, nil)
 
@@ -347,7 +347,7 @@ func TestTickRenewsWhenConfiguredDomainsChange(t *testing.T) {
 	db := mustOpenDB(t)
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	mi := &mockIssuer{result: successResult(now.Add(90 * 24 * time.Hour))}
-	r := New(mi, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(mi, db, nil, func() time.Time { return now })
 	cfg := minimalCfg("api-prod", 30, nil)
 	cfg.Certificates[0].Domains = []string{"new.example.com"}
 	if err := db.Certs.Upsert(ctx, &store.CertRecord{
@@ -377,7 +377,7 @@ func TestTickRenewsWhenConfiguredKeyTypeChanges(t *testing.T) {
 	db := mustOpenDB(t)
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	issuer := &mockIssuer{result: successResult(now.Add(90 * 24 * time.Hour))}
-	r := New(issuer, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(issuer, db, nil, func() time.Time { return now })
 	oldCfg := minimalCfg("api-prod", 30, nil)
 	oldCfg.Certificates[0].KeyType = "ec256"
 	newCfg := minimalCfg("api-prod", 30, nil)
@@ -412,7 +412,7 @@ func TestTick_NoCertInStore(t *testing.T) {
 
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	mi := &mockIssuer{result: successResult(now.Add(90 * 24 * time.Hour))}
-	r := New(mi, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(mi, db, nil, func() time.Time { return now })
 
 	_ = tickAndWait(ctx, r, minimalCfg("api-prod", 30, nil))
 	if mi.calls != 1 {
@@ -442,7 +442,7 @@ func TestStoredCalledOncePerStoredCertificate(t *testing.T) {
 		}
 		r.genMu.Unlock()
 	}
-	r = New(mi, db.Certs, db.Issuance, stored, func() time.Time { return now })
+	r = New(mi, db, stored, func() time.Time { return now })
 
 	if err := tickAndWait(ctx, r, cfg); err != nil {
 		t.Fatal(err)
@@ -473,7 +473,7 @@ func TestStoredNotCalledWithoutStoredCertificate(t *testing.T) {
 	t.Run("issuance failure", func(t *testing.T) {
 		db := mustOpenDB(t)
 		var calls atomic.Int32
-		r := New(&mockIssuer{err: errors.New("CA down")}, db.Certs, db.Issuance, func() { calls.Add(1) }, clock)
+		r := New(&mockIssuer{err: errors.New("CA down")}, db, func() { calls.Add(1) }, clock)
 		if err := r.RenewNamed(context.Background(), static(minimalCfg("api-prod", 30, nil)), "api-prod"); err == nil {
 			t.Fatal("RenewNamed succeeded although the issuance failed")
 		}
@@ -485,7 +485,7 @@ func TestStoredNotCalledWithoutStoredCertificate(t *testing.T) {
 		db := mustOpenDB(t)
 		var calls atomic.Int32
 		iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
-		r := New(iss, db.Certs, db.Issuance, func() { calls.Add(1) }, clock)
+		r := New(iss, db, func() { calls.Add(1) }, clock)
 		var current atomic.Pointer[config.ServerConfig]
 		current.Store(minimalCfg("api-prod", 30, nil))
 
@@ -505,12 +505,12 @@ func TestStoredNotCalledWithoutStoredCertificate(t *testing.T) {
 		db := mustOpenDB(t)
 		var calls atomic.Int32
 		mi := &mockIssuer{result: successResult(now.Add(90 * 24 * time.Hour))}
-		r := New(mi, db.Certs, db.Issuance, func() { calls.Add(1) }, clock)
+		r := New(mi, db, func() { calls.Add(1) }, clock)
 		if err := db.Close(); err != nil {
 			t.Fatal(err)
 		}
 		err := r.RenewNamed(context.Background(), static(minimalCfg("api-prod", 30, nil)), "api-prod")
-		if err == nil || !strings.Contains(err.Error(), "upsert cert") {
+		if err == nil || !strings.Contains(err.Error(), "database is closed") {
 			t.Fatalf("RenewNamed error = %v, want the store failure", err)
 		}
 		noCalls(t, &calls)
@@ -524,7 +524,7 @@ func TestTickSkipsCertificateBeingIssued(t *testing.T) {
 	db := mustOpenDB(t)
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
-	r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(iss, db, nil, func() time.Time { return now })
 	cfg := multiCfg("api-prod", "api-stage")
 
 	renewed := renewAsync(ctx, r, static(cfg), "api-prod")
@@ -573,7 +573,7 @@ func TestTimerWakesAtEarliestRetry(t *testing.T) {
 	}
 	called := make(chan struct{}, 1)
 	mi := &mockIssuer{result: successResult(time.Now().Add(90 * 24 * time.Hour)), called: called}
-	r := New(mi, db.Certs, db.Issuance, nil, nil)
+	r := New(mi, db, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	done := make(chan error, 1)
@@ -613,7 +613,7 @@ func TestRecordedBackoffWakesScheduler(t *testing.T) {
 		t.Fatal(err)
 	}
 	iss := newGatedIssuer(start.Add(90 * 24 * time.Hour))
-	r := New(iss, db.Certs, db.Issuance, nil, now)
+	r := New(iss, db, nil, now)
 	runCtx, cancel := context.WithCancel(ctx)
 	t.Cleanup(cancel)
 	done := make(chan error, 1)
@@ -653,7 +653,7 @@ func TestRenewNamedSerializesSameCertificate(t *testing.T) {
 	db := mustOpenDB(t)
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
-	r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(iss, db, nil, func() time.Time { return now })
 	current := static(minimalCfg("api-prod", 30, nil))
 
 	first := renewAsync(ctx, r, current, "api-prod")
@@ -680,7 +680,7 @@ func TestIssuanceConcurrencyIsBounded(t *testing.T) {
 	db := mustOpenDB(t)
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
-	r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(iss, db, nil, func() time.Time { return now })
 	var names []string
 	for i := range maxConcurrentIssuance + 2 {
 		names = append(names, fmt.Sprintf("cert-%d", i))
@@ -719,7 +719,7 @@ func TestBlockedIssuanceDoesNotDelayOtherCertificates(t *testing.T) {
 	db := mustOpenDB(t)
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
-	r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(iss, db, nil, func() time.Time { return now })
 	current := static(multiCfg("api-prod", "api-stage"))
 
 	blocked := renewAsync(ctx, r, current, "api-prod")
@@ -751,7 +751,7 @@ func TestIssuingReportsHeldLock(t *testing.T) {
 	db := mustOpenDB(t)
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
-	r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(iss, db, nil, func() time.Time { return now })
 	var names []string
 	for i := range maxConcurrentIssuance + 1 {
 		names = append(names, fmt.Sprintf("cert-%d", i))
@@ -796,7 +796,7 @@ func TestRunDynamicWaitsForInFlightIssuanceOnShutdown(t *testing.T) {
 	db := mustOpenDB(t)
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
-	r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(iss, db, nil, func() time.Time { return now })
 	var names []string
 	for i := range maxConcurrentIssuance + 1 {
 		names = append(names, fmt.Sprintf("cert-%d", i))
@@ -861,7 +861,7 @@ func TestIssueSeesCallerCancellation(t *testing.T) {
 	t.Run("tick", func(t *testing.T) {
 		db := mustOpenDB(t)
 		iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
-		r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+		r := New(iss, db, nil, func() time.Time { return now })
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() { done <- r.RunDynamic(ctx, static(minimalCfg("api-prod", 30, nil))) }()
@@ -877,7 +877,7 @@ func TestIssueSeesCallerCancellation(t *testing.T) {
 	t.Run("RenewNamed", func(t *testing.T) {
 		db := mustOpenDB(t)
 		iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
-		r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+		r := New(iss, db, nil, func() time.Time { return now })
 		ctx, cancel := context.WithCancel(context.Background())
 		renewed := renewAsync(ctx, r, static(minimalCfg("api-prod", 30, nil)), "api-prod")
 		call := iss.next(t)
@@ -903,7 +903,7 @@ func TestPublishConfigDoesNotWaitForIssuance(t *testing.T) {
 	newCfg := minimalCfg("api-prod", 30, nil)
 	newCfg.Certificates[0].Domains = []string{"new.example.com"}
 	iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
-	r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(iss, db, nil, func() time.Time { return now })
 	var current atomic.Pointer[config.ServerConfig]
 	current.Store(oldCfg)
 
@@ -939,7 +939,7 @@ func TestReloadedSpecDiscardsInFlightResult(t *testing.T) {
 	newCfg := minimalCfg("api-prod", 30, nil)
 	newCfg.Certificates[0].Domains = []string{"new.example.com"}
 	iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
-	r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(iss, db, nil, func() time.Time { return now })
 	var current atomic.Pointer[config.ServerConfig]
 	current.Store(oldCfg)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -987,7 +987,7 @@ func TestRemovedCertificateDiscardsInFlightResult(t *testing.T) {
 	db := mustOpenDB(t)
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
-	r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(iss, db, nil, func() time.Time { return now })
 	var current atomic.Pointer[config.ServerConfig]
 	current.Store(minimalCfg("api-prod", 30, []string{"web-1"}))
 
@@ -1014,7 +1014,7 @@ func TestSubscriberOnlyReloadKeepsInFlightResult(t *testing.T) {
 	oldCfg := minimalCfg("api-prod", 30, []string{"web-1"})
 	newCfg := minimalCfg("api-prod", 30, []string{"web-2"})
 	iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
-	r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(iss, db, nil, func() time.Time { return now })
 	var current atomic.Pointer[config.ServerConfig]
 	current.Store(oldCfg)
 
@@ -1047,7 +1047,7 @@ func TestOldGenerationFailureDoesNotBackOff(t *testing.T) {
 	newCfg := minimalCfg("api-prod", 30, nil)
 	newCfg.ACME.Email = "ops@example.com"
 	iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
-	r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(iss, db, nil, func() time.Time { return now })
 	var current atomic.Pointer[config.ServerConfig]
 	current.Store(oldCfg)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1083,7 +1083,7 @@ func TestCancelledFailureDoesNotBackOff(t *testing.T) {
 	db := mustOpenDB(t)
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
-	r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(iss, db, nil, func() time.Time { return now })
 	ctx, cancel := context.WithCancel(context.Background())
 
 	renewed := renewAsync(ctx, r, static(minimalCfg("api-prod", 30, nil)), "api-prod")
@@ -1111,7 +1111,7 @@ func TestPublishConfigClearsBackoffAndWakes(t *testing.T) {
 		}
 	}
 	mi := &mockIssuer{result: successResult(now.Add(90 * 24 * time.Hour))}
-	r := New(mi, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(mi, db, nil, func() time.Time { return now })
 	oldCfg := minimalCfg("api-prod", 30, []string{"web-1"})
 	newCfg := minimalCfg("api-prod", 30, []string{"web-2"})
 	var current atomic.Pointer[config.ServerConfig]
@@ -1148,7 +1148,7 @@ func TestPublishConfigClearsBackoffAndWakes(t *testing.T) {
 
 func TestPublishConfigKeepsGenerationWhenClearingBackoffFails(t *testing.T) {
 	db := mustOpenDB(t)
-	r := New(&mockIssuer{}, db.Certs, db.Issuance, nil, nil)
+	r := New(&mockIssuer{}, db, nil, nil)
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -1171,7 +1171,7 @@ func TestRenewNamedIgnoresBackoff(t *testing.T) {
 	db := mustOpenDB(t)
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	mi := &mockIssuer{result: successResult(now.Add(120 * 24 * time.Hour))}
-	r := New(mi, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(mi, db, nil, func() time.Time { return now })
 	cfg := minimalCfg("api-prod", 30, nil)
 	spec := cfg.Certificates[0]
 	if err := db.Certs.Upsert(ctx, &store.CertRecord{
@@ -1213,7 +1213,7 @@ func TestRenewNamedStopsWaitingWhenCancelled(t *testing.T) {
 		ctx := context.Background()
 		db := mustOpenDB(t)
 		iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
-		r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+		r := New(iss, db, nil, func() time.Time { return now })
 		current := static(minimalCfg("api-prod", 30, nil))
 
 		holder := renewAsync(ctx, r, current, "api-prod")
@@ -1237,7 +1237,7 @@ func TestRenewNamedStopsWaitingWhenCancelled(t *testing.T) {
 		ctx := context.Background()
 		db := mustOpenDB(t)
 		iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
-		r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+		r := New(iss, db, nil, func() time.Time { return now })
 		var busy []string
 		for i := range maxConcurrentIssuance {
 			busy = append(busy, fmt.Sprintf("busy-%d", i))
@@ -1278,7 +1278,7 @@ func TestRenewNamedRenewsOnlyTheExactName(t *testing.T) {
 	db := mustOpenDB(t)
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	mi := &mockIssuer{result: successResult(now.Add(90 * 24 * time.Hour))}
-	r := New(mi, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(mi, db, nil, func() time.Time { return now })
 	cfg := minimalCfg("api-prod", 30, nil)
 	stage := cfg.Certificates[0]
 	stage.Name = "api-stage"
@@ -1312,7 +1312,7 @@ func TestRenewNamedPropagatesIssuerFailure(t *testing.T) {
 	db := mustOpenDB(t)
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	want := errors.New("acme failed\x1b[2J")
-	r := New(&mockIssuer{err: want}, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(&mockIssuer{err: want}, db, nil, func() time.Time { return now })
 	cfg := minimalCfg("api-prod", 30, nil)
 	err := r.RenewNamed(context.Background(), static(cfg), "api-prod")
 	if !errors.Is(err, want) {
@@ -1344,14 +1344,14 @@ func TestRenewNamedErrorIsSanitized(t *testing.T) {
 
 	t.Run("same generation", func(t *testing.T) {
 		db := mustOpenDB(t)
-		r := New(&mockIssuer{err: want}, db.Certs, db.Issuance, nil, func() time.Time { return now })
+		r := New(&mockIssuer{err: want}, db, nil, func() time.Time { return now })
 		check(t, r.RenewNamed(context.Background(), static(minimalCfg("api-prod", 30, nil)), "api-prod"))
 	})
 
 	t.Run("cancelled", func(t *testing.T) {
 		db := mustOpenDB(t)
 		iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
-		r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+		r := New(iss, db, nil, func() time.Time { return now })
 		ctx, cancel := context.WithCancel(context.Background())
 		renewed := renewAsync(ctx, r, static(minimalCfg("api-prod", 30, nil)), "api-prod")
 		call := iss.next(t)
@@ -1363,7 +1363,7 @@ func TestRenewNamedErrorIsSanitized(t *testing.T) {
 	t.Run("old generation", func(t *testing.T) {
 		db := mustOpenDB(t)
 		iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
-		r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+		r := New(iss, db, nil, func() time.Time { return now })
 		var current atomic.Pointer[config.ServerConfig]
 		current.Store(minimalCfg("api-prod", 30, nil))
 		renewed := renewAsync(context.Background(), r, current.Load, "api-prod")
@@ -1381,7 +1381,7 @@ func TestRenewNamedReportsStoreFailure(t *testing.T) {
 	db := mustOpenDB(t)
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	iss := newGatedIssuer(now.Add(90 * 24 * time.Hour))
-	r := New(iss, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(iss, db, nil, func() time.Time { return now })
 
 	renewed := renewAsync(ctx, r, static(minimalCfg("api-prod", 30, []string{"web-1"})), "api-prod")
 	call := iss.next(t)
@@ -1389,7 +1389,7 @@ func TestRenewNamedReportsStoreFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	call.succeed()
-	if err := receive(t, renewed, "RenewNamed"); err == nil || !strings.Contains(err.Error(), "upsert cert") {
+	if err := receive(t, renewed, "RenewNamed"); err == nil || !strings.Contains(err.Error(), "database is closed") {
 		t.Fatalf("RenewNamed error = %v, want the store failure", err)
 	}
 }
@@ -1407,7 +1407,7 @@ func TestTick_FailureBackoff(t *testing.T) {
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := now
 	mi := &mockIssuer{err: errors.New("ACME unavailable")}
-	r := New(mi, db.Certs, db.Issuance, nil, func() time.Time { return clock })
+	r := New(mi, db, nil, func() time.Time { return clock })
 	cfg := minimalCfg("api-prod", 30, nil)
 
 	for failures, delay := range []time.Duration{5 * time.Minute, 10 * time.Minute, 20 * time.Minute} {
@@ -1463,14 +1463,14 @@ func TestBackoffSurvivesRestart(t *testing.T) {
 	db := mustOpenDB(t)
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	cfg := minimalCfg("api-prod", 30, nil)
-	failing := New(&mockIssuer{err: errors.New("CA down")}, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	failing := New(&mockIssuer{err: errors.New("CA down")}, db, nil, func() time.Time { return now })
 	if err := tickAndWait(ctx, failing, cfg); err != nil {
 		t.Fatal(err)
 	}
 
 	clock := now.Add(baseBackoff - time.Second)
 	mi := &mockIssuer{result: successResult(now.Add(90 * 24 * time.Hour))}
-	restarted := New(mi, db.Certs, db.Issuance, nil, func() time.Time { return clock })
+	restarted := New(mi, db, nil, func() time.Time { return clock })
 	if err := tickAndWait(ctx, restarted, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -1498,7 +1498,7 @@ func TestTick_SuccessClearsBackoff(t *testing.T) {
 		t.Fatal(err)
 	}
 	mi := &mockIssuer{result: successResult(now.Add(90 * 24 * time.Hour))}
-	r := New(mi, db.Certs, db.Issuance, nil, func() time.Time { return now })
+	r := New(mi, db, nil, func() time.Time { return now })
 
 	if err := tickAndWait(ctx, r, minimalCfg("api-prod", 30, nil)); err != nil {
 		t.Fatal(err)
