@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -51,7 +51,7 @@ func loadStore(dataDir string) (map[string]storedCert, error) {
 	}
 	var file storeFile
 	if err := json.Unmarshal(data, &file); err != nil {
-		log.Printf("sigilc: %s is not valid, starting with an empty store: %v", path, err)
+		slog.Warn("certificate store is not valid; starting empty", "path", path, "error", err)
 		return map[string]storedCert{}, nil
 	}
 	if file.Certs == nil {

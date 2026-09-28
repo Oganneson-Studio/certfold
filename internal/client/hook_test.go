@@ -1,12 +1,10 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -130,23 +128,13 @@ func setHookBounds(t *testing.T, timeout, waitDelay time.Duration) {
 	t.Cleanup(func() { hookTimeout, hookWaitDelay = oldTimeout, oldWaitDelay })
 }
 
-// captureLog redirects the standard logger for the duration of t.
-func captureLog(t *testing.T) *bytes.Buffer {
-	t.Helper()
-	var buf bytes.Buffer
-	old := log.Writer()
-	log.SetOutput(&buf)
-	t.Cleanup(func() { log.SetOutput(old) })
-	return &buf
-}
-
 // TestRunHookRunsArgvAsGiven covers how the program runs: its arguments reach
 // it unchanged, with no shell in between, its stdin is empty, and it works in
 // the working directory of sigilc.
 func TestRunHookRunsArgvAsGiven(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(testHookDirEnv, dir)
-	logs := captureLog(t)
+	_, logs := captureEvents(t)
 	// Give this process a stdin with data waiting, so that a program that
 	// inherited it would not read EOF.
 	r, w, err := os.Pipe()
@@ -197,7 +185,7 @@ func TestRunHookRunsArgvAsGiven(t *testing.T) {
 }
 
 func TestRunHookErrorOmitsArgumentsAndOutput(t *testing.T) {
-	logs := captureLog(t)
+	_, logs := captureEvents(t)
 
 	err := runHook(context.Background(), "api-prod", hookArgv(t, "fail", "--token="+argvSecret))
 	if err == nil {
@@ -214,8 +202,8 @@ func TestRunHookErrorOmitsArgumentsAndOutput(t *testing.T) {
 			t.Errorf("error %q leaks %q", msg, secret)
 		}
 	}
-	// The output goes to the log instead, where the operator can see why the
-	// program failed; the arguments do not.
+	// The output goes to the service log instead, where the operator can see
+	// why the program failed; the arguments do not.
 	if !strings.Contains(logs.String(), outputSecret) {
 		t.Errorf("log does not contain the program output: %q", logs.String())
 	}
@@ -227,7 +215,7 @@ func TestRunHookErrorOmitsArgumentsAndOutput(t *testing.T) {
 // TestRunHookLogsTheEndOfTheOutput covers a failed run with more output than
 // runHook keeps: the end of the output is logged, and the start dropped.
 func TestRunHookLogsTheEndOfTheOutput(t *testing.T) {
-	logs := captureLog(t)
+	_, logs := captureEvents(t)
 
 	if err := runHook(context.Background(), "api-prod", hookArgv(t, "flood")); err == nil {
 		t.Fatal("runHook succeeded, want the program's failure")
@@ -242,6 +230,7 @@ func TestRunHookLogsTheEndOfTheOutput(t *testing.T) {
 }
 
 func TestRunHookErrorNamesProgramThatCannotStart(t *testing.T) {
+	captureEvents(t)
 	missing := filepath.Join(t.TempDir(), "no-such-program")
 
 	err := runHook(context.Background(), "api-prod", []string{missing, "--token=" + argvSecret})
@@ -263,7 +252,7 @@ func TestRunHookErrorNamesProgramThatCannotStart(t *testing.T) {
 
 func TestRunHookKillsProgramAfterTimeout(t *testing.T) {
 	setHookBounds(t, 100*time.Millisecond, hookWaitDelay)
-	captureLog(t)
+	captureEvents(t)
 
 	start := time.Now()
 	err := runHook(context.Background(), "api-prod", hookArgv(t, "sleep"))
@@ -278,7 +267,7 @@ func TestRunHookKillsProgramAfterTimeout(t *testing.T) {
 // TestRunHookKillsProgramWhenContextEnds covers the daemon stopping while a
 // program runs: ctx ends, and the program is killed, not waited for.
 func TestRunHookKillsProgramWhenContextEnds(t *testing.T) {
-	captureLog(t)
+	captureEvents(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	time.AfterFunc(200*time.Millisecond, cancel)
@@ -298,7 +287,7 @@ func TestRunHookKillsProgramWhenContextEnds(t *testing.T) {
 // expires, and the run succeeds, since the program exited 0.
 func TestRunHookDoesNotWaitForOutputHeldByOrphans(t *testing.T) {
 	setHookBounds(t, hookTimeout, 100*time.Millisecond)
-	logs := captureLog(t)
+	ring, logs := captureEvents(t)
 
 	start := time.Now()
 	err := runHook(context.Background(), "api-prod", hookArgv(t, "orphan", "--token="+argvSecret))
@@ -308,12 +297,12 @@ func TestRunHookDoesNotWaitForOutputHeldByOrphans(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runHook error = %v, want success: the program exited 0", err)
 	}
-	// Closing the output may end the orphan, so the run is logged, with
-	// neither the arguments nor the output.
-	got := logs.String()
-	if !strings.Contains(got, "api-prod") {
-		t.Errorf("log does not name the certificate: %q", got)
+	// Closing the output may end the orphan, so the run is logged, naming the
+	// certificate, with neither the arguments nor the output.
+	if got, want := eventLines(ring), []string{"WARN on_change output held open cert=api-prod"}; !slices.Equal(got, want) {
+		t.Errorf("events = %q, want %q", got, want)
 	}
+	got := logs.String()
 	for _, secret := range []string{argvSecret, outputSecret} {
 		if strings.Contains(got, secret) {
 			t.Errorf("log leaks %q: %q", secret, got)

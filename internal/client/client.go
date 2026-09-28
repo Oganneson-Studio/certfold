@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"math/rand"
 	"net/http"
@@ -289,6 +290,7 @@ func (c *Client) renewIdentityLocked(ctx context.Context) error {
 	if c.syncCancel != nil {
 		c.syncCancel()
 	}
+	slog.Info("client identity renewed", "not_after", leafNotAfter(renewal.ClientCert))
 	return nil
 }
 
@@ -356,6 +358,10 @@ func (c *Client) getBundle(ctx context.Context, name string) (*proto.CertBundle,
 // program that exits 0 clears the bit, and so does the lack of a program; a
 // failure keeps it, so the program runs again after the next reconcile. The
 // cleared bits are written once all programs have run.
+//
+// It logs the event "outputs rewritten" for each certificate whose outputs it
+// rewrote, when Reconcile reports a change, and "on_change succeeded" for each
+// program that exits 0; runHook logs the failures.
 func (c *Client) reconcileLocked() error {
 	certificates := c.cfg.Certificates
 	names := slices.Sorted(maps.Keys(c.store))
@@ -372,6 +378,9 @@ func (c *Client) reconcileLocked() error {
 		if err != nil {
 			errs = append(errs, fmt.Errorf("outputs of certificate %s: %w", name, err))
 			failed[name] = true
+		}
+		if changed {
+			slog.Info("outputs rewritten", "cert", name)
 		}
 		if changed && len(certificates[name].OnChange) > 0 && !cert.HookPending {
 			cert.HookPending = true
@@ -403,6 +412,7 @@ func (c *Client) reconcileLocked() error {
 				errs = append(errs, err)
 				continue
 			}
+			slog.Info("on_change succeeded", "cert", name)
 		}
 		cert.HookPending = false
 		c.store[name] = cert
@@ -447,12 +457,13 @@ func (c *Client) Status() RuntimeStatus {
 // or the data directory requires a service restart: the command process owns
 // the IPC listener, and New read the store from the data directory.
 //
-// Before it returns, Reload reconciles the outputs with the store under the
-// new configuration and runs the pending on_change programs. Their errors go
-// to the status rather than to the caller, since the configuration is applied
-// by then. Reload then clears the etag, cancels the loop's request in flight,
-// which was made with the old configuration, and wakes the loop from a
-// backoff, so the loop pulls the whole view at once.
+// Once the new configuration is applied, Reload logs the event "configuration
+// reloaded". Before it returns, it reconciles the outputs with the store under
+// the new configuration and runs the pending on_change programs. Their errors
+// go to the status rather than to the caller, since the configuration is
+// applied by then. Reload then clears the etag, cancels the loop's request in
+// flight, which was made with the old configuration, and wakes the loop from
+// a backoff, so the loop pulls the whole view at once.
 func (c *Client) Reload(cfg *config.ClientConfig) error {
 	httpClient, err := buildHTTPClient(cfg)
 	if err != nil {
@@ -478,6 +489,7 @@ func (c *Client) Reload(cfg *config.ClientConfig) error {
 	c.status.Name = cfg.Client.Name
 	c.status.ServerURL = cfg.Client.ServerURL
 	c.statusMu.Unlock()
+	slog.Info("configuration reloaded")
 
 	c.recordReconcile(c.reconcileLocked())
 	c.etag = ""
@@ -518,12 +530,24 @@ func (c *Client) recordReconcile(err error) {
 	c.setLastErrorLocked(err)
 }
 
-// setLastErrorLocked sets LastError; statusMu must be held.
+// setLastErrorLocked sets LastError; statusMu must be held. Only a change of
+// LastError is logged, so a failure that repeats round after round is logged
+// once: as the event "round failed" when LastError becomes another error, and
+// as "round succeeded again" when it is cleared. The rounds of the loop, IPC
+// fetches, reloads and the reconcile at startup all set it, and share this.
 func (c *Client) setLastErrorLocked(err error) {
-	if err == nil {
-		c.status.LastError = ""
+	lastError := ""
+	if err != nil {
+		lastError = err.Error()
+	}
+	if lastError == c.status.LastError {
+		return
+	}
+	c.status.LastError = lastError
+	if lastError != "" {
+		slog.Warn("round failed", "error", lastError)
 	} else {
-		c.status.LastError = err.Error()
+		slog.Info("round succeeded again")
 	}
 }
 
