@@ -36,6 +36,54 @@ func Write(bundle *CertBundle, spec config.OutputSpec) error {
 	return applyOwnership(spec.Path, spec.Owner, spec.Group)
 }
 
+// Reconcile brings the outputs of one certificate, specs, in line with bundle
+// and reports whether it replaced any of them.
+//
+// An output matches bundle when all of these hold:
+//   - os.Lstat finds a regular file at its path. A missing file does not
+//     match, and neither does a symbolic link or any other kind of file; a
+//     symbolic link is replaced by a regular file, as Write replaces it.
+//   - Its content matches. A pkcs12 file must decode with
+//     pkcs12.DecodeChain(content, spec.Password), and its leaf, the Raw of
+//     each chain certificate and its private key (compared with Equal) must
+//     be those of bundle. Bytes are not compared: every encoding picks a new
+//     random salt and IV, so a byte comparison would rewrite the file, and run
+//     the certificate's on_change program, on every reconcile. Any other
+//     format must equal encode(bundle, spec) byte for byte. A file that cannot
+//     be read or decoded does not match; one rewrite repairs it.
+//   - On Unix, its permission bits equal outputMode(spec), and its uid and
+//     gid are those of owner and group when they are set.
+//   - On Windows, its owner SID is that of owner when owner is set. The mode
+//     is not compared, since Windows does not apply it, and neither is the
+//     DACL.
+//
+// The outputs that do not match are replaced as one group:
+//  1. Stage each of them in order: MkdirAll its directory with 0o755,
+//     createTemp, write, Sync, applyMode, applyOwnership on the temporary
+//     file, Close. If any step fails, every temporary file of the group is
+//     removed and the error returned; no target has been touched. Write sets
+//     ownership after the rename instead, which would break this guarantee.
+//  2. Commit: rename each temporary file over its target in order. If a
+//     rename fails, the temporary files left are removed and the error
+//     returned; the targets already replaced count as changed, and the next
+//     reconcile completes the rest.
+//
+// changed reports whether at least one target was replaced, also when err is
+// not nil. Private-key outputs on Windows keep being created by
+// securefile.CreateTemp with read access for owner, as Write creates them.
+//
+// This is a stub: it rewrites every output with Write, and reports changed
+// once one has been written.
+func Reconcile(bundle *CertBundle, specs []config.OutputSpec) (changed bool, err error) {
+	for _, spec := range specs {
+		if err = Write(bundle, spec); err != nil {
+			return changed, err
+		}
+		changed = true
+	}
+	return changed, nil
+}
+
 func outputMode(spec config.OutputSpec) int {
 	if spec.Mode != 0 {
 		return spec.Mode
