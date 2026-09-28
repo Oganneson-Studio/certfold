@@ -17,7 +17,7 @@ func (m Model) View() string {
 	if m.width == 0 {
 		return "Loading..."
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, m.renderTabBar(), m.renderContent(), m.renderStatus(), m.renderHelp())
+	return shared.Narrow(lipgloss.JoinVertical(lipgloss.Left, m.renderTabBar(), m.renderContent(), m.renderStatus(), m.renderHelp()))
 }
 
 func (m Model) renderTabBar() string {
@@ -80,14 +80,14 @@ func (m Model) renderOverview(w int) string {
 	for _, c := range m.certs {
 		states[c.State]++
 	}
-	fmt.Fprintf(&b, "Certificates  %-4d issuing %d · backoff %d · valid %d · pending %d\n", len(m.certs),
+	fmt.Fprintf(&b, "Certificates  %-4d issuing %d, backoff %d, valid %d, pending %d\n", len(m.certs),
 		states[ipc.CertStateIssuing], states[ipc.CertStateBackoff], states[ipc.CertStateValid], states[ipc.CertStatePending])
 	fmt.Fprintf(&b, "Clients       %d\n", len(m.clients))
 	statuses := make(map[string]int)
 	for _, t := range m.tokens {
 		statuses[tokenStatus(t, m.lastRefresh)]++
 	}
-	fmt.Fprintf(&b, "Tokens        %-4d unused %d · used %d · expired %d\n", len(m.tokens),
+	fmt.Fprintf(&b, "Tokens        %-4d unused %d, used %d, expired %d\n", len(m.tokens),
 		statuses["unused"], statuses["used"], statuses["expired"])
 
 	fmt.Fprintf(&b, "\n%s\n\n", shared.TitleStyle.Render("Recent events"))

@@ -60,9 +60,9 @@ func TestModel_OverviewView(t *testing.T) {
 	m := newTestModel(t)
 	for _, want := range []string{
 		"Overview",
-		"Certificates 3 issuing 0 · backoff 1 · valid 1 · pending 1",
+		"Certificates 3 issuing 0, backoff 1, valid 1, pending 1",
 		"Clients 3",
-		"Tokens 3 unused 1 · used 1 · expired 1",
+		"Tokens 3 unused 1, used 1, expired 1",
 		"event-3",
 	} {
 		if !shows(m, want) {

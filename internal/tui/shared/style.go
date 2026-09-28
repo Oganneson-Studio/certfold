@@ -35,10 +35,11 @@ var (
 	// Content area.
 	ContentStyle = lipgloss.NewStyle().Padding(1, 2)
 
-	// Status indicators.
-	HealthyDot = lipgloss.NewStyle().Foreground(Green).SetString("●")
-	WarnDot    = lipgloss.NewStyle().Foreground(Yellow).SetString("●")
-	ErrorDot   = lipgloss.NewStyle().Foreground(Red).SetString("●")
+	// Status indicators: • rather than ●, which some consoles draw two
+	// cells wide (see narrowGlyphs).
+	HealthyDot = lipgloss.NewStyle().Foreground(Green).SetString("•")
+	WarnDot    = lipgloss.NewStyle().Foreground(Yellow).SetString("•")
+	ErrorDot   = lipgloss.NewStyle().Foreground(Red).SetString("•")
 
 	// Header / title bar.
 	TitleStyle = lipgloss.NewStyle().

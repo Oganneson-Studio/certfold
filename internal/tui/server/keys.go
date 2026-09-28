@@ -50,8 +50,10 @@ func defaultKeys() keyMap {
 		// ctrl+c also quits while a dialog is open; q goes to the dialog.
 		Quit: key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
 
-		Up:       key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
-		Down:     key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
+		// Not ↑ and ↓, which some consoles draw two cells wide; see
+		// shared.WideGlyph.
+		Up:       key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("k/up", "move up")),
+		Down:     key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("j/down", "move down")),
 		PageUp:   key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "page up")),
 		PageDown: key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("pgdn", "page down")),
 		Top:      key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "oldest")),
