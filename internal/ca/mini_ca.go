@@ -5,7 +5,6 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
@@ -210,18 +209,6 @@ func (m *MiniCA) IssueServerCert(hosts []string) (certPEM, keyPEM []byte, err er
 	}
 	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 	return certPEM, keyPEM, nil
-}
-
-// TLSConfig returns a *tls.Config that requires client certificates signed by
-// this CA. Suitable for the mTLS server listener.
-func (m *MiniCA) TLSConfig() *tls.Config {
-	pool := x509.NewCertPool()
-	pool.AddCert(m.cert)
-	return &tls.Config{
-		ClientAuth: tls.RequireAndVerifyClientCert,
-		ClientCAs:  pool,
-		MinVersion: tls.VersionTLS13,
-	}
 }
 
 // Fingerprint returns the hex-encoded SHA-256 fingerprint of a DER-encoded
