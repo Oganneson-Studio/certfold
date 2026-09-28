@@ -26,6 +26,11 @@ type Deps struct {
 	MiniCA        *ca.MiniCA
 	DataDir       string
 	EnrollServer  *enroll.Server
+	// Changes wakes the GET /v1/sync requests waiting for a change. Required.
+	Changes *Changes
+	// Done is closed when the daemon shuts down, so that waiting GET /v1/sync
+	// requests answer at once instead of holding up the shutdown.
+	Done <-chan struct{}
 }
 
 func (d Deps) serverConfig() *config.ServerConfig {
