@@ -124,6 +124,38 @@ func (authority *testIdentityCA) serverTLSCertificate(t *testing.T, now time.Tim
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
 }
 
+// newMTLSServer starts a TLS server for handler that requires a client
+// certificate from authority, as sigils does, until the test ends.
+func newMTLSServer(t *testing.T, authority *testIdentityCA, now time.Time, handler http.Handler) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewUnstartedServer(handler)
+	clientCAs := x509.NewCertPool()
+	clientCAs.AddCert(authority.cert)
+	ts.TLS = &tls.Config{
+		Certificates: []tls.Certificate{authority.serverTLSCertificate(t, now)},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    clientCAs,
+	}
+	ts.StartTLS()
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// withIdentity gives cfg a client identity that authority issued with serial
+// 2, valid until notAfter.
+func withIdentity(t *testing.T, cfg *config.ClientConfig, authority *testIdentityCA, now, notAfter time.Time) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Identity = config.IdentitySection{
+		CACert:     authority.certPEM,
+		ClientCert: authority.issue(t, "web-1", &key.PublicKey, now, notAfter, 2),
+		ClientKey:  privateKeyPEM(t, key),
+	}
+}
+
 // withSystemRoots stands in for the operating system trust store.
 func withSystemRoots(t *testing.T, roots ...*x509.Certificate) {
 	t.Helper()
@@ -1605,28 +1637,11 @@ func TestIdentitySwitchRestartsSync(t *testing.T) {
 		}
 		writeJSON(w, proto.RenewIdentityResponse{ClientCert: certPEM})
 	})
-	ts := httptest.NewUnstartedServer(mux)
-	clientCAs := x509.NewCertPool()
-	clientCAs.AddCert(authority.cert)
-	ts.TLS = &tls.Config{
-		Certificates: []tls.Certificate{authority.serverTLSCertificate(t, now)},
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		ClientCAs:    clientCAs,
-	}
-	ts.StartTLS()
-	t.Cleanup(ts.Close)
+	ts := newMTLSServer(t, authority, now, mux)
 
-	oldKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	cfg := buildTestCfg(t, ts.URL)
 	cfg.Client.IdentityRenewBefore = 30 * 24 * time.Hour
-	cfg.Identity = config.IdentitySection{
-		CACert:     authority.certPEM,
-		ClientCert: authority.issue(t, "web-1", &oldKey.PublicKey, now, now.Add(60*24*time.Hour), 2),
-		ClientKey:  privateKeyPEM(t, oldKey),
-	}
+	withIdentity(t, cfg, authority, now, now.Add(60*24*time.Hour))
 	c, err := New(cfg, WithIdentitySaver(func(string, string, string) error { return nil }))
 	if err != nil {
 		t.Fatal(err)
@@ -1656,6 +1671,65 @@ func TestIdentitySwitchRestartsSync(t *testing.T) {
 	if next.ifNoneMatch != held.ifNoneMatch {
 		t.Fatalf("the request after the switch carried If-None-Match %q, want %q", next.ifNoneMatch, held.ifNoneMatch)
 	}
+}
+
+// TestFailedIdentityRenewalStillSyncs covers a renewal endpoint that fails
+// while the current identity is still valid: the renewal error is reported,
+// and backs the loop off, but certificates keep arriving with the current
+// identity, in the loop as in an IPC fetch.
+func TestFailedIdentityRenewalStillSyncs(t *testing.T) {
+	now := time.Now()
+	authority := newTestIdentityCA(t, now)
+	bundle := newTestBundle(t, "api-prod")
+	fs := newFakeServer(bundle)
+	mux := http.NewServeMux()
+	mux.Handle("/", fs.handler())
+	mux.HandleFunc("/v1/identity/renew", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	})
+	ts := newMTLSServer(t, authority, now, mux)
+	newClient := func(t *testing.T) (*Client, string) {
+		t.Helper()
+		cfg := buildTestCfg(t, ts.URL)
+		// It expires within identity_renew_before, so it is due for renewal.
+		cfg.Client.IdentityRenewBefore = 30 * 24 * time.Hour
+		withIdentity(t, cfg, authority, now, now.Add(24*time.Hour))
+		outPath := fullchainOutput(cfg, t.TempDir(), "api-prod")
+		c, err := New(cfg, WithIdentitySaver(func(string, string, string) error { return nil }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c, outPath
+	}
+
+	t.Run("loop", func(t *testing.T) {
+		setBackoff(t, 500*time.Millisecond, 500*time.Millisecond)
+		c, outPath := newClient(t)
+		n := len(fs.syncRequests())
+		startRun(t, c)
+		waitFor(t, "the certificate written", func() bool { return fileContent(outPath) == bundle.FullchainPEM })
+		first, second := fs.syncAt(t, n), fs.syncAt(t, n+1)
+		if first.serial != "2" {
+			t.Fatalf("the sync request presented serial %s, want the current identity 2", first.serial)
+		}
+		if gap := second.at.Sub(first.at); gap < 400*time.Millisecond {
+			t.Fatalf("the round after a failed renewal started after %v, want the 500ms backoff", gap)
+		}
+		if status := c.Status(); !status.Online || !strings.Contains(status.LastError, "renew client identity") {
+			t.Fatalf("status = %+v, want online with the renewal error", status)
+		}
+	})
+
+	t.Run("fetch", func(t *testing.T) {
+		c, outPath := newClient(t)
+		err := c.Fetch(context.Background(), "")
+		if err == nil || !strings.Contains(err.Error(), "renew client identity") {
+			t.Fatalf("Fetch error = %v, want the renewal error", err)
+		}
+		if got := fileContent(outPath); got != bundle.FullchainPEM {
+			t.Fatal("Fetch did not write the certificate after the failed renewal")
+		}
+	})
 }
 
 // TestFetchDoesNotWaitForHeldSync checks that the loop waits for the server's

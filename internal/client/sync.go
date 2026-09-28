@@ -73,55 +73,58 @@ func (c *Client) syncLoop(ctx context.Context) error {
 // syncRound runs one round of the loop:
 //  1. Under pullMu, renew the identity when due, then take the server URL,
 //     HTTP client and etag for the request and register its cancel in the
-//     same section. A failed renewal skips the request.
+//     same section. A failed renewal is an error of the round, but the
+//     request still goes out with the current identity, which stays valid
+//     until it expires.
 //  2. Without pullMu, send GET /v1/sync, with If-None-Match when etag is set,
 //     so IPC fetches and reloads never wait for the server to answer.
 //  3. Under pullMu again, apply the view of a 200. Then, whatever the
 //     answer, reconcile the outputs, run the pending on_change programs and
 //     record the outcome.
 //
-// voided reports that Reload or an identity switch cancelled the request: the
-// round did nothing, and the next one should start at once.
+// voided reports that Reload, an IPC fetch or an identity switch cancelled
+// the request: the round did nothing, and the next one should start at once.
 func (c *Client) syncRound(ctx context.Context) (voided bool, err error) {
 	c.pullMu.Lock()
 	defer c.pullMu.Unlock()
 
 	var errs []error
-	var answeredAt time.Time
 	if err := c.renewIdentityLocked(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("renew client identity: %w", err))
-	} else {
-		reqCtx, cancel := context.WithCancel(ctx)
-		defer cancel()
-		c.syncCancel = cancel
-		serverURL, etag := c.cfg.Client.ServerURL, c.etag
-		// c.http gives up after httpTimeout, before the server answers a
-		// request it holds. Share its transport and redirect policy.
-		syncClient := *c.http
-		syncClient.Timeout = syncTimeout
+	}
+	reqCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	c.syncCancel = cancel
+	serverURL, etag := c.cfg.Client.ServerURL, c.etag
+	// c.http gives up after httpTimeout, before the server answers a request
+	// it holds. Share its transport and redirect policy.
+	syncClient := *c.http
+	syncClient.Timeout = syncTimeout
 
-		c.pullMu.Unlock()
-		result, err := requestSync(reqCtx, &syncClient, serverURL, etag)
-		if err == nil {
-			answeredAt = time.Now()
-		}
-		c.pullMu.Lock()
+	c.pullMu.Unlock()
+	result, err := requestSync(reqCtx, &syncClient, serverURL, etag)
+	var answeredAt time.Time
+	if err == nil {
+		answeredAt = time.Now()
+	}
+	c.pullMu.Lock()
 
-		switch {
-		case ctx.Err() != nil:
-			return false, ctx.Err()
-		case reqCtx.Err() != nil:
-			// Reload and identity switches cancel under pullMu, so the answer
-			// may have arrived before the cancel, while this round waited for
-			// the lock. Either way it answers a request made with what they
-			// replaced; applying it would also set the etag Reload cleared.
-			return true, nil
-		case err != nil:
-			errs = append(errs, fmt.Errorf("sync: %w", err))
-		case result.modified:
-			if err := c.applyViewLocked(reqCtx, result, ""); err != nil {
-				errs = append(errs, err)
-			}
+	switch {
+	case ctx.Err() != nil:
+		return false, ctx.Err()
+	case reqCtx.Err() != nil:
+		// Reload, IPC fetches and identity switches cancel under pullMu, so
+		// the answer may have arrived before the cancel, while this round
+		// waited for the lock. Either way it must not be applied: it answers
+		// a request made with what Reload or the switch replaced, or holds a
+		// view that may be older than the fetch's, and applying it would also
+		// set the etag Reload cleared.
+		return true, nil
+	case err != nil:
+		errs = append(errs, fmt.Errorf("sync: %w", err))
+	case result.modified:
+		if err := c.applyViewLocked(reqCtx, result, ""); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	// Reconcile after every answer, including 304 and errors: this is how

@@ -62,7 +62,8 @@ type Client struct {
 	// syncCancel cancels the loop's GET /v1/sync in flight. The loop sets it
 	// in the pullMu section where it takes the configuration, identity and
 	// etag for the request, so Reload and an identity switch cancel every
-	// request made with what they replace. Guarded by pullMu.
+	// request made with what they replace, and an IPC fetch every request
+	// whose answer could be older than its own. Guarded by pullMu.
 	syncCancel context.CancelFunc
 	// runCtx is the ctx of Run from the start of Run on; on_change programs
 	// run under it, or under context.Background before Run starts. It stays
@@ -191,9 +192,12 @@ func (c *Client) Fetch(ctx context.Context, name string) error {
 
 	var errs []error
 	var answeredAt time.Time
+	// As in the loop, a failed renewal does not stop the pull: the current
+	// identity stays valid until it expires.
 	if err := c.renewIdentityLocked(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("renew client identity: %w", err))
-	} else if result, err := requestSync(ctx, c.http, c.cfg.Client.ServerURL, ""); err != nil {
+	}
+	if result, err := requestSync(ctx, c.http, c.cfg.Client.ServerURL, ""); err != nil {
 		errs = append(errs, fmt.Errorf("sync: %w", err))
 	} else {
 		answeredAt = time.Now()
