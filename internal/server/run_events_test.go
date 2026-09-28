@@ -185,15 +185,17 @@ func TestRunKeepsEnrollmentTokensOutOfEvents(t *testing.T) {
 	if e := findEvent(t, events, "client enrolled"); e.Attrs != "client=web-1 token="+payload.TokenID {
 		t.Errorf("enrollment event = %+v, want the client and the token ID", e)
 	}
-	// Only the ID: the token itself enrolls a client. Its start is enough to
-	// find it in attributes cut to 2 KiB.
-	leak := created.Token[:64]
-	for _, e := range events {
-		if strings.Contains(e.Message+e.Attrs, leak) {
-			t.Errorf("event %+v holds the token", e)
+	// Only the ID: the token itself enrolls a client, and so does its secret
+	// with the rest of the payload. The start of the token is enough to find
+	// it in attributes cut to 2 KiB.
+	for what, leak := range map[string]string{"token": created.Token[:64], "secret": payload.Secret} {
+		for _, e := range events {
+			if strings.Contains(e.Message+e.Attrs, leak) {
+				t.Errorf("event %+v holds the %s", e, what)
+			}
 		}
-	}
-	if strings.Contains(sink.String(), leak) {
-		t.Errorf("service log holds the token:\n%s", sink.String())
+		if strings.Contains(sink.String(), leak) {
+			t.Errorf("service log holds the %s:\n%s", what, sink.String())
+		}
 	}
 }
