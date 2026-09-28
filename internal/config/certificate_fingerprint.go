@@ -7,8 +7,7 @@ import (
 )
 
 // CertificateSpecFingerprint identifies the configuration that determines
-// certificate key material. Subscriber and push routing changes intentionally
-// do not alter it.
+// certificate key material. Subscriber changes intentionally do not alter it.
 func CertificateSpecFingerprint(cfg *ServerConfig, spec CertificateSpec) string {
 	ca := CAEntry{}
 	if cfg != nil {

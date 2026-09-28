@@ -179,15 +179,6 @@ func TestParseServer_ClientNamesMustBeLowercaseDNSLabels(t *testing.T) {
 		t.Fatalf("expected subscriber name error, got %v", err)
 	}
 
-	withClient := validServerYAML + `
-clients:
-  - name: web_1
-`
-	_, err = ParseServer([]byte(withClient))
-	if err == nil || !strings.Contains(err.Error(), `clients[0].name: invalid client name "web_1"`) {
-		t.Fatalf("expected client name error, got %v", err)
-	}
-
 	e2eNames := strings.Replace(validServerYAML, "subscribers: [web-1, web-2]", "subscribers: [web-1, expiry-test, revoke-test]", 1)
 	if _, err := ParseServer([]byte(e2eNames)); err != nil {
 		t.Fatalf("E2E client names rejected: %v", err)
@@ -199,6 +190,19 @@ func TestParseServer_UnknownFieldRejected(t *testing.T) {
 	_, err := ParseServer([]byte(bad))
 	if err == nil {
 		t.Fatal("expected error for unknown top-level field, got nil")
+	}
+}
+
+// Releases before GET /v1/sync had a clients section; it is rejected as an
+// unknown field, not read.
+func TestParseServer_ClientsSectionRejected(t *testing.T) {
+	src := validServerYAML + `
+clients:
+  - name: web-1
+`
+	_, err := ParseServer([]byte(src))
+	if err == nil || !strings.Contains(err.Error(), "field clients not found") {
+		t.Fatalf("expected clients to be rejected as an unknown field, got %v", err)
 	}
 }
 
@@ -259,46 +263,6 @@ func TestParseServer_DNSResolvers(t *testing.T) {
 				t.Fatalf("expected invalid resolver error, got %v", err)
 			}
 		})
-	}
-}
-
-func TestParseServer_PushEndpointRequiresStrongToken(t *testing.T) {
-	withClient := validServerYAML + `
-clients:
-  - name: web-1
-    push_endpoint: "https://web-1.example.com/v1/push/notify"
-`
-	if _, err := ParseServer([]byte(withClient)); err == nil || !strings.Contains(err.Error(), "push_token") {
-		t.Fatalf("expected missing push token error, got %v", err)
-	}
-
-	withToken := withClient + `    push_token: "0123456789abcdef0123456789abcdef"
-`
-	if _, err := ParseServer([]byte(withToken)); err != nil {
-		t.Fatalf("valid push registration: %v", err)
-	}
-}
-
-func TestParseServer_PushTokenRequiresEndpoint(t *testing.T) {
-	withClient := validServerYAML + `
-clients:
-  - name: web-1
-    push_token: "0123456789abcdef0123456789abcdef"
-`
-	if _, err := ParseServer([]byte(withClient)); err == nil || !strings.Contains(err.Error(), "push_endpoint") {
-		t.Fatalf("expected missing push endpoint error, got %v", err)
-	}
-}
-
-func TestParseServer_PushEndpointRejectsQueryCredentials(t *testing.T) {
-	withClient := validServerYAML + `
-clients:
-  - name: web-1
-    push_endpoint: "https://web-1.example.com/v1/push/notify?token=secret"
-    push_token: "0123456789abcdef0123456789abcdef"
-`
-	if _, err := ParseServer([]byte(withClient)); err == nil || !strings.Contains(err.Error(), "query") {
-		t.Fatalf("expected push endpoint query error, got %v", err)
 	}
 }
 
