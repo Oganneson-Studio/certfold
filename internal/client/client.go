@@ -170,11 +170,17 @@ func (c *Client) Run(ctx context.Context) error {
 // fingerprints changed, and name as well when it is not empty, then
 // reconciles every output with the store and runs the pending on_change
 // programs. A failed step does not stop the later ones; Fetch returns their
-// joined errors. It does not cancel the loop's request in flight: when that
-// one is answered later, applying its view again changes nothing.
+// joined errors.
 func (c *Client) Fetch(ctx context.Context, name string) error {
 	c.pullMu.Lock()
 	defer c.pullMu.Unlock()
+	// The loop's request in flight may be answered with an older view than
+	// the one this fetch gets. Applied after this fetch, that view would drop
+	// the certificates added since, and download again the ones removed. Cancel
+	// it; the loop starts over with the etag this fetch leaves.
+	if c.syncCancel != nil {
+		c.syncCancel()
+	}
 
 	var errs []error
 	var answeredAt time.Time

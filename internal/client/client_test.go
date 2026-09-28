@@ -306,6 +306,7 @@ type fakeServer struct {
 	bundleStatus int
 	syncs        []syncRecord
 	answers      int
+	abandons     int
 	bundleNames  []string
 	heartbeats   int
 }
@@ -408,6 +409,7 @@ func (f *fakeServer) sync(w http.ResponseWriter, r *http.Request) {
 			f.answered()
 			return
 		case <-r.Context().Done():
+			f.abandoned()
 			return
 		}
 	}
@@ -423,6 +425,19 @@ func (f *fakeServer) answerCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.answers
+}
+
+// abandoned counts a held sync request that the client gave up.
+func (f *fakeServer) abandoned() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.abandons++
+}
+
+func (f *fakeServer) abandonCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.abandons
 }
 
 func (f *fakeServer) syncRequests() []syncRecord {
@@ -1502,6 +1517,81 @@ func TestFetchDoesNotWaitForHeldSync(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Fetch waited for the loop's held request")
+	}
+}
+
+// TestLoopDoesNotRevertFetchedView covers an IPC fetch while the loop waits
+// for an answer. The loop's request here is answered with an older view,
+// which lacks the certificate x the fetch adds. Applied after the fetch, that
+// view would drop x from the store; the next round would download x again
+// and run its on_change program a second time for the same material.
+func TestLoopDoesNotRevertFetchedView(t *testing.T) {
+	a, x := newTestBundle(t, "a"), newTestBundle(t, "x")
+	fs := newFakeServer(a)
+	var holdFetch atomic.Bool
+	fetchHeld := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	fs.syncStatus = func(ifNoneMatch string) int {
+		// Once the loop waits, only the fetch sends no If-None-Match.
+		if ifNoneMatch == "" && holdFetch.CompareAndSwap(true, false) {
+			fetchHeld <- struct{}{}
+			<-release
+		}
+		return 0
+	}
+	ts := httptest.NewServer(fs.handler())
+	t.Cleanup(ts.Close)
+	cfg := buildTestCfg(t, ts.URL)
+	dir := t.TempDir()
+	fullchainOutput(cfg, dir, "a")
+	fullchainOutput(cfg, dir, "x", "/usr/sbin/reload")
+	c := newTestClient(t, cfg)
+	hooks := &fakeHook{}
+	c.hook = hooks.run
+	startRun(t, c)
+	// Registered after startRun, so it runs first: stopping Run waits for
+	// pullMu, which the fetch holds while the server holds its request.
+	t.Cleanup(unblock)
+	waitFor(t, "the loop to wait for a change", func() bool { return fs.syncsWithETag() >= 1 })
+
+	// The fetch takes pullMu, and the server holds its request.
+	ended := fs.answerCount() + fs.abandonCount()
+	holdFetch.Store(true)
+	fetched := make(chan error, 1)
+	go func() { fetched <- c.Fetch(context.Background(), "") }()
+	select {
+	case <-fetchHeld:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the fetch's sync request did not arrive")
+	}
+	// A new ETag for the same view answers the loop's request if it is still
+	// held, before x is added; the loop then waits for pullMu with that view.
+	fs.setView(a)
+	waitFor(t, "the loop's request to end", func() bool { return fs.answerCount()+fs.abandonCount() > ended })
+	// The fetch gets the newest view, which adds x.
+	fs.setView(a, x)
+	unblock()
+	select {
+	case err := <-fetched:
+		if err != nil {
+			t.Fatalf("Fetch: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Fetch did not return")
+	}
+
+	waitFor(t, "the loop to wait with the newest ETag", func() bool {
+		for _, record := range fs.syncRequests() {
+			if record.ifNoneMatch == `"v3"` {
+				return true
+			}
+		}
+		return false
+	})
+	if got := hooks.calls(); !slices.Equal(got, []string{"x"}) {
+		t.Fatalf("on_change runs = %v, want one for x: the loop applied the older view over the fetch", got)
 	}
 }
 
