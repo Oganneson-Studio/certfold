@@ -218,31 +218,12 @@ func (h *handlers) listCertificates(w http.ResponseWriter, r *http.Request) {
 	}
 	clientName := cert.Subject.CommonName
 
-	ctx := r.Context()
-	all, err := h.deps.DB.Certs.List(ctx, nil)
+	view, err := h.certificateView(r.Context(), clientName)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-
-	// Filter by the subscriber list and ensure stored material still matches
-	// the current spec. A hot reload must never expose a same-name stale cert.
-	cfg := h.deps.serverConfig()
-	subscribed := subscribedSpecs(cfg, clientName)
-	var out []proto.CertSummary
-	for _, c := range all {
-		if spec, ok := subscribed[c.Name]; ok && certRecordMatchesSpec(c, cfg, spec) {
-			out = append(out, proto.CertSummary{
-				Name:        c.Name,
-				Fingerprint: c.Fingerprint,
-				NotAfter:    c.NotAfter,
-			})
-		}
-	}
-	if out == nil {
-		out = []proto.CertSummary{}
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, view)
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +263,7 @@ func (h *handlers) getCertBundle(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, proto.CertBundle{
 		Name:         rec.Name,
+		Fingerprint:  rec.Fingerprint,
 		FullchainPEM: rec.FullchainPEM,
 		KeyPEM:       rec.KeyPEM,
 	})
