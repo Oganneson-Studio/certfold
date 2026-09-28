@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -81,15 +82,30 @@ func TestAddCertificateSpecPreservesPlaceholdersAndUsesDefaultCA(t *testing.T) {
 func TestAddCertificateSpecKeepsDollarSignsLiteral(t *testing.T) {
 	t.Setenv("HOME", "/expanded/home")
 	path := writeEditTestConfig(t, "  []\n")
-	names := []string{"a$b", "a$$b", "${HOME}"}
-	for _, name := range names {
+	// Certificate names admit no '$', but the names of DNS providers do: they
+	// are keys, which are not expanded, and a certificate refers to its
+	// provider by name.
+	providers := []string{"a$b", "a$$b", "${HOME}"}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var defined strings.Builder
+	for _, provider := range providers {
+		fmt.Fprintf(&defined, "  %q:\n    type: route53\n", provider)
+	}
+	raw = bytes.Replace(raw, []byte("dns_providers:\n"), []byte("dns_providers:\n"+defined.String()), 1)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for i, provider := range providers {
 		if _, err := AddCertificateSpec(path, CertificateSpec{
-			Name:        name,
+			Name:        fmt.Sprintf("cert-%d", i),
 			Domains:     []string{"api.example.com"},
-			DNSProvider: "route",
+			DNSProvider: provider,
 			KeyType:     "ec256",
 		}); err != nil {
-			t.Fatalf("AddCertificateSpec(%q): %v", name, err)
+			t.Fatalf("AddCertificateSpec(%q): %v", provider, err)
 		}
 	}
 
@@ -99,10 +115,10 @@ func TestAddCertificateSpecKeepsDollarSignsLiteral(t *testing.T) {
 	}
 	var got []string
 	for _, cert := range cfg.Certificates {
-		got = append(got, cert.Name)
+		got = append(got, cert.DNSProvider)
 	}
-	if !slices.Equal(got, names) {
-		t.Fatalf("certificate names = %q, want %q", got, names)
+	if !slices.Equal(got, providers) {
+		t.Fatalf("DNS providers = %q, want %q", got, providers)
 	}
 }
 

@@ -254,6 +254,8 @@ func (c *ServerConfig) Validate() error {
 		base := fmt.Sprintf("certificates[%d]", i)
 		if cert.Name == "" {
 			v.Add(base+".name", "must be set")
+		} else if err := ValidateCertificateName(cert.Name); err != nil {
+			v.Add(base+".name", "%v", err)
 		} else if prev, dup := seen[cert.Name]; dup {
 			v.Add(base+".name", "duplicate certificate name %q (also at certificates[%d])", cert.Name, prev)
 		} else {
