@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -420,7 +421,9 @@ func (h *handlers) requireActiveClient(next http.Handler) http.Handler {
 		// Record last_seen at most once per lastSeenInterval for each client.
 		// The throttle is kept here, not in the UPDATE, so that an UPDATE of
 		// zero rows still means the client is gone. Claiming the entry before
-		// the write leaves one writer among concurrent requests.
+		// the write leaves one writer among concurrent requests. The claim
+		// stands whatever the write returns, so a database that fails it is
+		// tried again once per interval.
 		h.seenMu.Lock()
 		last, seen := h.lastSeen[clientName]
 		write := !seen || now.Sub(last) >= lastSeenInterval
@@ -431,16 +434,16 @@ func (h *handlers) requireActiveClient(next http.Handler) http.Handler {
 		if write {
 			// A single conditional write: the client may have been removed, or
 			// its identity changed, since the lookup above.
-			if err := h.deps.DB.Clients.MarkSeen(r.Context(), clientName, fingerprint, now); err != nil {
-				h.seenMu.Lock()
-				delete(h.lastSeen, clientName)
-				h.seenMu.Unlock()
-				if err == sql.ErrNoRows {
-					http.Error(w, "unauthorized", http.StatusUnauthorized)
-				} else {
-					http.Error(w, "internal error", http.StatusInternalServerError)
-				}
+			err := h.deps.DB.Clients.MarkSeen(r.Context(), clientName, fingerprint, now)
+			if err == sql.ErrNoRows {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
+			}
+			if err != nil {
+				// The lookup above authenticated the client; last_seen only
+				// records that it was here. A database that cannot take writes
+				// must not keep it from the certificates already stored.
+				log.Printf("sigils: record last_seen of client %s: %v", clientName, err)
 			}
 		}
 		next.ServeHTTP(w, r)

@@ -1531,6 +1531,59 @@ func TestAuthenticatedRequestsRecordLastSeenAtMostOncePerInterval(t *testing.T) 
 	}
 }
 
+// last_seen only records that an authenticated client was here: a request
+// whose write of it fails is served all the same, and the write is tried
+// again only after the interval.
+func TestAuthenticatedRequestIsServedWhenLastSeenCannotBeWritten(t *testing.T) {
+	deps, other := buildFileDeps(t)
+	identity := makeEnrolledClientCert(t, deps, "web-1")
+	ctx := context.Background()
+	// The API writes through the handle without busy_timeout, so its write
+	// fails at once while the other handle holds the write lock.
+	locker := deps.DB
+	deps.DB = other
+	handler := NewInsecure(deps).Handler
+	request := func() {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, syncRequest(identity, ""))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+	}
+	assertNotSeen := func() {
+		t.Helper()
+		got, err := deps.DB.Clients.Get(ctx, "web-1", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got.LastSeen.IsZero() {
+			t.Fatalf("last_seen = %s, want it not written", got.LastSeen)
+		}
+	}
+
+	record, err := locker.Clients.Get(ctx, "web-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := locker.BeginTx(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := locker.Clients.Upsert(ctx, record, tx); err != nil {
+		t.Fatal(err)
+	}
+	request()
+	assertNotSeen()
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+
+	request()
+	assertNotSeen()
+}
+
 func TestAuthenticatedRequestDoesNotRecreateClientRemovedDuringRequest(t *testing.T) {
 	deps, other := buildFileDeps(t)
 	identity := makeEnrolledClientCert(t, deps, "web-1")
