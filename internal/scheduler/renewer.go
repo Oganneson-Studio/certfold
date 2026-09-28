@@ -224,17 +224,21 @@ func (r *Renewer) RenewalPlan(rec *store.CertRecord) (time.Time, string) {
 // due for renewal, or an error if it is due already or cannot be read. Stored
 // as a success, such a certificate would be issued again at once, and so on
 // without end.
+//
+// The error says that the certificate was stored, as issue reports it only
+// once it is: an operator who took the failure for an issuance that did not
+// happen would try again, and spend another order of the CA's rate limits.
 func dueOnArrival(fullchainPEM []byte, now time.Time) (time.Time, error) {
 	at, err := renewal.RenewAt(string(fullchainPEM))
 	if err != nil {
-		return time.Time{}, fmt.Errorf("issued certificate is already due for renewal: %w", err)
+		return time.Time{}, fmt.Errorf("issued certificate was stored, but is already due for renewal: %w", err)
 	}
 	if now.Before(at) {
 		return at, nil
 	}
 	block, _ := pem.Decode(fullchainPEM)
 	leaf, _ := x509.ParseCertificate(block.Bytes) // as RenewAt did
-	return at, fmt.Errorf("issued certificate is already due for renewal (lifetime %s, renewal due %s)",
+	return at, fmt.Errorf("issued certificate was stored, but is already due for renewal (lifetime %s, renewal due %s)",
 		leaf.NotAfter.Sub(leaf.NotBefore), at.UTC().Format(time.RFC3339))
 }
 

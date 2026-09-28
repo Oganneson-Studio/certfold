@@ -123,7 +123,7 @@ func TestCertificateDueOnArrivalIsReportedAsFailure(t *testing.T) {
 	assertEvents(t, events,
 		"INFO certificate issuance started cert=api-prod reason=new",
 		issuedEvent(result, now.Add(-20*24*time.Hour)),
-		`ERROR certificate issuance failed cert=api-prod error="issued certificate is already due for renewal `+
+		`ERROR certificate issuance failed cert=api-prod error="issued certificate was stored, but is already due for renewal `+
 			`(lifetime 2160h0m0s, renewal due 2024-12-12T00:00:00Z)" failures=1 next_attempt=2025-01-01T00:05:00.000Z`,
 	)
 }

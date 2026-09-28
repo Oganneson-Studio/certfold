@@ -102,6 +102,18 @@ func TestShortLivedCertificateIsRenewedOnTime(t *testing.T) {
 	}
 }
 
+// tickWithin is tickAndWait that fails the test when the issuances the tick
+// starts do not end within 5 seconds, as when a call inside the save
+// transaction waits for the store's only connection.
+func tickWithin(t *testing.T, r *Renewer, cfg *config.ServerConfig) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- tickAndWait(context.Background(), r, cfg) }()
+	if err := receive(t, done, "tick"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A certificate that is due for renewal as it arrives is stored and handed to
 // the clients, but the attempt counts as failed: the next one waits out a
 // backoff that doubles while the CA keeps issuing such certificates.
@@ -114,9 +126,9 @@ func TestCertificateDueOnArrivalBacksOff(t *testing.T) {
 	}{
 		// 90 days long, 10 left: due 20 days ago.
 		{"due", certificatePEM(t, now.Add(-80*24*time.Hour), now.Add(10*24*time.Hour)),
-			"issued certificate is already due for renewal (lifetime 2160h0m0s, renewal due 2024-12-12T00:00:00Z)"},
+			"issued certificate was stored, but is already due for renewal (lifetime 2160h0m0s, renewal due 2024-12-12T00:00:00Z)"},
 		{"unreadable", []byte("---cert---"),
-			"issued certificate is already due for renewal: no certificate PEM block"},
+			"issued certificate was stored, but is already due for renewal: no certificate PEM block"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -132,9 +144,7 @@ func TestCertificateDueOnArrivalBacksOff(t *testing.T) {
 			cfg := minimalCfg("api-prod", nil)
 
 			for i, delay := range []time.Duration{baseBackoff, 2 * baseBackoff} {
-				if err := tickAndWait(ctx, r, cfg); err != nil {
-					t.Fatal(err)
-				}
+				tickWithin(t, r, cfg)
 				if mi.calls != i+1 {
 					t.Fatalf("Issue calls = %d, want %d", mi.calls, i+1)
 				}
@@ -154,9 +164,7 @@ func TestCertificateDueOnArrivalBacksOff(t *testing.T) {
 				})
 
 				// Not issued again until the retry time.
-				if err := tickAndWait(ctx, r, cfg); err != nil {
-					t.Fatal(err)
-				}
+				tickWithin(t, r, cfg)
 				if mi.calls != i+1 {
 					t.Fatalf("issued again during the backoff; Issue calls = %d", mi.calls)
 				}
