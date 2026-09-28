@@ -166,3 +166,26 @@ func TestViewSkipsInvalidCertificateNames(t *testing.T) {
 		t.Fatalf("status certificates = %+v, want api-prod alone", got)
 	}
 }
+
+// The store keeps the fingerprint of a bundle, and sigilc status --json
+// prints it: encoding/json escapes C0 there, but passes DEL and C1 through,
+// and some terminals take U+009B for CSI. A bundle whose fingerprint is not
+// of the form sigils sends is refused as a bad bundle.
+func TestBundleWithMalformedFingerprintIsRefused(t *testing.T) {
+	bundle := newTestBundle(t, "api-prod")
+	bundle.Fingerprint = "sha256:\u009b2J"
+	fs := newFakeServer(bundle)
+	ts := httptest.NewServer(fs.handler())
+	t.Cleanup(ts.Close)
+	c := newTestClient(t, buildTestCfg(t, ts.URL))
+
+	err := c.Fetch(context.Background(), "")
+	for _, cert := range c.Status().Certs {
+		if strings.ContainsFunc(cert.Fingerprint, unicode.IsControl) {
+			t.Fatalf("status fingerprint of %s = %q, which sigilc status --json prints as it is", cert.Name, cert.Fingerprint)
+		}
+	}
+	if err == nil || !strings.Contains(err.Error(), `bundle "api-prod": server sent fingerprint "sha256:\u009b2J"`) {
+		t.Fatalf("Fetch error = %v, want the bundle refused for its fingerprint", err)
+	}
+}

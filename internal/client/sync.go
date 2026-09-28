@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"regexp"
 	"slices"
 	"time"
 
@@ -177,7 +178,7 @@ func requestSync(ctx context.Context, httpClient *http.Client, serverURL, etag s
 //   - It downloads each certificate whose fingerprint differs from the stored
 //     one, or that is not stored, and force as well when the view lists it.
 //     The store keeps the fingerprint of the bundle, which may be newer than
-//     the view's. A bundle whose name is not the one asked for, or whose key
+//     the view's. A bundle that checkBundle rejects, such as one whose key
 //     does not belong to its certificate, is not stored: bad material must
 //     neither replace outputs nor run on_change.
 //   - A downloaded fingerprint that differs from the stored one sets
@@ -258,11 +259,21 @@ func (c *Client) applyViewLocked(ctx context.Context, result *syncResult, force 
 	return nil
 }
 
-// checkBundle rejects a bundle that is not the named certificate's, or whose
-// private key does not belong to its certificate.
+// fingerprintPattern matches the fingerprints sigils sends: "sha256:" and a
+// SHA-256 digest in lowercase hex.
+var fingerprintPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+// checkBundle rejects a bundle that is not the named certificate's, whose
+// fingerprint is not of the form sigils sends, or whose private key does not
+// belong to its certificate. The store keeps the fingerprint, which sigilc
+// status --json prints: encoding/json escapes C0 there, but not DEL and C1.
+// The digest is not computed again: what sigils digests is its own concern.
 func checkBundle(name string, bundle *proto.CertBundle) error {
 	if bundle.Name != name {
 		return fmt.Errorf("server sent certificate %q", bundle.Name)
+	}
+	if !fingerprintPattern.MatchString(bundle.Fingerprint) {
+		return fmt.Errorf("server sent fingerprint %q", bundle.Fingerprint)
 	}
 	if _, err := tls.X509KeyPair([]byte(bundle.FullchainPEM), []byte(bundle.KeyPEM)); err != nil {
 		return err
