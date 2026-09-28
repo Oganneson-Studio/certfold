@@ -20,11 +20,6 @@ import (
 	"time"
 )
 
-const (
-	certPollTimeout  = 60 * time.Second
-	certPollInterval = time.Second
-)
-
 func TestMain(m *testing.M) {
 	rt, err := detectContainerRuntime()
 	if err != nil {
@@ -123,21 +118,18 @@ func enrollAndFetch(t *testing.T, d *deployment) *x509.Certificate {
 		t.Fatal(err)
 	}
 	waitForClientDaemon(t, d)
+	// The fetch returns once the outputs are written.
 	mustExec(t, d.clientContainer, "sigilc", "fetch", "--cert", "test-cert")
-
-	waitForFile(t, d.hostPath("cert-output", "test-cert", "fullchain.pem"), certPollTimeout)
 	return verifyOutput(t, d)
 }
 
 // verifyOutput checks the test-cert output of the client of d: a chain from
 // the root pebble issues from to a certificate for test-cert's domain, and
-// the key of that certificate. It returns the certificate.
+// the key of that certificate. It returns the certificate. The outputs are
+// in the client container, so they are read there.
 func verifyOutput(t *testing.T, d *deployment) *x509.Certificate {
 	t.Helper()
-	chainPEM, err := os.ReadFile(d.hostPath("cert-output", "test-cert", "fullchain.pem"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	chainPEM := []byte(mustExec(t, d.clientContainer, "cat", testCertOutputs+"/fullchain.pem"))
 	var chain []*x509.Certificate
 	for rest := chainPEM; ; {
 		var block *pem.Block
@@ -172,9 +164,7 @@ func verifyOutput(t *testing.T, d *deployment) *x509.Certificate {
 	}); err != nil {
 		t.Fatalf("output is not a certificate pebble issued for %s: %v", domain, err)
 	}
-	// Read in the container: on Linux the key output belongs to the
-	// container's root and only it can read the file.
-	keyPEM := mustExec(t, d.clientContainer, "cat", d.containerPath("cert-output", "test-cert", "key.pem"))
+	keyPEM := mustExec(t, d.clientContainer, "cat", testCertOutputs+"/key.pem")
 	if _, err := tls.X509KeyPair(chainPEM, []byte(keyPEM)); err != nil {
 		t.Fatalf("key output does not belong to the certificate output: %v", err)
 	}
@@ -296,16 +286,4 @@ func waitForClientDaemon(t *testing.T, d *deployment) {
 	}
 	t.Fatalf("sigilc daemon did not become ready:\n%s\ncontainer logs:\n%s",
 		lastOutput, stack.logs(d.clientContainer))
-}
-
-func waitForFile(t *testing.T, path string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if info, err := os.Stat(path); err == nil && info.Size() > 0 {
-			return
-		}
-		time.Sleep(certPollInterval)
-	}
-	t.Fatalf("timed out waiting for %s", path)
 }
