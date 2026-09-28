@@ -8,8 +8,8 @@ import (
 )
 
 // This file defines the request and response bodies of the IPC API. The read
-// models are explicit DTOs: they never carry certificate private keys, push
-// tokens or enrollment-token secret hashes.
+// models are explicit DTOs: they never carry certificate private keys or
+// enrollment-token secret hashes.
 
 // CertificateInfo is the read-only certificate metadata exposed over IPC.
 type CertificateInfo struct {
@@ -42,12 +42,10 @@ type RenewCertRequest struct {
 
 // ClientInfo is the read-only enrolled-client metadata exposed over IPC.
 type ClientInfo struct {
-	Name           string    `json:"name"`
-	Fingerprint    string    `json:"fingerprint"`
-	EnrolledAt     time.Time `json:"enrolled_at"`
-	LastSeen       time.Time `json:"last_seen"`
-	PushEndpoint   string    `json:"push_endpoint"`
-	PushConfigured bool      `json:"push_configured"`
+	Name        string    `json:"name"`
+	Fingerprint string    `json:"fingerprint"`
+	EnrolledAt  time.Time `json:"enrolled_at"`
+	LastSeen    time.Time `json:"last_seen"`
 }
 
 // TokenInfo is the read-only enrollment-token metadata exposed over IPC.
@@ -149,12 +147,10 @@ func clientInfos(records []*store.ClientRecord) []*ClientInfo {
 			continue
 		}
 		out = append(out, &ClientInfo{
-			Name:           record.Name,
-			Fingerprint:    record.Fingerprint,
-			EnrolledAt:     record.EnrolledAt,
-			LastSeen:       record.LastSeen,
-			PushEndpoint:   record.PushEndpoint,
-			PushConfigured: record.PushToken != "",
+			Name:        record.Name,
+			Fingerprint: record.Fingerprint,
+			EnrolledAt:  record.EnrolledAt,
+			LastSeen:    record.LastSeen,
 		})
 	}
 	return out
