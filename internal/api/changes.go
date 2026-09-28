@@ -27,7 +27,8 @@ func (c *Changes) Notify() {
 }
 
 // wait returns a channel that the next Notify closes. A handler must take it
-// before it reads the store to compute the view: a Notify that lands between
+// before it reads the configuration and the store to compute the view (a
+// reload changes the configuration, not the store): a Notify that lands between
 // the read and the wait would otherwise be lost, and the request would sit out
 // the rest of its wait despite the change.
 func (c *Changes) wait() <-chan struct{} {
