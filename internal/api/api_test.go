@@ -1228,57 +1228,6 @@ func TestHeartbeat_Success(t *testing.T) {
 	}
 }
 
-// buildFileDeps is buildDeps on a database file, plus a second handle to the
-// same file that tests use as a concurrent writer (client removal, identity
-// renewal). busy_timeout makes the API's writes wait for that writer's
-// transaction instead of failing with SQLITE_BUSY.
-func buildFileDeps(t *testing.T) (Deps, *store.DB) {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "sigils.db")
-	db, err := store.Open(path + "?_pragma=busy_timeout(10000)")
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	other, err := store.Open(path)
-	if err != nil {
-		t.Fatalf("open second db handle: %v", err)
-	}
-	t.Cleanup(func() { _ = other.Close() })
-
-	deps := buildDeps(t)
-	deps.DB = db
-	deps.EnrollServer = enroll.NewServer(db.Tokens, db.Clients, deps.MiniCA)
-	return deps, other
-}
-
-// heartbeatDuringWrite sends a heartbeat for identity while writeTx, an
-// uncommitted transaction on another handle, holds the database write lock.
-// The request's reads see the state before writeTx, so authentication passes,
-// and its write waits until writeTx commits. The commit is delayed so the
-// request has normally finished its reads by then, which places the concurrent
-// change between the request's lookup and its write. The outcome the tests
-// assert must hold for every interleaving; the delay only makes a regression
-// to a read-modify-write heartbeat observable.
-func heartbeatDuringWrite(t *testing.T, deps Deps, identity *tls.Certificate, writeTx *sql.Tx) *httptest.ResponseRecorder {
-	t.Helper()
-	body, _ := json.Marshal(proto.HeartbeatRequest{})
-	req := simulateMTLS(httptest.NewRequest(http.MethodPost, "/v1/heartbeat", bytes.NewReader(body)), identity)
-	rec := httptest.NewRecorder()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		NewInsecure(deps).Handler.ServeHTTP(rec, req)
-	}()
-	time.Sleep(200 * time.Millisecond)
-	commitErr := writeTx.Commit()
-	<-done
-	if commitErr != nil {
-		t.Fatalf("commit concurrent write: %v", commitErr)
-	}
-	return rec
-}
-
 func TestHeartbeatDoesNotRecreateClientRemovedDuringRequest(t *testing.T) {
 	deps, other := buildFileDeps(t)
 	identity := makeEnrolledClientCert(t, deps, "web-1")
@@ -1293,7 +1242,9 @@ func TestHeartbeatDoesNotRecreateClientRemovedDuringRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rec := heartbeatDuringWrite(t, deps, identity, tx)
+	body, _ := json.Marshal(proto.HeartbeatRequest{})
+	req := simulateMTLS(httptest.NewRequest(http.MethodPost, "/v1/heartbeat", bytes.NewReader(body)), identity)
+	rec := requestDuringWrite(t, deps, req, tx)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
@@ -1322,7 +1273,9 @@ func TestHeartbeatKeepsIdentityStagedDuringRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rec := heartbeatDuringWrite(t, deps, identity, tx)
+	body, _ := json.Marshal(proto.HeartbeatRequest{})
+	req := simulateMTLS(httptest.NewRequest(http.MethodPost, "/v1/heartbeat", bytes.NewReader(body)), identity)
+	rec := requestDuringWrite(t, deps, req, tx)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", rec.Code)
 	}
@@ -1373,6 +1326,215 @@ func TestHeartbeat_NoMTLS(t *testing.T) {
 	NewInsecure(deps).Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// mTLS client check: identity and last_seen
+// ---------------------------------------------------------------------------
+
+// buildFileDeps is buildDeps on a database file, plus a second handle to the
+// same file that tests use as a concurrent writer (client removal, identity
+// renewal). busy_timeout makes the API's writes wait for that writer's
+// transaction instead of failing with SQLITE_BUSY.
+func buildFileDeps(t *testing.T) (Deps, *store.DB) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "sigils.db")
+	db, err := store.Open(path + "?_pragma=busy_timeout(10000)")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	other, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("open second db handle: %v", err)
+	}
+	t.Cleanup(func() { _ = other.Close() })
+
+	deps := buildDeps(t)
+	deps.DB = db
+	deps.EnrollServer = enroll.NewServer(db.Tokens, db.Clients, deps.MiniCA)
+	return deps, other
+}
+
+// requestDuringWrite serves req while writeTx, an uncommitted transaction on
+// another handle, holds the database write lock. The request's reads see the
+// state before writeTx, so its lookup of the client passes, and its writes
+// wait until writeTx commits. The commit is delayed so the request has
+// normally finished its reads by then, which places the concurrent change
+// between the request's lookup and its write. The outcome the tests assert
+// must hold for every interleaving; the delay only makes a regression, such as
+// a read-modify-write of the client record, observable.
+func requestDuringWrite(t *testing.T, deps Deps, req *http.Request, writeTx *sql.Tx) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		NewInsecure(deps).Handler.ServeHTTP(rec, req)
+	}()
+	time.Sleep(200 * time.Millisecond)
+	commitErr := writeTx.Commit()
+	<-done
+	if commitErr != nil {
+		t.Fatalf("commit concurrent write: %v", commitErr)
+	}
+	return rec
+}
+
+func TestAuthenticatedRequestsRecordLastSeenAtMostOncePerInterval(t *testing.T) {
+	deps := buildDeps(t)
+	identity := makeEnrolledClientCert(t, deps, "web-1")
+	ctx := context.Background()
+	handler := NewInsecure(deps).Handler
+	request := func() {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, syncRequest(identity, ""))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+	}
+	lastSeen := func() time.Time {
+		t.Helper()
+		rec, err := deps.DB.Clients.Get(ctx, "web-1", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rec.LastSeen
+	}
+	// A value that no request writes, so a write since shows as a change.
+	sentinel := time.Date(2001, 2, 3, 4, 5, 6, 0, time.UTC)
+	setSentinel := func() {
+		t.Helper()
+		rec, err := deps.DB.Clients.Get(ctx, "web-1", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec.LastSeen = sentinel
+		if err := deps.DB.Clients.Upsert(ctx, rec, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	request()
+	if lastSeen().IsZero() {
+		t.Fatal("the first request did not record last_seen")
+	}
+
+	setSentinel()
+	request()
+	if got := lastSeen(); !got.Equal(sentinel) {
+		t.Fatalf("a second request within the interval wrote last_seen %s", got)
+	}
+
+	previous := lastSeenInterval
+	lastSeenInterval = 10 * time.Millisecond
+	t.Cleanup(func() { lastSeenInterval = previous })
+	time.Sleep(20 * time.Millisecond)
+	request()
+	if got := lastSeen(); got.Equal(sentinel) {
+		t.Fatal("a request after the interval did not write last_seen")
+	}
+}
+
+func TestAuthenticatedRequestDoesNotRecreateClientRemovedDuringRequest(t *testing.T) {
+	deps, other := buildFileDeps(t)
+	identity := makeEnrolledClientCert(t, deps, "web-1")
+	ctx := context.Background()
+
+	tx, err := other.BeginTx(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := other.Clients.Delete(ctx, "web-1", tx); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := requestDuringWrite(t, deps, syncRequest(identity, ""), tx)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if _, err := deps.DB.Clients.Get(ctx, "web-1", nil); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("recording last_seen recreated a removed client: Get error = %v", err)
+	}
+}
+
+func TestAuthenticatedRequestKeepsIdentityStagedDuringRequest(t *testing.T) {
+	deps, other := buildFileDeps(t)
+	identity := makeEnrolledClientCert(t, deps, "web-1")
+	ctx := context.Background()
+
+	staged, err := deps.DB.Clients.Get(ctx, "web-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged.PendingFingerprint = "sha256:renewed"
+	staged.PendingNotAfter = time.Now().UTC().Add(90 * 24 * time.Hour)
+	tx, err := other.BeginTx(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := other.Clients.Upsert(ctx, staged, tx); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := requestDuringWrite(t, deps, syncRequest(identity, ""), tx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	got, err := deps.DB.Clients.Get(ctx, "web-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PendingFingerprint != "sha256:renewed" {
+		t.Fatalf("recording last_seen discarded the staged identity: %+v", got)
+	}
+	if got.LastSeen.IsZero() {
+		t.Error("last seen was not updated")
+	}
+}
+
+// The first uses of a renewed identity can arrive together: both see it
+// pending, and the one whose promotion comes second finds nothing to promote.
+func TestAuthenticatedRequestAcceptsIdentityPromotedDuringRequest(t *testing.T) {
+	deps, other := buildFileDeps(t)
+	makeEnrolledClientCert(t, deps, "web-1")
+	renewed := makeClientCert(t, deps.MiniCA, "web-1")
+	renewedFingerprint := ca.Fingerprint(renewed.Certificate[0])
+	ctx := context.Background()
+	if err := deps.DB.Clients.StagePendingIdentity(ctx, "web-1", renewedFingerprint, time.Now().Add(90*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	promoted, err := deps.DB.Clients.Get(ctx, "web-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoted.Fingerprint = renewedFingerprint
+	promoted.PendingFingerprint = ""
+	promoted.PendingNotAfter = time.Time{}
+	tx, err := other.BeginTx(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := other.Clients.Upsert(ctx, promoted, tx); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := requestDuringWrite(t, deps, syncRequest(renewed, ""), tx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	got, err := deps.DB.Clients.Get(ctx, "web-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Fingerprint != renewedFingerprint || got.LastSeen.IsZero() {
+		t.Fatalf("unexpected client after the request: %+v", got)
 	}
 }
 
