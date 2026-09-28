@@ -7,6 +7,9 @@ RUN CGO_ENABLED=0 go build -o /out/sigils ./cmd/sigils
 
 FROM alpine:3.20
 RUN apk add --no-cache curl ca-certificates
+# Under Docker on Linux the e2e runs the container as the host's user, who
+# must be able to create the IPC socket in its default directory.
+RUN mkdir -p /var/run/sigil && chmod 1777 /var/run/sigil
 COPY --from=builder /out/sigils /usr/local/bin/sigils
 EXPOSE 18443
 ENTRYPOINT ["sigils", "serve"]
