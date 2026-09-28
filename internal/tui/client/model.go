@@ -103,7 +103,10 @@ type Model struct {
 	height  int
 
 	// state is the last state the daemon returned, nil before the first.
+	// stale reports that the last refresh could not read the state, so that
+	// state comes from an earlier one.
 	state *ipc.ClientState
+	stale bool
 	// events holds the newest logging.RingSize events of the daemon that
 	// started at started, oldest first, and lastSeq the Seq of the newest.
 	events  []logging.Event
@@ -179,6 +182,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case refreshMsg:
 		m.refreshing = false
 		m.err = msg.err
+		m.stale = msg.state == nil
 		if msg.state != nil {
 			m.state = msg.state
 		}
@@ -334,7 +338,12 @@ func (m Model) header() string {
 		return shared.TitleStyle.Width(m.width).Render("sigilc")
 	}
 	online := shared.ErrorDot.String() + " offline"
-	if s.Online {
+	switch {
+	case m.stale:
+		// Whether sigils answers sigilc is not known without an answer from
+		// sigilc; the error line says why there is none.
+		online = shared.ErrorDot.String() + " unknown, sigilc is not answering"
+	case s.Online:
 		online = shared.HealthyDot.String() + " online"
 	}
 	lastPull := "never"
