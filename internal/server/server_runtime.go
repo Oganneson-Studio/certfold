@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -44,7 +45,15 @@ func (r *serverConfigRuntime) Current() *config.ServerConfig {
 	return r.current.Load()
 }
 
-func (r *serverConfigRuntime) Reload(ctx context.Context) error {
+func (r *serverConfigRuntime) Reload(ctx context.Context) (err error) {
+	// Deferred first, so it logs once the lock is released.
+	defer func() {
+		if err != nil {
+			slog.Warn("configuration reload rejected", "error", err)
+		} else {
+			slog.Info("configuration reloaded")
+		}
+	}()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

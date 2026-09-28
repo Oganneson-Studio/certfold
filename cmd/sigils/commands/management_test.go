@@ -273,15 +273,15 @@ func serveCertificates(t *testing.T, db *store.DB, cfg *config.ServerConfig) str
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go func() {
-		_ = ipc.Serve(ctx, l, ipc.ServerDeps{DB: db, Certificates: &ipc.CertificateControlDeps{
-			Current: func() *config.ServerConfig { return cfg },
-			Issuing: func(string) bool { return false },
-			RenewalPlan: func(record *store.CertRecord) (time.Time, string) {
-				return record.NotAfter.Add(-20 * 24 * time.Hour), "ari"
-			},
-		}})
-	}()
+	srv := ipc.NewServer(ipc.ServerDeps{DB: db, Certificates: &ipc.CertificateControlDeps{
+		Current: func() *config.ServerConfig { return cfg },
+		Issuing: func(string) bool { return false },
+		RenewalPlan: func(record *store.CertRecord) (time.Time, string) {
+			return record.NotAfter.Add(-20 * 24 * time.Hour), "ari"
+		},
+	}})
+	context.AfterFunc(ctx, func() { _ = srv.Close() })
+	go func() { _ = srv.Serve(l) }()
 	if _, err := ipc.NewClient(socket); err != nil {
 		skipWithoutPipeAccess(t, err)
 		t.Fatal(err)

@@ -4,10 +4,14 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log"
+	"log/slog"
 	"net"
 	"net/url"
 	"path/filepath"
 	"time"
+
+	legolog "github.com/go-acme/lego/v4/log"
 
 	"github.com/Oganneson-Studio/sigil/internal/acme"
 	"github.com/Oganneson-Studio/sigil/internal/api"
@@ -15,8 +19,10 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/enroll"
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
+	"github.com/Oganneson-Studio/sigil/internal/logging"
 	"github.com/Oganneson-Studio/sigil/internal/scheduler"
 	"github.com/Oganneson-Studio/sigil/internal/store"
+	"github.com/Oganneson-Studio/sigil/internal/version"
 )
 
 // shutdownTimeout bounds how long in-flight HTTPS and IPC requests may delay
@@ -26,7 +32,11 @@ const shutdownTimeout = 10 * time.Second
 // Run loads server.yaml from configPath and runs the sigils daemon until ctx
 // is cancelled or the HTTPS or IPC server fails. Shutdown stops the HTTPS and
 // IPC servers, waits for the renewal scheduler, and closes the store last.
-func Run(ctx context.Context, configPath string) error {
+//
+// logs is the logging that logging.Setup made the default: the IPC API serves
+// its events, and the errors of the HTTPS and IPC servers go to its sink
+// alone.
+func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 	cfg, err := config.LoadServer(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -64,14 +74,17 @@ func Run(ctx context.Context, configPath string) error {
 		_ = httpsListener.Close()
 		return fmt.Errorf("ipc listen: %w", err)
 	}
+	// Before any other event, and before either server takes a request.
+	slog.Info("sigils started", "version", version.Version, "listen", cfg.Server.Listen, "public_url", cfg.Server.PublicURL)
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	// Renewal scheduler. lego keeps DNS resolvers in a process-wide variable,
 	// so they are set once, before any issuance can run; changing them needs a
-	// restart.
+	// restart. So is its logger, which writes to stderr by default.
 	acme.SetDNSResolvers(cfg.ACME.DNSResolvers)
+	legolog.Logger = log.New(legoLog{}, "", 0)
 	// Stored certificates and published reloads wake the clients waiting in
 	// GET /v1/sync.
 	changes := api.NewChanges()
@@ -86,6 +99,11 @@ func Run(ctx context.Context, configPath string) error {
 	// Enrollment tokens are created over IPC and redeemed over HTTPS.
 	enrollSrv := enroll.NewServer(db.Tokens, db.Clients, miniCA)
 
+	// The errors of net/http servers, such as the failed TLS handshakes of
+	// every scanner on the internet, go to the service log but are not
+	// events.
+	errorLog := slog.NewLogLogger(logs.Sink, slog.LevelInfo)
+
 	// IPC server. Requests inherit ctx, so once shutdown starts a manual
 	// renewal still waiting for its certificate's lock or an issuance slot
 	// gives up. One already running continues, as lego ignores ctx, and stores
@@ -96,6 +114,7 @@ func Run(ctx context.Context, configPath string) error {
 		Server: &ipc.ServerControlDeps{Reload: runtimeConfig.Reload},
 		Certificates: &ipc.CertificateControlDeps{
 			Renew: func(ctx context.Context, name string) error {
+				slog.Info("manual renewal requested", "cert", name)
 				return r.RenewNamed(ctx, runtimeConfig.Current, name)
 			},
 			Current:     runtimeConfig.Current,
@@ -107,8 +126,10 @@ func Run(ctx context.Context, configPath string) error {
 				return createToken(ctx, enrollSrv, runtimeConfig.Current(), name, ttl)
 			},
 		},
+		Events: logs.Events,
 	})
 	ipcSrv.BaseContext = func(net.Listener) context.Context { return ctx }
+	ipcSrv.ErrorLog = errorLog
 	ipcDone := make(chan error, 1)
 	go func() { ipcDone <- ipcSrv.Serve(ipcListener) }()
 
@@ -123,9 +144,11 @@ func Run(ctx context.Context, configPath string) error {
 		Changes:       changes,
 		Done:          ctx.Done(),
 	}, serverTLSCert)
+	// Anyone who reaches the port can make it log, so it logs a few lines a
+	// minute at most.
+	httpSrv.ErrorLog = log.New(&limitedWriter{w: errorLog.Writer(), clock: time.Now}, "", 0)
 	httpsDone := make(chan error, 1)
 	go func() { httpsDone <- httpSrv.ServeTLS(httpsListener, "", "") }()
-	fmt.Printf("sigils listening on %s (TLS)\n", cfg.Server.Listen)
 
 	var runErr error
 	select {
@@ -135,6 +158,7 @@ func Run(ctx context.Context, configPath string) error {
 	case err := <-ipcDone:
 		runErr = fmt.Errorf("serve ipc: %w", err)
 	}
+	slog.Info("sigils stopping")
 
 	// Stop taking requests, then wait for background work, then close the
 	// store (deferred above). Cancelling before Shutdown answers the requests
@@ -159,11 +183,25 @@ func createToken(ctx context.Context, enrollSrv *enroll.Server, cfg *config.Serv
 	if ttl <= 0 {
 		return ipc.CreateTokenResponse{}, fmt.Errorf("token lifetime must be positive, got %s", ttl)
 	}
+	if cfg.Server.PublicURL == "" {
+		// Without public_url the base URL is derived from server.listen, which
+		// the daemon listens on, so it splits into a host and a port.
+		host, _, _ := net.SplitHostPort(cfg.Server.Listen)
+		if host == "" || net.ParseIP(host).IsUnspecified() {
+			return ipc.CreateTokenResponse{}, fmt.Errorf("server.public_url must be set: server.listen %q names no host clients can reach", cfg.Server.Listen)
+		}
+	}
 	serverURL := cfg.PublicBaseURL()
 	token, err := enrollSrv.Create(ctx, serverURL, name, ttl)
 	if err != nil {
 		return ipc.CreateTokenResponse{}, err
 	}
+	// An event names the token by its ID: the token itself enrolls a client.
+	payload, err := enroll.DecodeToken(token)
+	if err != nil {
+		return ipc.CreateTokenResponse{}, err
+	}
+	slog.Info("enrollment token created", "token", payload.TokenID, "client", payload.Name, "expires_at", payload.ExpiresAt)
 	return ipc.CreateTokenResponse{
 		Token:               token,
 		ServerURL:           serverURL,

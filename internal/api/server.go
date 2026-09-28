@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/Oganneson-Studio/sigil/internal/ca"
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/enroll"
+	"github.com/Oganneson-Studio/sigil/internal/logging"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
@@ -91,7 +91,7 @@ func NewInsecure(deps Deps) *http.Server {
 
 func buildRouter(h *handlers) http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.Recoverer)
+	r.Use(logging.Recoverer)
 
 	// Public — no auth.
 	r.Get("/install.sh", h.installSh)

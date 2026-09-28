@@ -14,11 +14,15 @@ type Event struct {
 	// Level is slog.Level.String(): INFO, WARN or ERROR.
 	Level string `json:"level"`
 	// Message is the message of the record, with control characters replaced
-	// by spaces and invalid UTF-8 replaced by U+FFFD.
+	// by spaces, invalid UTF-8 replaced by U+FFFD and the query of every http
+	// and https URL replaced by "?REDACTED", cut at a rune boundary to at most
+	// 1 KiB.
 	Message string `json:"message"`
 	// Attrs holds the attributes as key=value, quoted as slog.TextHandler
-	// quotes them, with the keys in a group written g.k. Longer attributes
-	// are cut at a rune boundary to at most 2 KiB, followed by "...".
+	// quotes them, with the keys in a group written g.k. In string and error
+	// values the query of every URL is replaced as in Message. Longer
+	// attributes are cut at a rune boundary to at most 2 KiB, followed by
+	// "...".
 	Attrs string `json:"attrs,omitempty"`
 }
 

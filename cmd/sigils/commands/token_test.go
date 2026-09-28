@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -18,6 +20,7 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/ca"
 	"github.com/Oganneson-Studio/sigil/internal/enroll"
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
+	"github.com/Oganneson-Studio/sigil/internal/logging"
 	"github.com/Oganneson-Studio/sigil/internal/server"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
@@ -49,8 +52,20 @@ func skipWithoutPipeAccess(t *testing.T, err error) {
 // startDaemon runs the sigils daemon on a loopback port with a configuration
 // without certificates, so it never contacts an ACME directory. It returns
 // once the daemon answers on its IPC endpoint; stop may be called repeatedly.
+// The daemon logs as `sigils serve` does, to a service log that is discarded.
 func startDaemon(t *testing.T, dataDir, publicURL string) (socket, listen string, stop func() error) {
 	t.Helper()
+	// Setup also routes the standard log package through slog, which
+	// restoring the default logger does not undo. Registered first, the
+	// cleanup runs after the daemon has stopped.
+	logger, writer, flags := slog.Default(), log.Writer(), log.Flags()
+	t.Cleanup(func() {
+		slog.SetDefault(logger)
+		log.SetOutput(writer)
+		log.SetFlags(flags)
+	})
+	logs := logging.Setup(slog.NewTextHandler(io.Discard, nil))
+
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +99,7 @@ certificates: []
 	exited := make(chan struct{})
 	var runErr error
 	go func() {
-		runErr = server.Run(ctx, cfgPath)
+		runErr = server.Run(ctx, cfgPath, logs)
 		close(exited)
 	}()
 	stop = func() error {

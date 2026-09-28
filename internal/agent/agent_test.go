@@ -41,10 +41,11 @@ func TestRunReturnsNilWhenCancelled(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	logs := setupLogs(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	result := make(chan error, 1)
-	go func() { result <- Run(ctx, path) }()
+	go func() { result <- Run(ctx, path, logs) }()
 
 	accepted := make(chan net.Conn, 1)
 	go func() {

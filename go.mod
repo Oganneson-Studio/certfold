@@ -10,7 +10,7 @@ require (
 	github.com/charmbracelet/x/exp/teatest v0.0.0-20260511003329-c066bcf2349a
 	github.com/go-acme/lego/v4 v4.35.2
 	github.com/go-chi/chi/v5 v5.2.5
-	github.com/kardianos/service v1.2.4
+	github.com/kardianos/service v1.3.0
 	github.com/miekg/dns v1.1.72
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sys v0.48.0

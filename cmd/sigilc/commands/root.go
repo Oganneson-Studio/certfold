@@ -28,6 +28,7 @@ Use 'enroll' to bootstrap a new client against a sigils instance.`,
 		newEnrollCmd(),
 		newStatusCmd(),
 		newFetchCmd(),
+		newEventsCmd(),
 	)
 
 	return cmd

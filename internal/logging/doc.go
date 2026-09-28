@@ -3,5 +3,6 @@
 // recent events that the IPC API serves. Values marked Private, such as the
 // output of on_change and exec DNS programs, are withheld from the events
 // and from the Windows event log; only a service log with restricted
-// readers, such as journald, holds them.
+// readers, such as journald, holds them. So are the queries of URLs, where
+// some DNS provider APIs take credentials.
 package logging

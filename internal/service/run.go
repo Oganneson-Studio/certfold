@@ -2,30 +2,42 @@ package service
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
 	ksvc "github.com/kardianos/service"
+
+	"github.com/Oganneson-Studio/sigil/internal/logging"
 )
 
 // Run executes fn as the daemon body until the process is asked to stop. fn
 // should block until its context is cancelled and then return promptly.
 //
+// Run first sets up the logging of the daemon with logging.Setup and passes
+// it to fn. The service log is stderr, except in a Windows service, which
+// writes to the Application event log.
+//
 // When a service manager (Windows SCM, systemd, launchd) started the process,
 // fn runs inside the kardianos service loop so start and stop requests are
 // acknowledged, and a stop request cancels fn's context. Otherwise the first
 // SIGINT or SIGTERM cancels it and a second one terminates the process. If fn
-// fails before any stop request, the error is written to the system log and
-// Run returns it at once, so the process exits and the manager sees the failure.
-func Run(cfg Config, fn func(context.Context) error) error {
-	return runDaemon(ksvc.Interactive(), func(d Daemon) error {
+// fails before any stop request, the error is logged as "daemon failed" and
+// Run returns it at once, so the process exits and the manager sees the
+// failure.
+func Run(cfg Config, fn func(context.Context, logging.Logs) error) error {
+	interactive := ksvc.Interactive()
+	sink, closeSink := daemonLog(cfg.Role, interactive)
+	defer closeSink()
+	logs := logging.Setup(sink)
+	return runDaemon(interactive, func(d Daemon) error {
 		s, err := New(d, cfg)
 		if err != nil {
 			return err
 		}
 		return s.Run()
-	}, fn)
+	}, func(ctx context.Context) error { return fn(ctx, logs) })
 }
 
 // runDaemon is Run with the service manager detection and loop injected.
@@ -69,17 +81,14 @@ func newContextDaemon(run func(ctx context.Context) error) *contextDaemon {
 	return &contextDaemon{run: run, ctx: ctx, cancel: cancel, done: make(chan struct{})}
 }
 
-func (d *contextDaemon) Start(s ksvc.Service) error {
+func (d *contextDaemon) Start(ksvc.Service) error {
 	go func() {
 		defer close(d.done)
 		d.err = d.run(d.ctx)
 		if d.err != nil && d.ctx.Err() == nil {
-			// stderr may be invisible under the manager (Windows SCM), so keep
-			// the reason in the system log. Logging errors are ignored; they
-			// must not change how the daemon exits.
-			if logger, err := s.SystemLogger(nil); err == nil {
-				_ = logger.Error(d.err)
-			}
+			// The error Run returns reaches only stderr, which nobody reads
+			// under the Windows SCM; the service log keeps the reason.
+			slog.Error("daemon failed", "error", d.err)
 		}
 	}()
 	return nil
