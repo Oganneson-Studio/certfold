@@ -188,12 +188,14 @@ func TestEnvValuesAreLiteralScalars(t *testing.T) {
 
 func TestReadServerPathsExpandsAliasesLikeLoadServer(t *testing.T) {
 	t.Setenv("SIGIL_TEST_HOST", "sigil.example.com")
-	// Both paths alias one anchored value. "$$$$" shows that each path gets
-	// the value expanded exactly once.
-	path := writeServerYAML(t, withServerSection(`public_url: &base "https://${SIGIL_TEST_HOST}/$$$$"
+	// Both paths alias one anchored value, that of another field, which
+	// server.public_url cannot be: it may not hold "$". "$$$$" shows that
+	// each path gets the value expanded exactly once.
+	path := writeServerYAML(t, withServerSection(`tls_cert_file: &base "/srv/${SIGIL_TEST_HOST}/$$$$"
+  tls_key_file: *base
   data_dir: *base
   ipc_socket: *base`))
-	const want = "https://sigil.example.com/$$"
+	const want = "/srv/sigil.example.com/$$"
 
 	cfg, err := LoadServer(path)
 	if err != nil {

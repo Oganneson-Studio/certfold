@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -203,6 +204,9 @@ func (c *ServerConfig) Validate() error {
 	if c.Server.PublicURL != "" {
 		if u, err := url.ParseRequestURI(c.Server.PublicURL); err != nil || u.Scheme != "https" {
 			v.Add("server.public_url", "must be an https URL, got %q", c.Server.PublicURL)
+		} else if i := strings.IndexFunc(c.Server.PublicURL, unquotable); i >= 0 {
+			r, _ := utf8.DecodeRuneInString(c.Server.PublicURL[i:])
+			v.Add("server.public_url", "must not contain %q: install commands quote the URL for sh and PowerShell", r)
 		}
 	}
 
@@ -370,6 +374,15 @@ func (c *ServerConfig) PublicBaseURL() string {
 	}
 	// Best-effort: wrap listen address with https scheme.
 	return "https://" + strings.TrimLeft(c.Server.Listen, ":")
+}
+
+// unquotable reports whether r may not appear in server.public_url, which the
+// install commands put between single quotes for sh and for PowerShell: any
+// character but ASCII, and quotes, backticks, "$", "\", whitespace and control
+// characters. PowerShell takes U+2018 to U+201B for single quotes and U+201C
+// to U+201E for double quotes, hence ASCII only.
+func unquotable(r rune) bool {
+	return r > unicode.MaxASCII || unicode.IsSpace(r) || unicode.IsControl(r) || strings.ContainsRune("'\"`$\\", r)
 }
 
 // isValidDNSResolver reports whether s works as a resolver address after
