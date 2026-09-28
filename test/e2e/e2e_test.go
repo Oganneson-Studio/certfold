@@ -623,7 +623,7 @@ func certFingerprint(t *testing.T, d *deployment) string {
 
 // hookRuns returns the sha256 that each run of test-cert's on_change program
 // logged to hook.log of d, oldest first. The program runs as the container's
-// root, so the log is read in the client container.
+// user, so the log is read in the client container.
 func hookRuns(t *testing.T, d *deployment) []string {
 	t.Helper()
 	// sha256sum ends each line with a newline, so the last element is empty
@@ -638,7 +638,7 @@ func hookRuns(t *testing.T, d *deployment) []string {
 }
 
 // editClientConfig applies edit to the client.yaml of d. Enrollment rewrote
-// that file as the container's root with mode 0600, so it is read and written
+// that file as the container's user with mode 0600, so it is read and written
 // in the client container; the shell's > keeps its owner and mode.
 func editClientConfig(t *testing.T, d *deployment, edit func(doc map[string]any)) {
 	t.Helper()

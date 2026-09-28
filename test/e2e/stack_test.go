@@ -44,6 +44,10 @@ type e2eStack struct {
 	// distinct host paths; each run keeps its files in its own runDir in it.
 	mountDir string
 	runDir   string
+	// user is the --user of the sigils and sigilc containers under Docker on
+	// Linux: the uid and gid of the harness, so that it can remove the files
+	// they write in runDir. It is empty under WSLC, which needs no --user.
+	user string
 	// Both servers issue their certificates from pebble, an ACME test CA.
 	// Their exec DNS provider sets the challenge records in challtestsrv,
 	// which answers the DNS lookups of pebble and of the servers. The host
@@ -169,6 +173,9 @@ func newE2EStack(rt containerRuntime) (*e2eStack, error) {
 		pebbleImage:           "sigil-e2e-pebble:" + suffix,
 		pebbleContainer:       "sigil-e2e-pebble-" + suffix,
 		challtestsrvContainer: "sigil-e2e-challtestsrv-" + suffix,
+	}
+	if rt.name == "docker" && runtime.GOOS == "linux" {
+		s.user = fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 	}
 	ports, err := availablePorts(5)
 	if err != nil {
@@ -304,8 +311,11 @@ func (s *e2eStack) startServer(d *deployment) error {
 		// server trusts any private ACME CA.
 		"-e", "LEGO_CA_CERTIFICATES=" + s.containerPath("pebble", "root.pem"),
 		"-v", bindMount(s.mountDir, "/e2e", false),
-		s.serverImage,
 	}
+	if s.user != "" {
+		args = append(args, "--user", s.user)
+	}
+	args = append(args, s.serverImage)
 	if out, err := s.run(args...); err != nil {
 		return fmt.Errorf("start %s: %w\n%s", d.alias, err, out)
 	}
@@ -376,6 +386,9 @@ func (s *e2eStack) runClient(d *deployment, bootstrap bool) error {
 	if d.publicRoot != nil {
 		// On Linux, Go loads SSL_CERT_FILE into the system roots.
 		args = append(args, "-e", "SSL_CERT_FILE="+d.containerPath("tls", "root.pem"))
+	}
+	if s.user != "" {
+		args = append(args, "--user", s.user)
 	}
 	if bootstrap {
 		args = append(args, "--entrypoint", "/bin/sh", s.clientImage, "-c", "while :; do sleep 3600; done")
