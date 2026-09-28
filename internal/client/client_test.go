@@ -906,6 +906,49 @@ func TestReconcileFailureSkipsHook(t *testing.T) {
 	}
 }
 
+// TestHookPendingWriteIsRetried covers a hook_pending bit whose write failed:
+// it must reach certs.json once the disk works again, or a restart would
+// lose the on_change run it records.
+func TestHookPendingWriteIsRetried(t *testing.T) {
+	bundle := newTestBundle(t, "api-prod")
+	cfg := buildTestCfg(t, "https://sigil.example.test")
+	fullchainOutput(cfg, t.TempDir(), "api-prod", "/usr/sbin/reload")
+	seedStore(t, cfg.Client.DataDir, bundle)
+	c := newTestClient(t, cfg)
+	c.hook = func(_ context.Context, certName string, _ []string) error {
+		return fmt.Errorf("on_change of certificate %s: exit status 1", certName)
+	}
+	// A directory where certs.json belongs fails every write of the store.
+	storePath := filepath.Join(cfg.Client.DataDir, storeFileName)
+	if err := os.Rename(storePath, storePath+".bak"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(storePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The output is missing, so the reconcile writes it and sets hook_pending.
+	c.pullMu.Lock()
+	err := c.reconcileLocked()
+	c.pullMu.Unlock()
+	if err == nil || !strings.Contains(err.Error(), "save store") {
+		t.Fatalf("reconcile error = %v, want the failed write of the store", err)
+	}
+
+	// The disk works again, and the program keeps failing.
+	if err := os.Remove(storePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(storePath+".bak", storePath); err != nil {
+		t.Fatal(err)
+	}
+	c.pullMu.Lock()
+	_ = c.reconcileLocked()
+	c.pullMu.Unlock()
+	if !readStore(t, cfg.Client.DataDir)["api-prod"].HookPending {
+		t.Fatal("hook_pending is only in memory: a restart would lose the failed on_change run")
+	}
+}
+
 // TestCertificateLeavingViewKeepsOutputs covers a certificate the server no
 // longer lists for the client: it leaves the store, and its outputs and
 // on_change program are left alone.

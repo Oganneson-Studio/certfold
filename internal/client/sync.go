@@ -216,7 +216,9 @@ func (c *Client) applyViewLocked(ctx context.Context, result *syncResult, force 
 		if err := saveStore(c.cfg.Client.DataDir, next); err != nil {
 			errs = append(errs, fmt.Errorf("save store: %w", err))
 		} else {
+			// next carries the bits in memory, unsaved ones included.
 			c.store = next
+			c.storeUnsaved = false
 		}
 	}
 	if len(errs) > 0 {

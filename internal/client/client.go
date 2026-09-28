@@ -51,6 +51,11 @@ type Client struct {
 	// store holds the content of certs.json: the material of every
 	// certificate in the last view applied. Guarded by pullMu.
 	store map[string]storedCert
+	// storeUnsaved records that a write failed after a reconcile changed
+	// hook_pending bits in memory, so certs.json lags behind them. Every
+	// reconcile writes the store again until a write succeeds, and any write
+	// that succeeds clears it. Guarded by pullMu.
+	storeUnsaved bool
 	// etag is the ETag of the last view applied in full, sent as
 	// If-None-Match. Guarded by pullMu.
 	etag string
@@ -405,9 +410,9 @@ func (c *Client) reconcileLocked() error {
 			pending = true
 		}
 	}
-	if pending {
-		if err := saveStore(c.cfg.Client.DataDir, c.store); err != nil {
-			errs = append(errs, fmt.Errorf("save store: %w", err))
+	if pending || c.storeUnsaved {
+		if err := c.writeStoreLocked(); err != nil {
+			errs = append(errs, err)
 		}
 	}
 
@@ -435,11 +440,22 @@ func (c *Client) reconcileLocked() error {
 		cleared = true
 	}
 	if cleared {
-		if err := saveStore(c.cfg.Client.DataDir, c.store); err != nil {
-			errs = append(errs, fmt.Errorf("save store: %w", err))
+		if err := c.writeStoreLocked(); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// writeStoreLocked writes the store in memory to certs.json, and records
+// whether certs.json lags behind it.
+func (c *Client) writeStoreLocked() error {
+	err := saveStore(c.cfg.Client.DataDir, c.store)
+	c.storeUnsaved = err != nil
+	if err != nil {
+		return fmt.Errorf("save store: %w", err)
+	}
+	return nil
 }
 
 // startPushReceiver starts a minimal HTTP server on push_listen that triggers
