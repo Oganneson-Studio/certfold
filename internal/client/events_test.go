@@ -138,6 +138,125 @@ func TestFetchLogsCertificateChanges(t *testing.T) {
 	}
 }
 
+// TestFetchLogsOnlyChangedCertificates covers a view in which one
+// certificate is renewed and another stays as it was: only the renewed one is
+// logged.
+func TestFetchLogsOnlyChangedCertificates(t *testing.T) {
+	a, b := newTestBundle(t, "a"), newTestBundle(t, "b")
+	fs := newFakeServer(a, b)
+	ts := httptest.NewServer(fs.handler())
+	t.Cleanup(ts.Close)
+	c := newTestClient(t, buildTestCfg(t, ts.URL))
+	ring, _ := captureEvents(t)
+	if err := c.Fetch(context.Background(), ""); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	before := len(eventLines(ring))
+
+	renewed := newTestBundle(t, "a")
+	fs.setView(renewed, b)
+	if err := c.Fetch(context.Background(), ""); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if got, want := eventLines(ring)[before:], []string{updatedEvent(t, renewed)}; !slices.Equal(got, want) {
+		t.Fatalf("events after a was renewed:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestStoreChangesAreLoggedOnceWritten covers a renewal the store cannot be
+// written for: nothing is logged, since the store keeps the old certificate,
+// and the renewal is logged once, by the fetch that writes it.
+func TestStoreChangesAreLoggedOnceWritten(t *testing.T) {
+	a := newTestBundle(t, "a")
+	fs := newFakeServer(a)
+	ts := httptest.NewServer(fs.handler())
+	t.Cleanup(ts.Close)
+	cfg := buildTestCfg(t, ts.URL)
+	c := newTestClient(t, cfg)
+	ring, _ := captureEvents(t)
+	if err := c.Fetch(context.Background(), ""); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	// A directory where certs.json belongs fails every write of the store.
+	storePath := filepath.Join(cfg.Client.DataDir, storeFileName)
+	if err := os.Remove(storePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(storePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	updatedEvents := func(lines []string) []string {
+		var out []string
+		for _, line := range lines {
+			if strings.Contains(line, " certificate updated ") {
+				out = append(out, line)
+			}
+		}
+		return out
+	}
+	before := len(eventLines(ring))
+
+	renewed := newTestBundle(t, "a")
+	fs.setView(renewed)
+	if err := c.Fetch(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "save store") {
+		t.Fatalf("Fetch error = %v, want the failed write of the store", err)
+	}
+	if got := updatedEvents(eventLines(ring)[before:]); len(got) != 0 {
+		t.Fatalf("logged %q although the store was not written", got)
+	}
+
+	if err := os.Remove(storePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Fetch(context.Background(), ""); err != nil {
+		t.Fatalf("Fetch after the repair: %v", err)
+	}
+	if got, want := updatedEvents(eventLines(ring)[before:]), []string{updatedEvent(t, renewed)}; !slices.Equal(got, want) {
+		t.Fatalf("updates logged:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestFailedProgramIsNotLoggedAsSucceeded covers an on_change program that
+// fails: the reconcile logs no "on_change succeeded" for it.
+func TestFailedProgramIsNotLoggedAsSucceeded(t *testing.T) {
+	bundle := newTestBundle(t, "api-prod")
+	cfg := buildTestCfg(t, "https://sigil.example.test")
+	fullchainOutput(cfg, t.TempDir(), "api-prod", "/usr/sbin/reload")
+	seedStore(t, cfg.Client.DataDir, bundle)
+	c := newTestClient(t, cfg)
+	c.hook = func(_ context.Context, certName string, _ []string) error {
+		return fmt.Errorf("on_change of certificate %s: exit status 1", certName)
+	}
+	ring, _ := captureEvents(t)
+
+	c.pullMu.Lock()
+	err := c.reconcileLocked()
+	c.pullMu.Unlock()
+	if err == nil {
+		t.Fatal("reconcile succeeded, want the failure of the program")
+	}
+	if got, want := eventLines(ring), []string{"INFO outputs rewritten cert=api-prod"}; !slices.Equal(got, want) {
+		t.Fatalf("events:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestRejectedReloadIsNotLogged covers a reload that changes a setting only a
+// restart applies: Reload fails, and logs nothing.
+func TestRejectedReloadIsNotLogged(t *testing.T) {
+	cfg := buildTestCfg(t, "https://sigil.example.test")
+	c := newTestClient(t, cfg)
+	ring, _ := captureEvents(t)
+
+	updated := *cfg
+	updated.Client.IPCSocket = filepath.Join(t.TempDir(), "other.sock")
+	if err := c.Reload(&updated); err == nil || !strings.Contains(err.Error(), "client.ipc_socket") {
+		t.Fatalf("Reload error = %v, want client.ipc_socket to require a restart", err)
+	}
+	if got := eventLines(ring); len(got) != 0 {
+		t.Fatalf("events = %q, want none for a rejected reload", got)
+	}
+}
+
 // TestMetadataRepairIsNotLoggedAsRewrite covers an output whose content
 // matches but whose mode was changed. A reconcile restores the mode in place
 // on Unix, and does not compare modes on Windows; either way it rewrites no
