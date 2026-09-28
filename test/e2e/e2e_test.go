@@ -727,6 +727,25 @@ func TestRevokedTokenIsRejected(t *testing.T) {
 	assertEnrollmentRejected(t, d, token, "revoked.yaml")
 }
 
+// TestRemovingMissingClientOrTokenFails checks that sigils fails with the
+// reason of the daemon for a client name or token ID that does not exist,
+// such as a mistyped one, instead of reporting a removal that did not happen.
+func TestRemovingMissingClientOrTokenFails(t *testing.T) {
+	missingToken := strings.Repeat("0", 32)
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"client", "remove", "no-such-client"}, `server returned 404: client "no-such-client" is not enrolled`},
+		{[]string{"token", "revoke", missingToken}, `server returned 404: enrollment token "` + missingToken + `" does not exist`},
+	} {
+		out, err := stack.exec(stack.miniCA.serverContainer, append([]string{"sigils"}, tc.args...)...)
+		if err == nil || !strings.Contains(out, tc.want) {
+			t.Errorf("sigils %s: error %v, output:\n%s\nwant it to fail with %s", strings.Join(tc.args, " "), err, out, tc.want)
+		}
+	}
+}
+
 func TestInstallScriptUsesNetworkAlias(t *testing.T) {
 	sh := getInstallScript(t, "/install.sh")
 	if !strings.Contains(sh, `SERVER_URL="https://sigils:18443"`) {
