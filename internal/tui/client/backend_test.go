@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -24,6 +25,9 @@ type fakeBackend struct {
 	eventsErr error
 	fetchErr  error
 	reloadErr error
+	// hangState and hangEvents make GetClientState and Events answer like a
+	// daemon that does not.
+	hangState, hangEvents bool
 
 	stateCalls int
 	afters     []uint64 // the after of each Events call
@@ -31,8 +35,22 @@ type fakeBackend struct {
 	reloads    int
 }
 
-func (f *fakeBackend) GetClientState(context.Context) (*ipc.ClientState, error) {
+// hang returns when ctx ends, with its error, or after 5 seconds if no
+// deadline ends it.
+func hang(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(5 * time.Second):
+		return errors.New("no deadline ended the call")
+	}
+}
+
+func (f *fakeBackend) GetClientState(ctx context.Context) (*ipc.ClientState, error) {
 	f.stateCalls++
+	if f.hangState {
+		return nil, hang(ctx)
+	}
 	if f.stateErr != nil {
 		return nil, f.stateErr
 	}
@@ -50,8 +68,11 @@ func (f *fakeBackend) ReloadClient(context.Context) error {
 	return f.reloadErr
 }
 
-func (f *fakeBackend) Events(_ context.Context, after uint64) (*ipc.EventsPage, error) {
+func (f *fakeBackend) Events(ctx context.Context, after uint64) (*ipc.EventsPage, error) {
 	f.afters = append(f.afters, after)
+	if f.hangEvents {
+		return nil, hang(ctx)
+	}
 	if f.eventsErr != nil {
 		return nil, f.eventsErr
 	}

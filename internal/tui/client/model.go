@@ -31,6 +31,10 @@ type Backend interface {
 // the daemon.
 const refreshInterval = 2 * time.Second
 
+// refreshTimeout bounds each IPC call of a refresh (see shared.Within). A
+// variable only so tests can shorten it.
+var refreshTimeout = 10 * time.Second
+
 var (
 	// blockStyle sets the certificate table and the recent events apart.
 	blockStyle = lipgloss.NewStyle().Padding(1, 1, 0)
@@ -227,24 +231,27 @@ func (m Model) run(name string, action func(context.Context) error) (Model, tea.
 	}
 }
 
-// startRefresh starts a refresh unless one is in flight.
+// startRefresh starts a refresh unless one is in flight. Each IPC call of the
+// refresh ends after refreshTimeout.
 func (m Model) startRefresh() (Model, tea.Cmd) {
 	if m.refreshing {
 		return m, nil
 	}
 	m.refreshing = true
-	backend, after, started := m.backend, m.lastSeq, m.started
+	backend, after, started, timeout := m.backend, m.lastSeq, m.started, refreshTimeout
+	eventsAfter := func(after uint64) func(context.Context) (*ipc.EventsPage, error) {
+		return func(ctx context.Context) (*ipc.EventsPage, error) { return backend.Events(ctx, after) }
+	}
 	return m, func() tea.Msg {
-		ctx := context.Background()
-		state, err := backend.GetClientState(ctx)
+		state, err := shared.Within(timeout, backend.GetClientState)
 		if err != nil {
 			return refreshMsg{err: err}
 		}
-		page, err := backend.Events(ctx, after)
+		page, err := shared.Within(timeout, eventsAfter(after))
 		// A daemon that started at another time numbers its events from 1
 		// again, so the page lacks those up to after.
 		if err == nil && after != 0 && !page.Started.Equal(started) {
-			page, err = backend.Events(ctx, 0)
+			page, err = shared.Within(timeout, eventsAfter(0))
 		}
 		if err != nil {
 			return refreshMsg{state: state, err: err}
