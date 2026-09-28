@@ -442,20 +442,13 @@ func (f *fakeServer) syncsWithETag() int {
 	return n
 }
 
-// syncAfter waits for the first sync request received at or after since.
-func (f *fakeServer) syncAfter(t *testing.T, since time.Time) syncRecord {
+// syncAt waits for the sync request with index n and returns it. Tests find
+// the request that follows an event by counting the requests before it: on
+// Windows the clock may give both the same time.
+func (f *fakeServer) syncAt(t *testing.T, n int) syncRecord {
 	t.Helper()
-	var found syncRecord
-	waitFor(t, "a sync request", func() bool {
-		for _, record := range f.syncRequests() {
-			if !record.at.Before(since) {
-				found = record
-				return true
-			}
-		}
-		return false
-	})
-	return found
+	waitFor(t, fmt.Sprintf("sync request %d", n+1), func() bool { return len(f.syncRequests()) > n })
+	return f.syncRequests()[n]
 }
 
 func (f *fakeServer) bundleRequests() []string {
@@ -1221,6 +1214,7 @@ func TestHookFailureBacksOffUntilItSucceeds(t *testing.T) {
 	type hookRun struct {
 		end           time.Time
 		pendingOnDisk bool
+		syncsBefore   int
 	}
 	var mu sync.Mutex
 	var runs []hookRun
@@ -1233,7 +1227,11 @@ func TestHookFailureBacksOffUntilItSucceeds(t *testing.T) {
 		defer mu.Unlock()
 		// The runs at startup and in the first round fail.
 		fail := len(runs) < 2
-		runs = append(runs, hookRun{end: time.Now(), pendingOnDisk: disk.Certs[certName].HookPending})
+		runs = append(runs, hookRun{
+			end:           time.Now(),
+			pendingOnDisk: disk.Certs[certName].HookPending,
+			syncsBefore:   len(fs.syncRequests()),
+		})
 		if fail {
 			return fmt.Errorf("on_change of %s exited with status 1", certName)
 		}
@@ -1251,10 +1249,10 @@ func TestHookFailureBacksOffUntilItSucceeds(t *testing.T) {
 	if !got[0].pendingOnDisk {
 		t.Fatal("hook_pending was not on disk when on_change ran")
 	}
-	if gap := fs.syncAfter(t, got[1].end).at.Sub(got[1].end); gap < 800*time.Millisecond {
+	if gap := fs.syncAt(t, got[1].syncsBefore).at.Sub(got[1].end); gap < 800*time.Millisecond {
 		t.Fatalf("the round after a failed on_change started after %v, want the 1s backoff", gap)
 	}
-	if gap := fs.syncAfter(t, got[2].end).at.Sub(got[2].end); gap > 500*time.Millisecond {
+	if gap := fs.syncAt(t, got[2].syncsBefore).at.Sub(got[2].end); gap > 500*time.Millisecond {
 		t.Fatalf("the round after on_change succeeded started after %v, want no backoff", gap)
 	}
 	if readStore(t, cfg.Client.DataDir)["api-prod"].HookPending {
@@ -1287,6 +1285,7 @@ func TestReloadReconcilesAndRestartsSync(t *testing.T) {
 			{Format: "pem-fullchain", Path: firstPath},
 			{Format: "pem-fullchain", Path: addedPath},
 		}}}
+		n := len(fs.syncRequests())
 		reloadedAt := time.Now()
 		if err := c.Reload(&updated); err != nil {
 			t.Fatalf("Reload: %v", err)
@@ -1294,7 +1293,7 @@ func TestReloadReconcilesAndRestartsSync(t *testing.T) {
 		if got := fileContent(addedPath); got != bundle.FullchainPEM {
 			t.Fatal("Reload returned before writing the added output")
 		}
-		next := fs.syncAfter(t, reloadedAt)
+		next := fs.syncAt(t, n)
 		if next.ifNoneMatch != "" {
 			t.Fatalf("the request after Reload carried If-None-Match %q", next.ifNoneMatch)
 		}
@@ -1317,12 +1316,13 @@ func TestReloadReconcilesAndRestartsSync(t *testing.T) {
 		startRun(t, c)
 		waitFor(t, "a failed round", func() bool { return fs.syncsWithETag() >= 1 })
 
+		n := len(fs.syncRequests())
 		reloadedAt := time.Now()
 		updated := *cfg
 		if err := c.Reload(&updated); err != nil {
 			t.Fatalf("Reload: %v", err)
 		}
-		next := fs.syncAfter(t, reloadedAt)
+		next := fs.syncAt(t, n)
 		if next.ifNoneMatch != "" {
 			t.Fatalf("the request after Reload carried If-None-Match %q", next.ifNoneMatch)
 		}
@@ -1470,14 +1470,13 @@ func TestIdentitySwitchRestartsSync(t *testing.T) {
 	}
 
 	ahead.Store(int64(31 * 24 * time.Hour))
-	renewedAt := time.Now()
 	c.pullMu.Lock()
 	err = c.renewIdentityLocked(context.Background())
 	c.pullMu.Unlock()
 	if err != nil {
 		t.Fatalf("renew identity: %v", err)
 	}
-	next := fs.syncAfter(t, renewedAt)
+	next := fs.syncAt(t, len(syncs))
 	if next.serial != "3" {
 		t.Fatalf("the request after the switch presented serial %s, want the new identity 3", next.serial)
 	}
