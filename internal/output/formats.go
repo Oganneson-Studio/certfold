@@ -1,11 +1,14 @@
 package output
 
 import (
+	"bytes"
+	"crypto"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"software.sslmate.com/src/go-pkcs12"
 
@@ -71,17 +74,120 @@ func Write(bundle *CertBundle, spec config.OutputSpec) error {
 // changed reports whether at least one target was replaced, also when err is
 // not nil. Private-key outputs on Windows keep being created by
 // securefile.CreateTemp with read access for owner, as Write creates them.
-//
-// This is a stub: it rewrites every output with Write, and reports changed
-// once one has been written.
 func Reconcile(bundle *CertBundle, specs []config.OutputSpec) (changed bool, err error) {
+	var stale []config.OutputSpec
 	for _, spec := range specs {
-		if err = Write(bundle, spec); err != nil {
-			return changed, err
+		if !matches(bundle, spec) {
+			stale = append(stale, spec)
+		}
+	}
+
+	temps := make([]string, 0, len(stale))
+	for _, spec := range stale {
+		tmp, err := stage(bundle, spec)
+		if err != nil {
+			for _, name := range temps {
+				_ = os.Remove(name)
+			}
+			return false, fmt.Errorf("write %s: %w", spec.Path, err)
+		}
+		temps = append(temps, tmp)
+	}
+
+	for i, spec := range stale {
+		if err := os.Rename(temps[i], spec.Path); err != nil {
+			for _, name := range temps[i:] {
+				_ = os.Remove(name)
+			}
+			return changed, fmt.Errorf("write %s: %w", spec.Path, err)
 		}
 		changed = true
 	}
 	return changed, nil
+}
+
+// matches reports whether the output spec describes already holds what
+// Reconcile would write there. The checks that need no read come first.
+func matches(bundle *CertBundle, spec config.OutputSpec) bool {
+	info, err := os.Lstat(spec.Path)
+	if err != nil || !info.Mode().IsRegular() ||
+		!modeMatches(info, spec) || !ownershipMatches(spec.Path, info, spec.Owner, spec.Group) {
+		return false
+	}
+	data, err := os.ReadFile(spec.Path)
+	if err != nil {
+		return false
+	}
+	if spec.Format == "pkcs12" {
+		return pkcs12Matches(bundle, data, spec.Password)
+	}
+	want, err := encode(bundle, spec)
+	return err == nil && bytes.Equal(data, want)
+}
+
+// pkcs12Matches reports whether data decodes with password to the private
+// key, leaf and chain of bundle.
+func pkcs12Matches(bundle *CertBundle, data []byte, password string) bool {
+	key, leaf, chain, err := pkcs12.DecodeChain(data, password)
+	if err != nil {
+		return false
+	}
+	wantKey, wantLeaf, wantChain, err := pkcs12Contents(bundle)
+	if err != nil {
+		return false
+	}
+	k, ok := wantKey.(interface{ Equal(crypto.PrivateKey) bool })
+	return ok && k.Equal(key) && leaf.Equal(wantLeaf) &&
+		slices.EqualFunc(chain, wantChain, (*x509.Certificate).Equal)
+}
+
+// stage writes the output spec describes to a new temporary file in its
+// directory and returns the file's name, for the caller to rename over
+// spec.Path. The file has the output's mode and ownership before it is
+// closed: once staged, only the rename is left.
+func stage(bundle *CertBundle, spec config.OutputSpec) (string, error) {
+	data, err := encode(bundle, spec)
+	if err != nil {
+		return "", fmt.Errorf("encode %s: %w", spec.Format, err)
+	}
+	dir := filepath.Dir(spec.Path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("mkdir: %w", err)
+	}
+
+	// createTemp gives the temp file its access controls before any data is
+	// written.
+	tmp, err := createTemp(dir, spec)
+	if err != nil {
+		return "", fmt.Errorf("create temp: %w", err)
+	}
+	name := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(name)
+	}
+
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return "", fmt.Errorf("write temp: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return "", fmt.Errorf("sync temp: %w", err)
+	}
+	if err := applyMode(tmp, spec); err != nil {
+		cleanup()
+		return "", fmt.Errorf("chmod temp: %w", err)
+	}
+	if err := applyOwnership(name, spec.Owner, spec.Group); err != nil {
+		cleanup()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", fmt.Errorf("close temp: %w", err)
+	}
+	return name, nil
 }
 
 func outputMode(spec config.OutputSpec) int {
@@ -140,19 +246,30 @@ func encode(bundle *CertBundle, spec config.OutputSpec) ([]byte, error) {
 }
 
 func encodePKCS12(bundle *CertBundle, password string) ([]byte, error) {
-	leaf, err := parseCert(bundle.CertPEM)
+	privKey, leaf, chain, err := pkcs12Contents(bundle)
 	if err != nil {
-		return nil, fmt.Errorf("parse leaf cert: %w", err)
-	}
-	privKey, err := parseKey(bundle.KeyPEM)
-	if err != nil {
-		return nil, fmt.Errorf("parse private key: %w", err)
-	}
-	chain, err := parseChain(bundle.ChainPEM)
-	if err != nil {
-		return nil, fmt.Errorf("parse chain: %w", err)
+		return nil, err
 	}
 	return pkcs12.Modern.Encode(privKey, leaf, chain, password)
+}
+
+// pkcs12Contents parses what a pkcs12 output of bundle holds, in the order
+// pkcs12.DecodeChain returns it. Encoding and comparing both use it, so they
+// cannot disagree on the contents.
+func pkcs12Contents(bundle *CertBundle) (privKey interface{}, leaf *x509.Certificate, chain []*x509.Certificate, err error) {
+	leaf, err = parseCert(bundle.CertPEM)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("parse leaf cert: %w", err)
+	}
+	privKey, err = parseKey(bundle.KeyPEM)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("parse private key: %w", err)
+	}
+	chain, err = parseChain(bundle.ChainPEM)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("parse chain: %w", err)
+	}
+	return privKey, leaf, chain, nil
 }
 
 // atomicWrite writes data to spec.Path using a temp-file + rename so callers
