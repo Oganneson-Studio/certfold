@@ -469,7 +469,6 @@ certificates:
 	clientConfig := fmt.Sprintf(`client:
   name: %s
   server_url: "https://%s:18443"
-  pull_interval: 30s
   data_dir: %q
 
 certificates:

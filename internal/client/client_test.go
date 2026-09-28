@@ -217,10 +217,9 @@ func buildTestCfg(t *testing.T, serverURL string) *config.ClientConfig {
 	t.Helper()
 	return &config.ClientConfig{
 		Client: config.ClientSection{
-			Name:         "web-1",
-			ServerURL:    serverURL,
-			PullInterval: time.Hour,
-			DataDir:      t.TempDir(),
+			Name:      "web-1",
+			ServerURL: serverURL,
+			DataDir:   t.TempDir(),
 		},
 		Certificates: map[string]config.CertificateOutputs{},
 	}
@@ -1278,15 +1277,14 @@ func TestRoundReconcilesAfterError(t *testing.T) {
 	}
 }
 
-// TestRunHasNoPeriodicPull checks that pull_interval no longer starts full
-// pulls: after the first one, every request waits with the view's ETag.
+// TestRunHasNoPeriodicPull checks that the loop starts no full pull of its
+// own: after the first one, every request waits with the view's ETag.
 func TestRunHasNoPeriodicPull(t *testing.T) {
 	fs := newFakeServer(newTestBundle(t, "api-prod"))
 	fs.maxWait = 20 * time.Millisecond
 	ts := httptest.NewServer(fs.handler())
 	t.Cleanup(ts.Close)
 	cfg := buildTestCfg(t, ts.URL)
-	cfg.Client.PullInterval = 10 * time.Millisecond
 	c := newTestClient(t, cfg)
 
 	startRun(t, c)

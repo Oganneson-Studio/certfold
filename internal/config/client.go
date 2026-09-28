@@ -5,7 +5,6 @@ import (
 	"encoding/pem"
 	"fmt"
 	"maps"
-	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -25,10 +24,7 @@ type ClientConfig struct {
 type ClientSection struct {
 	Name                string        `yaml:"name"`
 	ServerURL           string        `yaml:"server_url"`
-	PullInterval        time.Duration `yaml:"pull_interval,omitempty"`
 	IdentityRenewBefore time.Duration `yaml:"identity_renew_before,omitempty"`
-	PushListen          string        `yaml:"push_listen,omitempty"`
-	PushToken           string        `yaml:"push_token,omitempty"`
 	IPCSocket           string        `yaml:"ipc_socket,omitempty"`
 	DataDir             string        `yaml:"data_dir,omitempty"`
 }
@@ -61,7 +57,6 @@ type OutputSpec struct {
 }
 
 const (
-	DefaultPullInterval        = time.Hour
 	DefaultIdentityRenewBefore = 30 * 24 * time.Hour
 )
 
@@ -99,9 +94,6 @@ func ParseClient(raw []byte) (*ClientConfig, error) {
 }
 
 func (c *ClientConfig) applyDefaults() {
-	if c.Client.PullInterval == 0 {
-		c.Client.PullInterval = DefaultPullInterval
-	}
 	if c.Client.IdentityRenewBefore == 0 {
 		c.Client.IdentityRenewBefore = DefaultIdentityRenewBefore
 	}
@@ -125,20 +117,8 @@ func (c *ClientConfig) Validate() error {
 	} else if u, err := url.ParseRequestURI(c.Client.ServerURL); err != nil || u.Scheme != "https" {
 		v.Add("client.server_url", "must be an https URL")
 	}
-	if c.Client.PullInterval < 30*time.Second {
-		v.Add("client.pull_interval", "must be at least 30s (got %s)", c.Client.PullInterval)
-	}
 	if c.Client.IdentityRenewBefore < time.Hour || c.Client.IdentityRenewBefore > 89*24*time.Hour {
 		v.Add("client.identity_renew_before", "must be between 1h and 2136h (got %s)", c.Client.IdentityRenewBefore)
-	}
-	if err := ValidatePushListen(c.Client.PushListen); err != nil {
-		v.Add("client.push_listen", "%v", err)
-	}
-	if c.Client.PushListen != "" && len(c.Client.PushToken) < 32 {
-		v.Add("client.push_token", "must be at least 32 characters when push_listen is enabled")
-	}
-	if c.Client.PushListen == "" && c.Client.PushToken != "" {
-		v.Add("client.push_token", "requires client.push_listen")
 	}
 
 	c.validateIdentity(v)
@@ -193,20 +173,6 @@ func (c *ClientConfig) Validate() error {
 	}
 
 	return v.ErrOrNil()
-}
-
-// ValidatePushListen ensures the plaintext push receiver can only bind to a
-// literal loopback address. Hostnames are intentionally rejected so DNS or
-// hosts-file changes cannot move the listener onto a non-loopback interface.
-func ValidatePushListen(addr string) error {
-	if addr == "" {
-		return nil
-	}
-	parsed, err := netip.ParseAddrPort(addr)
-	if err != nil || !parsed.Addr().Unmap().IsLoopback() || parsed.Port() == 0 {
-		return fmt.Errorf("must use a loopback IP and port 1-65535 (for example 127.0.0.1:9443 or [::1]:9443)")
-	}
-	return nil
 }
 
 func (c *ClientConfig) validateIdentity(v *ValidationError) {
