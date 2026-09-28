@@ -473,6 +473,10 @@ dns_providers:
 
 certificates:
 %s`, d.containerPath("server-data"), d.alias, tlsFiles, dnsHookPath, certs.String())
+	// test-cert's on_change program appends the sha256 of fullchain.pem to
+	// hook.log, one line per run. client.yaml expands ${VAR} in every value,
+	// so the program has no $ in it.
+	hook := fmt.Sprintf("sha256sum %s/fullchain.pem >> %s", testCertOutputs, d.containerPath("hook.log"))
 	clientConfig := fmt.Sprintf(`client:
   name: %s
   server_url: "https://%s:18443"
@@ -485,8 +489,9 @@ certificates:
         path: %s
       - format: pem-key
         path: %s
+    on_change: ["/bin/sh", "-c", %q]
 `, d.clientName, d.alias, d.containerPath("client-data"),
-		testCertOutputs+"/fullchain.pem", testCertOutputs+"/key.pem")
+		testCertOutputs+"/fullchain.pem", testCertOutputs+"/key.pem", hook)
 	if err := os.WriteFile(d.hostPath("server.yaml"), []byte(serverConfig), 0o600); err != nil {
 		return err
 	}
