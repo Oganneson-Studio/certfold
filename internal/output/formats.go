@@ -40,13 +40,13 @@ func Write(bundle *CertBundle, spec config.OutputSpec) error {
 }
 
 // Reconcile brings the outputs of one certificate, specs, in line with bundle
-// and reports whether it replaced any of them.
+// and reports whether it rewrote the content of any of them.
 //
-// An output matches bundle when all of these hold:
+// The content of an output matches bundle when all of these hold:
 //   - os.Lstat finds a regular file at its path. A missing file does not
 //     match, and neither does a symbolic link or any other kind of file; a
 //     symbolic link is replaced by a regular file, as Write replaces it.
-//   - Its content matches. A pkcs12 file must decode with
+//   - The file holds bundle. A pkcs12 file must decode with
 //     pkcs12.DecodeChain(content, spec.Password), and its leaf, the Raw of
 //     each chain certificate and its private key (compared with Equal) must
 //     be those of bundle. Bytes are not compared: every encoding picks a new
@@ -54,13 +54,23 @@ func Write(bundle *CertBundle, spec config.OutputSpec) error {
 //     the certificate's on_change program, on every reconcile. Any other
 //     format must equal encode(bundle, spec) byte for byte. A file that cannot
 //     be read or decoded does not match; one rewrite repairs it.
-//   - On Unix, its permission bits equal outputMode(spec), and its uid and
-//     gid are those of owner and group when they are set.
-//   - On Windows, its owner SID is that of owner when owner is set. The mode
-//     is not compared, since Windows does not apply it, and neither is the
-//     DACL.
 //
-// The outputs that do not match are replaced as one group:
+// An output whose content matches is not rewritten, but its metadata is
+// repaired where it differs:
+//   - On Unix, Reconcile chmods the file in place when its permission bits
+//     are not outputMode(spec), then chowns it when owner or group is set and
+//     its uid or gid is not theirs, in the order stage applies them. If either
+//     fails, the error is returned with the output's path before any output
+//     is staged; the repairs made before it stay.
+//   - On Windows, when owner is set and the file's owner SID is not that of
+//     owner, the file is staged again and replaced with the outputs below.
+//     Setting the owner in place would leave the DACL as it was, and for a
+//     private-key output that DACL grants read access to the owner configured
+//     when it was written. The mode is not compared, since Windows does not
+//     apply it, and neither is the DACL.
+//
+// The outputs whose content does not match, and on Windows those staged again
+// for their owner, are replaced as one group:
 //  1. Stage each of them in order: MkdirAll its directory with 0o755,
 //     createTemp, write, Sync, applyMode, applyOwnership on the temporary
 //     file, Close. If any step fails, every temporary file of the group is
@@ -68,18 +78,38 @@ func Write(bundle *CertBundle, spec config.OutputSpec) error {
 //     ownership after the rename instead, which would break this guarantee.
 //  2. Commit: rename each temporary file over its target in order. If a
 //     rename fails, the temporary files left are removed and the error
-//     returned; the targets already replaced count as changed, and the next
+//     returned; the targets already replaced stay replaced, and the next
 //     reconcile completes the rest.
 //
-// changed reports whether at least one target was replaced, also when err is
-// not nil. Private-key outputs on Windows keep being created by
-// securefile.CreateTemp with read access for owner, as Write creates them.
+// changed reports whether the content of at least one target was replaced,
+// also when err is not nil. Repairing metadata alone does not count, and is
+// not checked with another stat, because some filesystems cannot hold
+// permission bits: WSL's drvfs and 9p mounts without the metadata option,
+// CIFS without Unix extensions, and WSLC bind mounts, which report 0777 for
+// every file. chmod succeeds on them without effect, so every reconcile finds
+// the mode differing again. Were that a change, it would run the
+// certificate's on_change program on every reconcile, with no error to back
+// off from; as it is, it costs one chmod call. Private-key outputs on Windows
+// keep being created by securefile.CreateTemp with read access for owner, as
+// Write creates them.
 func Reconcile(bundle *CertBundle, specs []config.OutputSpec) (changed bool, err error) {
 	var stale []config.OutputSpec
+	// rewrites[i] reports whether stale[i] is staged for its content, and not
+	// only for its owner.
+	var rewrites []bool
 	for _, spec := range specs {
-		if !matches(bundle, spec) {
-			stale = append(stale, spec)
+		info, ok := contentMatches(bundle, spec)
+		if ok {
+			restage, err := repairMetadata(info, spec)
+			if err != nil {
+				return false, fmt.Errorf("write %s: %w", spec.Path, err)
+			}
+			if !restage {
+				continue
+			}
 		}
+		stale = append(stale, spec)
+		rewrites = append(rewrites, !ok)
 	}
 
 	temps := make([]string, 0, len(stale))
@@ -101,28 +131,28 @@ func Reconcile(bundle *CertBundle, specs []config.OutputSpec) (changed bool, err
 			}
 			return changed, fmt.Errorf("write %s: %w", spec.Path, err)
 		}
-		changed = true
+		changed = changed || rewrites[i]
 	}
 	return changed, nil
 }
 
-// matches reports whether the output spec describes already holds what
-// Reconcile would write there. The checks that need no read come first.
-func matches(bundle *CertBundle, spec config.OutputSpec) bool {
+// contentMatches reports whether the output spec describes is a regular file
+// that already holds the content Reconcile would write there, and returns
+// what os.Lstat found for it.
+func contentMatches(bundle *CertBundle, spec config.OutputSpec) (info os.FileInfo, ok bool) {
 	info, err := os.Lstat(spec.Path)
-	if err != nil || !info.Mode().IsRegular() ||
-		!modeMatches(info, spec) || !ownershipMatches(spec.Path, info, spec.Owner, spec.Group) {
-		return false
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, false
 	}
 	data, err := os.ReadFile(spec.Path)
 	if err != nil {
-		return false
+		return nil, false
 	}
 	if spec.Format == "pkcs12" {
-		return pkcs12Matches(bundle, data, spec.Password)
+		return info, pkcs12Matches(bundle, data, spec.Password)
 	}
 	want, err := encode(bundle, spec)
-	return err == nil && bytes.Equal(data, want)
+	return info, err == nil && bytes.Equal(data, want)
 }
 
 // pkcs12Matches reports whether data decodes with password to the private

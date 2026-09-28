@@ -34,6 +34,12 @@ func createTemp(dir string, spec config.OutputSpec) (*os.File, error) {
 // rewrite; createTemp sets the access controls instead.
 func applyMode(*os.File, config.OutputSpec) error { return nil }
 
-// modeMatches reports true: the mode is not applied on Windows, so there is
-// nothing to compare. Neither is the DACL createTemp sets compared.
-func modeMatches(os.FileInfo, config.OutputSpec) bool { return true }
+// repairMetadata reports whether the output at spec.Path, whose content
+// matches and which os.Lstat described as info, must be staged again: when
+// ownershipMatches fails. The owner is not set in place, since that would
+// leave the DACL createTemp gave a private-key output, which grants read
+// access to the owner configured when it was written. The mode is not
+// compared, since Windows does not apply it, and neither is the DACL.
+func repairMetadata(info os.FileInfo, spec config.OutputSpec) (restage bool, err error) {
+	return !ownershipMatches(spec.Path, info, spec.Owner, spec.Group), nil
+}
