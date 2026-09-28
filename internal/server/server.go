@@ -2,12 +2,10 @@ package server
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"log"
 	"log/slog"
 	"net"
-	"net/url"
 	"path/filepath"
 	"time"
 
@@ -56,8 +54,9 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 		return fmt.Errorf("init CA: %w", err)
 	}
 
-	// Issue (or re-use) a TLS server certificate signed by the mini-CA.
-	serverTLSCert, err := serverTLSCertificate(miniCA, cfg)
+	// The HTTPS certificate: the configured TLS files, or one the mini-CA
+	// issues. Either is replaced without a restart.
+	serverTLS, err := newTLSSource(miniCA, cfg, time.Now)
 	if err != nil {
 		return fmt.Errorf("server TLS cert: %w", err)
 	}
@@ -133,7 +132,7 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 	ipcDone := make(chan error, 1)
 	go func() { ipcDone <- ipcSrv.Serve(ipcListener) }()
 
-	// HTTPS server with mini-CA-signed server cert.
+	// HTTPS server.
 	httpSrv := api.New(api.Deps{
 		ServerCfg:     cfg,
 		CurrentServer: runtimeConfig.Current,
@@ -143,7 +142,7 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 		EnrollServer:  enrollSrv,
 		Changes:       changes,
 		Done:          ctx.Done(),
-	}, serverTLSCert)
+	}, serverTLS.GetCertificate)
 	// Anyone who reaches the port can make it log, so it logs a few lines a
 	// minute at most.
 	httpSrv.ErrorLog = log.New(&limitedWriter{w: errorLog.Writer(), clock: time.Now}, "", 0)
@@ -207,36 +206,4 @@ func createToken(ctx context.Context, enrollSrv *enroll.Server, cfg *config.Serv
 		ServerURL:           serverURL,
 		PublicURLConfigured: cfg.Server.PublicURL != "",
 	}, nil
-}
-
-// serverTLSCertificate builds the hosts list from the config and issues a
-// server TLS cert signed by the mini-CA.
-func serverTLSCertificate(miniCA *ca.MiniCA, cfg *config.ServerConfig) (tls.Certificate, error) {
-	if cfg.Server.TLSCertFile != "" {
-		cert, err := tls.LoadX509KeyPair(cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile)
-		if err != nil {
-			return tls.Certificate{}, fmt.Errorf("load configured TLS certificate: %w", err)
-		}
-		return cert, nil
-	}
-
-	hosts := []string{"localhost", "127.0.0.1", "::1"}
-
-	// Extract hostname from public_url if set.
-	if cfg.Server.PublicURL != "" {
-		if u, err := url.Parse(cfg.Server.PublicURL); err == nil && u.Hostname() != "" {
-			hosts = append(hosts, u.Hostname())
-		}
-	}
-
-	// Extract hostname from listen address if it has one (e.g. "sigil.internal:8443").
-	if h, _, err := net.SplitHostPort(cfg.Server.Listen); err == nil && h != "" {
-		hosts = append(hosts, h)
-	}
-
-	certPEM, keyPEM, err := miniCA.IssueServerCert(hosts)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-	return tls.X509KeyPair(certPEM, keyPEM)
 }

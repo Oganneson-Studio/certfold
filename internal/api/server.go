@@ -42,10 +42,11 @@ func (d Deps) serverConfig() *config.ServerConfig {
 
 // New builds an http.Server configured for mTLS.
 //
-// TLS certificate used for the listener must be provided via tlsCert.
-// It should be a certificate signed by a public CA (or the mini-CA during
-// development). Clients are verified against the mini-CA.
-func New(deps Deps, tlsCert tls.Certificate) *http.Server {
+// getCertificate supplies the server certificate to each handshake, so that
+// a new one takes effect without a restart. The certificate should be signed
+// by a public CA (or the mini-CA during development). Clients are verified
+// against the mini-CA.
+func New(deps Deps, getCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)) *http.Server {
 	h := newHandlers(deps)
 	r := buildRouter(h)
 	cfg := deps.serverConfig()
@@ -56,10 +57,10 @@ func New(deps Deps, tlsCert tls.Certificate) *http.Server {
 	tlsCfg := &tls.Config{
 		// Clients that present a certificate must have it signed by mini-CA.
 		// Routes that don't need mTLS are protected by middleware instead.
-		ClientAuth:   tls.VerifyClientCertIfGiven,
-		ClientCAs:    pool,
-		Certificates: []tls.Certificate{tlsCert},
-		MinVersion:   tls.VersionTLS13,
+		ClientAuth:     tls.VerifyClientCertIfGiven,
+		ClientCAs:      pool,
+		GetCertificate: getCertificate,
+		MinVersion:     tls.VersionTLS13,
 	}
 
 	return &http.Server{
