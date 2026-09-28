@@ -142,8 +142,10 @@ func (r *Renewer) RunDynamic(ctx context.Context, current func() *config.ServerC
 // stored one says so. tick returns when the loop must tick again at the
 // latest: the earliest retry time or renewal time still ahead, or the zero
 // time if there is none. The certificates it starts or skips as already
-// being issued count for none, lest the loop wake at once: the end of each
-// issuance wakes it instead.
+// being issued count for none, lest the loop wake at once: the end of an
+// issuance wakes it instead, unless ctx is cancelled, the failure of the
+// issuance cannot be stored, or the certificate is no longer configured when
+// the issuance starts. Then the loop ticks again at its hourly interval.
 func (r *Renewer) tick(ctx context.Context, current func() *config.ServerConfig) (time.Time, error) {
 	cfg := current()
 	if cfg == nil {
