@@ -104,10 +104,20 @@ func (r *TokenRepo) MarkUsed(ctx context.Context, tokenID string, tx *sql.Tx) er
 	return nil
 }
 
-// Delete removes a token by ID.
+// Delete removes a token by ID, or returns sql.ErrNoRows if not found.
 func (r *TokenRepo) Delete(ctx context.Context, tokenID string, tx *sql.Tx) error {
-	_, err := r.execer(tx).ExecContext(ctx, `DELETE FROM enrollment_tokens WHERE token_id=?`, tokenID)
-	return err
+	result, err := r.execer(tx).ExecContext(ctx, `DELETE FROM enrollment_tokens WHERE token_id=?`, tokenID)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func scanToken(row *sql.Row) (*TokenRecord, error) {

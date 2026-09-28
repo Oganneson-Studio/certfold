@@ -153,10 +153,20 @@ func (r *ClientRepo) MarkSeen(ctx context.Context, name, fingerprint string, at 
 	return nil
 }
 
-// Delete removes a client by name.
+// Delete removes a client by name, or returns sql.ErrNoRows if not found.
 func (r *ClientRepo) Delete(ctx context.Context, name string, tx *sql.Tx) error {
-	_, err := r.execer(tx).ExecContext(ctx, `DELETE FROM clients WHERE name=?`, name)
-	return err
+	result, err := r.execer(tx).ExecContext(ctx, `DELETE FROM clients WHERE name=?`, name)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func scanClient(row *sql.Row) (*ClientRecord, error) {

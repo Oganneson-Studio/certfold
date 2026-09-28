@@ -1,7 +1,11 @@
 package ipc
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -91,13 +95,20 @@ func (h *ipcHandlers) listClients(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, clientInfos(recs))
 }
 
+// deleteClient answers 404 with the reason for a name no client has, so the
+// CLI does not report a removal that did not happen.
 func (h *ipcHandlers) deleteClient(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
-	if err := h.deps.DB.Clients.Delete(r.Context(), name, nil); err != nil {
+	err := h.deps.DB.Clients.Delete(r.Context(), name, nil)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		http.Error(w, fmt.Sprintf("client %q is not enrolled", name), http.StatusNotFound)
+	case err != nil:
 		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+	default:
+		slog.Info("client removed", "client", name)
+		w.WriteHeader(http.StatusNoContent)
 	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---------------------------------------------------------------------------
@@ -129,13 +140,20 @@ func (h *ipcHandlers) listTokens(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tokenInfos(recs))
 }
 
+// deleteToken answers 404 with the reason for an ID no token has, as
+// deleteClient does. Its event names the token by ID, as every event does.
 func (h *ipcHandlers) deleteToken(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if err := h.deps.DB.Tokens.Delete(r.Context(), id, nil); err != nil {
+	err := h.deps.DB.Tokens.Delete(r.Context(), id, nil)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		http.Error(w, fmt.Sprintf("enrollment token %q does not exist", id), http.StatusNotFound)
+	case err != nil:
 		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+	default:
+		slog.Info("enrollment token revoked", "token", id)
+		w.WriteHeader(http.StatusNoContent)
 	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---------------------------------------------------------------------------
