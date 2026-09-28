@@ -14,7 +14,6 @@ func newTestModel() Model {
 	m.width = 100
 	m.height = 30
 	m.online = true
-	m.nextPull = 42 * time.Minute
 	m.certs = []CertStatus{
 		{Name: "api-prod", NotAfter: time.Now().Add(60 * 24 * time.Hour), Outputs: 3, Healthy: true},
 		{Name: "corp", NotAfter: time.Now().Add(14 * 24 * time.Hour), Outputs: 1, Healthy: true},
@@ -47,14 +46,6 @@ func TestClientModel_ViewContainsCerts(t *testing.T) {
 	}
 	if !strings.Contains(view, "corp") {
 		t.Errorf("view missing corp: %q", view)
-	}
-}
-
-func TestClientModel_ViewContainsNextPull(t *testing.T) {
-	m := newTestModel()
-	view := m.View()
-	if !strings.Contains(view, "42m") {
-		t.Errorf("view missing next pull '42m': %q", view[:min(200, len(view))])
 	}
 }
 
