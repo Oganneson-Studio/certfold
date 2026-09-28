@@ -202,11 +202,8 @@ func (c *ServerConfig) Validate() error {
 		v.Add("server.tls", "tls_cert_file and tls_key_file must be set together")
 	}
 	if c.Server.PublicURL != "" {
-		if u, err := url.ParseRequestURI(c.Server.PublicURL); err != nil || u.Scheme != "https" {
-			v.Add("server.public_url", "must be an https URL, got %q", c.Server.PublicURL)
-		} else if i := strings.IndexFunc(c.Server.PublicURL, unquotable); i >= 0 {
-			r, _ := utf8.DecodeRuneInString(c.Server.PublicURL[i:])
-			v.Add("server.public_url", "must not contain %q: install commands quote the URL for sh and PowerShell", r)
+		if err := ValidatePublicURL(c.Server.PublicURL); err != nil {
+			v.Add("server.public_url", "%v", err)
 		}
 	}
 
@@ -218,7 +215,14 @@ func (c *ServerConfig) Validate() error {
 	if len(c.ACME.CAs) == 0 {
 		v.Add("acme.cas", "at least one CA must be defined")
 	}
+	// The names of CAs and DNS providers follow the rule of certificate
+	// names, which keeps them printable. An invalid one is reported alone:
+	// the paths of the other errors of its entry would quote it.
 	for name, ca := range c.ACME.CAs {
+		if err := validateName("CA", name); err != nil {
+			v.Add("acme.cas", "%v", err)
+			continue
+		}
 		path := fmt.Sprintf("acme.cas.%s", name)
 		if _, err := url.ParseRequestURI(ca.Directory); err != nil || !strings.HasPrefix(ca.Directory, "https://") {
 			v.Add(path+".directory", "must be an https URL")
@@ -239,6 +243,10 @@ func (c *ServerConfig) Validate() error {
 	}
 
 	for name, p := range c.DNSProviders {
+		if err := validateName("DNS provider", name); err != nil {
+			v.Add("dns_providers", "%v", err)
+			continue
+		}
 		path := fmt.Sprintf("dns_providers.%s", name)
 		if p.Type == "" {
 			v.Add(path+".type", "must be set")
@@ -254,6 +262,8 @@ func (c *ServerConfig) Validate() error {
 		base := fmt.Sprintf("certificates[%d]", i)
 		if cert.Name == "" {
 			v.Add(base+".name", "must be set")
+		} else if err := ValidateCertificateName(cert.Name); err != nil {
+			v.Add(base+".name", "%v", err)
 		} else if prev, dup := seen[cert.Name]; dup {
 			v.Add(base+".name", "duplicate certificate name %q (also at certificates[%d])", cert.Name, prev)
 		} else {
@@ -374,6 +384,21 @@ func (c *ServerConfig) PublicBaseURL() string {
 	}
 	// Best-effort: wrap listen address with https scheme.
 	return "https://" + strings.TrimLeft(c.Server.Listen, ":")
+}
+
+// ValidatePublicURL reports whether s can be server.public_url: an https URL
+// without the characters unquotable reports. Enrollment tokens carry the
+// public URL to sigilc, which checks the URL of a token under the same rule
+// before it writes the URL to client.yaml and prints it.
+func ValidatePublicURL(s string) error {
+	if u, err := url.ParseRequestURI(s); err != nil || u.Scheme != "https" {
+		return fmt.Errorf("must be an https URL, got %q", s)
+	}
+	if i := strings.IndexFunc(s, unquotable); i >= 0 {
+		r, _ := utf8.DecodeRuneInString(s[i:])
+		return fmt.Errorf("must not contain %q: install commands quote the URL for sh and PowerShell", r)
+	}
+	return nil
 }
 
 // unquotable reports whether r may not appear in server.public_url, which the

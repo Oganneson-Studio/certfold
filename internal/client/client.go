@@ -16,11 +16,13 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/enroll"
+	"github.com/Oganneson-Studio/sigil/internal/logging"
 	"github.com/Oganneson-Studio/sigil/internal/output"
 	"github.com/Oganneson-Studio/sigil/internal/renewal"
 	"github.com/Oganneson-Studio/sigil/pkg/proto"
@@ -101,9 +103,9 @@ type RuntimeStatus struct {
 	// 200 or 304 from GET /v1/sync, and LastPullAt when the last one did.
 	Online     bool
 	LastPullAt time.Time
-	// LastError is the joined error of the last round or IPC fetch, or empty
-	// if it had none. A reload, or the reconcile at startup, sets it only
-	// when its reconcile fails.
+	// LastError is the joined error of the last round or IPC fetch, as
+	// printable makes it, or empty if it had none. A reload, or the
+	// reconcile at startup, sets it only when its reconcile fails.
 	LastError string
 	// Certs lists the stored certificates in name order.
 	Certs []CertStatus
@@ -179,7 +181,7 @@ func (c *Client) Run(ctx context.Context) error {
 // fingerprints changed, and name as well when it is not empty, then
 // reconciles every output with the store and runs the pending on_change
 // programs. A failed step does not stop the later ones; Fetch returns their
-// joined errors.
+// joined errors, which read as LastError does.
 func (c *Client) Fetch(ctx context.Context, name string) error {
 	c.pullMu.Lock()
 	defer c.pullMu.Unlock()
@@ -216,7 +218,10 @@ func (c *Client) Fetch(ctx context.Context, name string) error {
 	}
 	err := errors.Join(errs...)
 	c.recordPullLocked(answeredAt, err)
-	return err
+	if err != nil {
+		return printableError{err}
+	}
+	return nil
 }
 
 func (c *Client) renewIdentityLocked(ctx context.Context) error {
@@ -474,7 +479,7 @@ func (c *Client) Status() RuntimeStatus {
 func (c *Client) Reload(cfg *config.ClientConfig) error {
 	httpClient, err := buildHTTPClient(cfg)
 	if err != nil {
-		return err
+		return printableError{err}
 	}
 
 	c.pullMu.Lock()
@@ -557,7 +562,7 @@ func (c *Client) recordReconcile(err error) {
 func (c *Client) setLastErrorLocked(err error) {
 	lastError := ""
 	if err != nil {
-		lastError = err.Error()
+		lastError = printable(err)
 	}
 	if lastError == c.status.LastError {
 		return
@@ -569,6 +574,33 @@ func (c *Client) setLastErrorLocked(err error) {
 		slog.Info("round succeeded again")
 	}
 }
+
+// printable returns the text of err ready to print to a terminal: each error
+// errors.Join joined on a line of its own, as logging.OneLine makes it. The
+// text of an error can quote the network, such as the DNS names in the
+// certificate of a man in the middle, which may hold an escape sequence or a
+// newline, and a newline of theirs would start a line of their choosing,
+// such as a fake status line. An error of fmt.Errorf with several %w, which
+// the errors of this package do not use, would read as its parts alone.
+func printable(err error) string {
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return logging.OneLine(err.Error())
+	}
+	var lines []string
+	for _, e := range joined.Unwrap() {
+		lines = append(lines, printable(e))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// printableError reads as printable makes err, as LastError does: the errors
+// of Fetch and Reload go to terminals through the IPC API. Unwrap keeps err
+// for errors.Is and errors.As.
+type printableError struct{ err error }
+
+func (e printableError) Error() string { return printable(e.err) }
+func (e printableError) Unwrap() error { return e.err }
 
 // certStatuses describes the certificates in certs, in name order, with the
 // outputs and on_change program cfg configures for them.

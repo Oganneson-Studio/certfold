@@ -240,11 +240,11 @@ func TestEnvValuesInPlainScalarsResolveTheirType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseServer: %v", err)
 	}
-	if !cfg.DNSProviders["cf_main"].SkipPropagationCheck {
+	if !cfg.DNSProviders["cf-main"].SkipPropagationCheck {
 		t.Error("skip_propagation_check = false, want true")
 	}
 	// A quoted value stays a string even when it looks like a number.
-	if got := cfg.DNSProviders["cf_main"].Config["api_token"]; got != "12345" {
+	if got := cfg.DNSProviders["cf-main"].Config["api_token"]; got != "12345" {
 		t.Errorf("api_token = %#v, want string 12345", got)
 	}
 	if got := cfg.ACME.CAs["zerossl"].EABHMAC; got != "h$1" {
@@ -272,7 +272,7 @@ func TestEnvExpansionErrorNamesTheValuePath(t *testing.T) {
 		{
 			name: "mapping value",
 			src:  strings.Replace(validServerYAML, `api_token: "tok"`, `api_token: "${SIGIL_TEST_UNSET_VALUE}"`, 1),
-			path: "dns_providers.cf_main.api_token",
+			path: "dns_providers.cf-main.api_token",
 		},
 		{
 			name: "sequence item",
@@ -326,17 +326,19 @@ func TestEnvValuesAreNotTrimmed(t *testing.T) {
 	}
 }
 
+// The names of DNS providers admit no '$', but the keys of their settings do.
 func TestEnvExpansionLeavesKeysAlone(t *testing.T) {
 	src := strings.Replace(validServerYAML, "dns_providers:\n", `dns_providers:
-  "p${SIGIL_TEST_UNSET_KEY}":
+  p:
     type: route53
+    "k${SIGIL_TEST_UNSET_KEY}": v
 `, 1)
 	cfg, err := ParseServer([]byte(src))
 	if err != nil {
 		t.Fatalf("a mapping key was expanded: %v", err)
 	}
-	if _, ok := cfg.DNSProviders["p${SIGIL_TEST_UNSET_KEY}"]; !ok {
-		t.Fatalf("dns provider keys = %v", cfg.DNSProviders)
+	if _, ok := cfg.DNSProviders["p"].Config["k${SIGIL_TEST_UNSET_KEY}"]; !ok {
+		t.Fatalf("settings of dns provider p = %v", cfg.DNSProviders["p"].Config)
 	}
 }
 

@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -235,18 +234,7 @@ func render(attrs []slog.Attr) string {
 // The queries are withheld before the cut, which must bound the longer text
 // of a short query.
 func message(msg string) string {
-	return cut(RedactURLQueries(clean(msg)), maxMessageBytes)
-}
-
-// clean replaces control characters with spaces, so that a message stays on
-// one line of a terminal. strings.Map also turns invalid UTF-8 into U+FFFD.
-func clean(s string) string {
-	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return ' '
-		}
-		return r
-	}, s)
+	return cut(RedactURLQueries(OneLine(msg)), maxMessageBytes)
 }
 
 // truncate cuts s to maxAttrsBytes at a rune boundary, and marks the cut with

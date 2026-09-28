@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 )
@@ -78,31 +77,30 @@ func TestAddCertificateSpecPreservesPlaceholdersAndUsesDefaultCA(t *testing.T) {
 	}
 }
 
+// Values taken from the command line are not environment references: a '$'
+// in them stays literal. No setting of a certificate admits a '$', so such a
+// value is refused as it was given, instead of expanding into one that
+// passes.
 func TestAddCertificateSpecKeepsDollarSignsLiteral(t *testing.T) {
-	t.Setenv("HOME", "/expanded/home")
+	t.Setenv("SIGIL_TEST_NAME", "api-prod")
+	t.Setenv("SIGIL_TEST_PROVIDER", "route")
 	path := writeEditTestConfig(t, "  []\n")
-	names := []string{"a$b", "a$$b", "${HOME}"}
-	for _, name := range names {
-		if _, err := AddCertificateSpec(path, CertificateSpec{
-			Name:        name,
+	for _, tc := range []struct {
+		name, provider, want string
+	}{
+		{"${SIGIL_TEST_NAME}", "route", `invalid certificate name "${SIGIL_TEST_NAME}"`},
+		{"a$$b", "route", `invalid certificate name "a$$b"`},
+		{"api-prod", "${SIGIL_TEST_PROVIDER}", `references unknown DNS provider "${SIGIL_TEST_PROVIDER}"`},
+	} {
+		_, err := AddCertificateSpec(path, CertificateSpec{
+			Name:        tc.name,
 			Domains:     []string{"api.example.com"},
-			DNSProvider: "route",
+			DNSProvider: tc.provider,
 			KeyType:     "ec256",
-		}); err != nil {
-			t.Fatalf("AddCertificateSpec(%q): %v", name, err)
+		})
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("AddCertificateSpec(%q, %q): error = %v, want %s", tc.name, tc.provider, err, tc.want)
 		}
-	}
-
-	cfg, err := LoadServer(path)
-	if err != nil {
-		t.Fatalf("load updated config: %v", err)
-	}
-	var got []string
-	for _, cert := range cfg.Certificates {
-		got = append(got, cert.Name)
-	}
-	if !slices.Equal(got, names) {
-		t.Fatalf("certificate names = %q, want %q", got, names)
 	}
 }
 

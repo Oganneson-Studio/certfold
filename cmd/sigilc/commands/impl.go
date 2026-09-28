@@ -56,7 +56,7 @@ func runReload(cmd *cobra.Command, _ []string) error {
 // enroll
 // ---------------------------------------------------------------------------
 
-func runEnroll(cmd *cobra.Command, _ []string) error {
+func runEnroll(cmd *cobra.Command, _ []string) (err error) {
 	tokenStr, _ := cmd.Flags().GetString("token")
 	cfgPath, _ := cmd.Root().PersistentFlags().GetString("config")
 	if cfgPath == "" {
@@ -68,9 +68,19 @@ func runEnroll(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("invalid token: %w", err)
 	}
-	clientName, err := ensureEnrollmentConfig(cfgPath, payload.Name, payload.ServerURL)
+	clientName, created, err := ensureEnrollmentConfig(cfgPath, payload.Name, payload.ServerURL)
 	if err != nil {
 		return err
+	}
+	if created {
+		// Until the identity is saved, a failure removes the client.yaml
+		// this enrollment wrote: without an identity it would only bind the
+		// next enrollment to the client name and server URL of this token.
+		defer func() {
+			if err != nil {
+				_ = os.Remove(cfgPath)
+			}
+		}()
 	}
 
 	kc, err := enroll.GenerateKeyAndCSR(clientName)
@@ -80,7 +90,10 @@ func runEnroll(cmd *cobra.Command, _ []string) error {
 
 	resp, err := enroll.PostEnroll(payload.ServerURL, tokenStr, kc.CSRDER)
 	if err != nil {
-		return fmt.Errorf("enroll: %w", err)
+		// The error can quote the network, such as the DNS names in the
+		// certificate of a man in the middle: a newline there must not start
+		// a line under the one main prints, which keeps newlines.
+		return fmt.Errorf("enroll: %s", logging.OneLine(err.Error()))
 	}
 
 	if err := enroll.SaveIdentity(cfgPath, resp.CACert, resp.ClientCert, string(kc.KeyPEM)); err != nil {
@@ -192,22 +205,24 @@ func clientIPCSocket(cmd *cobra.Command) string {
 	return ipc.DefaultClientSocket()
 }
 
-func ensureEnrollmentConfig(cfgPath, tokenName, serverURL string) (string, error) {
+// ensureEnrollmentConfig returns the name to enroll as. A client.yaml at
+// cfgPath must name the client and server URL of the token; without one, it
+// writes one that does, and reports that it created it. Writing it before
+// the token is sent stops an enrollment that could not save its identity
+// before the server spends the token.
+func ensureEnrollmentConfig(cfgPath, tokenName, serverURL string) (name string, created bool, err error) {
 	cfg, err := config.LoadClient(cfgPath)
 	if err == nil {
-		if tokenName != "" && cfg.Client.Name != tokenName {
-			return "", fmt.Errorf("client name %q does not match token name %q", cfg.Client.Name, tokenName)
+		if cfg.Client.Name != tokenName {
+			return "", false, fmt.Errorf("client name %q in %s does not match token name %q", cfg.Client.Name, cfgPath, tokenName)
 		}
 		if cfg.Client.ServerURL != serverURL {
-			return "", fmt.Errorf("configured server URL %q does not match token server URL %q", cfg.Client.ServerURL, serverURL)
+			return "", false, fmt.Errorf("server URL %q in %s does not match token server URL %q", cfg.Client.ServerURL, cfgPath, serverURL)
 		}
-		return cfg.Client.Name, nil
+		return cfg.Client.Name, false, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("load config: %w", err)
-	}
-	if tokenName == "" {
-		return "", fmt.Errorf("token does not contain a client name")
+		return "", false, fmt.Errorf("load config: %w", err)
 	}
 
 	initial := struct {
@@ -221,10 +236,10 @@ func ensureEnrollmentConfig(cfgPath, tokenName, serverURL string) (string, error
 	}
 	raw, err := yaml.Marshal(initial)
 	if err != nil {
-		return "", fmt.Errorf("marshal initial config: %w", err)
+		return "", false, fmt.Errorf("marshal initial config: %w", err)
 	}
 	if err := securefile.WriteFile(cfgPath, raw); err != nil {
-		return "", fmt.Errorf("write initial config: %w", err)
+		return "", false, fmt.Errorf("write initial config: %w", err)
 	}
-	return tokenName, nil
+	return tokenName, true, nil
 }

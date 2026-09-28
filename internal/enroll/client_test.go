@@ -115,7 +115,7 @@ func TestPostEnrollTrustsSystemRoots(t *testing.T) {
 	withSystemRoots(t, publicCA.cert)
 	ts, _ := startEnrollServer(t, publicCA)
 
-	token := encodeTestToken(t, tokenPayload{ServerURL: ts.URL, CACert: miniCA.certPEM()})
+	token := encodeTestToken(t, tokenPayload{ServerURL: ts.URL, Name: "web-1", CACert: miniCA.certPEM()})
 	kc, err := GenerateKeyAndCSR("web-1")
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +132,7 @@ func TestPostEnrollRejectsUntrustedServer(t *testing.T) {
 	withSystemRoots(t, publicCA.cert)
 	ts, reached := startEnrollServer(t, unrelatedCA)
 
-	token := encodeTestToken(t, tokenPayload{ServerURL: ts.URL, CACert: miniCA.certPEM()})
+	token := encodeTestToken(t, tokenPayload{ServerURL: ts.URL, Name: "web-1", CACert: miniCA.certPEM()})
 	kc, err := GenerateKeyAndCSR("web-1")
 	if err != nil {
 		t.Fatal(err)
