@@ -185,15 +185,18 @@ func runClientList(cmd *cobra.Command, _ []string) error {
 	if asJSON {
 		return printJSON(clientDetailList(clients))
 	}
-	fmt.Printf("%-20s %-30s %s\n", "NAME", "FINGERPRINT", "LAST SEEN")
+	// Names run to 63 characters and fingerprints to 71, so the columns fit
+	// what they hold.
+	table := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "NAME\tFINGERPRINT\tLAST SEEN")
 	for _, cl := range clients {
 		lastSeen := "never"
 		if !cl.LastSeen.IsZero() {
 			lastSeen = cl.LastSeen.Format("2006-01-02 15:04")
 		}
-		fmt.Printf("%-20s %-30s %s\n", cl.Name, cl.Fingerprint, lastSeen)
+		fmt.Fprintf(table, "%s\t%s\t%s\n", cl.Name, cl.Fingerprint, lastSeen)
 	}
-	return nil
+	return table.Flush()
 }
 
 func runClientRemove(cmd *cobra.Command, args []string) error {
@@ -262,17 +265,19 @@ func runTokenList(cmd *cobra.Command, _ []string) error {
 	if asJSON {
 		return printJSON(tokens)
 	}
-	// Token IDs are 32 hex characters.
-	fmt.Printf("%-32s %-20s %-10s %s\n", "ID", "NAME", "STATUS", "EXPIRES")
+	// IDs are 32 characters and names run to 63, so the columns fit what they
+	// hold.
+	table := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "ID\tNAME\tSTATUS\tEXPIRES")
 	for _, tok := range tokens {
 		status := "unused"
 		if !tok.UsedAt.IsZero() {
 			status = "used"
 		}
-		fmt.Printf("%-32s %-20s %-10s %s\n",
+		fmt.Fprintf(table, "%s\t%s\t%s\t%s\n",
 			tok.TokenID, tok.Name, status, tok.ExpiresAt.Format("2006-01-02 15:04"))
 	}
-	return nil
+	return table.Flush()
 }
 
 func runTokenRevoke(cmd *cobra.Command, args []string) error {
