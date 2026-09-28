@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/sigil/internal/renewal"
 	"github.com/Oganneson-Studio/sigil/pkg/proto"
 )
 
@@ -55,7 +56,11 @@ func TestStatusDescribesStoredCertificates(t *testing.T) {
 	for _, name := range []string{"a", "b", "c", "d"} {
 		bundle := newTestBundle(t, name)
 		stored[name] = storedCert{Fingerprint: bundle.Fingerprint, FullchainPEM: bundle.FullchainPEM, KeyPEM: bundle.KeyPEM, HookPending: name == "a"}
-		want = append(want, CertStatus{Name: name, Fingerprint: bundle.Fingerprint, NotAfter: bundleNotAfter(t, bundle)})
+		renewAt, err := renewal.RenewAt(bundle.FullchainPEM)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, CertStatus{Name: name, Fingerprint: bundle.Fingerprint, NotAfter: bundleNotAfter(t, bundle), RenewAt: renewAt})
 	}
 	want[0].Outputs, want[0].OnChange, want[0].HookPending = 2, true, true
 	want[2].Outputs = 1

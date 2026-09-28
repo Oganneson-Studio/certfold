@@ -22,6 +22,7 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/enroll"
 	"github.com/Oganneson-Studio/sigil/internal/output"
+	"github.com/Oganneson-Studio/sigil/internal/renewal"
 	"github.com/Oganneson-Studio/sigil/pkg/proto"
 )
 
@@ -109,12 +110,17 @@ type RuntimeStatus struct {
 }
 
 // CertStatus describes a stored certificate. NotAfter is that of its first
-// certificate. Outputs is the number of outputs client.yaml configures for
-// it, and OnChange reports whether client.yaml configures an on_change
-// program for it. HookPending is the stored hook_pending.
+// certificate, or zero if it cannot be parsed. RenewAt is when that
+// certificate is due for renewal under the ratio rule of internal/renewal, or
+// zero if renewal.RenewAt fails for it; sigils renews it later when its CA
+// suggests a later renewal window through ARI. Outputs is the number of
+// outputs client.yaml configures for it, and OnChange reports whether
+// client.yaml configures an on_change program for it. HookPending is the
+// stored hook_pending.
 type CertStatus struct {
 	Name, Fingerprint string
 	NotAfter          time.Time
+	RenewAt           time.Time
 	Outputs           int
 	OnChange          bool
 	HookPending       bool
@@ -571,14 +577,18 @@ func certStatuses(certs map[string]storedCert, cfg *config.ClientConfig) []CertS
 	for _, name := range slices.Sorted(maps.Keys(certs)) {
 		cert := certs[name]
 		configured := cfg.Certificates[name]
-		out = append(out, CertStatus{
+		status := CertStatus{
 			Name:        name,
 			Fingerprint: cert.Fingerprint,
 			NotAfter:    leafNotAfter(cert.FullchainPEM),
 			Outputs:     len(configured.Outputs),
 			OnChange:    len(configured.OnChange) > 0,
 			HookPending: cert.HookPending,
-		})
+		}
+		if renewAt, err := renewal.RenewAt(cert.FullchainPEM); err == nil {
+			status.RenewAt = renewAt
+		}
+		out = append(out, status)
 	}
 	return out
 }
