@@ -298,10 +298,11 @@ func runTokenRevoke(cmd *cobra.Command, args []string) error {
 // ---------------------------------------------------------------------------
 
 func runServerTUI(cmd *cobra.Command, _ []string) error {
-	ipcClient, _ := dialIPC(serverIPCSocket(cmd))
-	m := tuiserver.New(ipcClient)
-	p := tea.NewProgram(m, tea.WithAltScreen())
-	_, err := p.Run()
+	c, err := dialIPC(serverIPCSocket(cmd))
+	if err != nil {
+		return fmt.Errorf("ipc unavailable: %w", err)
+	}
+	_, err = tea.NewProgram(tuiserver.New(c), tea.WithAltScreen()).Run()
 	return err
 }
 
