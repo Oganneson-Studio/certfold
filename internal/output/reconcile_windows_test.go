@@ -31,6 +31,22 @@ func TestReconcileReplacesInheritedReadableKey(t *testing.T) {
 	checkMode(t, path, 0o600)
 }
 
+// TestReconcileReplacesOutputWithReadOnlyMode covers an explicit mode without
+// the owner write bit. Chmod would mark the output read-only on Windows, and
+// the next rewrite could not replace it.
+func TestReconcileReplacesOutputWithReadOnlyMode(t *testing.T) {
+	dir := outputDir(t)
+	for _, format := range []string{"pem-key", "pem-cert"} {
+		spec := config.OutputSpec{Format: format, Path: filepath.Join(dir, format), Mode: 0o440}
+		// A new bundle each time, so the second reconcile replaces the output.
+		for attempt := 1; attempt <= 2; attempt++ {
+			if _, err := Reconcile(makeBundle(t), []config.OutputSpec{spec}); err != nil {
+				t.Fatalf("%s reconcile %d: %v", format, attempt, err)
+			}
+		}
+	}
+}
+
 // TestReconcileRestoresOwner covers an output whose owner was changed after
 // it was written, for a format that createTemp gives a private DACL and one
 // that inherits the directory's. The owner is the current user, then
