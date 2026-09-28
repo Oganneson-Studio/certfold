@@ -33,6 +33,8 @@ type certificateDetails struct {
 	CA            string     `json:"ca"`
 	Domains       []string   `json:"domains"`
 	NotAfter      *time.Time `json:"not_after,omitempty"`
+	RenewAt       *time.Time `json:"renew_at,omitempty"`
+	RenewSource   string     `json:"renew_source,omitempty"`
 	Fingerprint   string     `json:"fingerprint,omitempty"`
 	IssuedAt      *time.Time `json:"issued_at,omitempty"`
 	UpdatedAt     *time.Time `json:"updated_at,omitempty"`
@@ -186,10 +188,10 @@ func runClientShow(cmd *cobra.Command, args []string) error {
 		if details.LastSeen != nil {
 			lastSeen = details.LastSeen.Format("2006-01-02 15:04:05 MST")
 		}
-		fmt.Printf("Name:            %s\n", details.Name)
-		fmt.Printf("Fingerprint:     %s\n", details.Fingerprint)
-		fmt.Printf("Enrolled At:     %s\n", details.EnrolledAt.Format("2006-01-02 15:04:05 MST"))
-		fmt.Printf("Last Seen:       %s\n", lastSeen)
+		fmt.Printf("Name:        %s\n", details.Name)
+		fmt.Printf("Fingerprint: %s\n", details.Fingerprint)
+		fmt.Printf("Enrolled At: %s\n", details.EnrolledAt.Format("2006-01-02 15:04:05 MST"))
+		fmt.Printf("Last Seen:   %s\n", lastSeen)
 		return nil
 	}
 	return fmt.Errorf("client %q not found", args[0])
@@ -215,6 +217,8 @@ func newCertificateDetails(rec *ipc.CertificateInfo) certificateDetails {
 		CA:            rec.CA,
 		Domains:       append([]string(nil), rec.Domains...),
 		NotAfter:      timePointer(rec.NotAfter),
+		RenewAt:       timePointer(rec.RenewAt),
+		RenewSource:   rec.RenewSource,
 		Fingerprint:   rec.Fingerprint,
 		IssuedAt:      timePointer(rec.IssuedAt),
 		UpdatedAt:     timePointer(rec.UpdatedAt),
@@ -256,6 +260,17 @@ func formatTime(value time.Time, layout string) string {
 		return "-"
 	}
 	return value.Format(layout)
+}
+
+// formatRenewAt formats when cert is due for renewal with layout, followed by
+// the source of that time, "(ari)" or "(ratio)"; without stored material it
+// returns "-".
+func formatRenewAt(cert *ipc.CertificateInfo, layout string) string {
+	at := formatTime(cert.RenewAt, layout)
+	if cert.RenewSource != "" {
+		at += " (" + cert.RenewSource + ")"
+	}
+	return at
 }
 
 func cleanStringList(values []string) []string {
