@@ -469,6 +469,15 @@ func TestReconcile_PKCS12ComparesDecodedContents(t *testing.T) {
 	}
 	checkContent(t, b, spec)
 
+	// Only the key changes, so the leaf and chain cannot tell the bundles
+	// apart.
+	other := *b
+	other.KeyPEM = makeBundle(t).KeyPEM
+	if !mustReconcile(t, &other, spec) {
+		t.Fatal("a new key was not applied")
+	}
+	checkContent(t, &other, spec)
+
 	b = makeBundle(t)
 	if !mustReconcile(t, b, spec) {
 		t.Fatal("a new key and certificate were not applied")
