@@ -321,12 +321,14 @@ func (m Model) View() string {
 		title := shared.TitleStyle.Width(m.width).Render(fmt.Sprintf("Events (%d)", len(m.events)))
 		return lipgloss.JoinVertical(lipgloss.Left, title, m.eventsView.View(), footer)
 	}
-	top := m.header()
+	parts := []string{m.header()}
+	rows := m.height - lipgloss.Height(parts[0]) - lipgloss.Height(footer)
 	if m.state != nil {
-		top = lipgloss.JoinVertical(lipgloss.Left, top, m.certTable(time.Now()))
+		table := m.certTable(time.Now(), rows)
+		parts = append(parts, table)
+		rows -= lipgloss.Height(table)
 	}
-	parts := []string{top}
-	if events := m.recentEvents(m.height - lipgloss.Height(top) - lipgloss.Height(footer)); events != "" {
+	if events := m.recentEvents(rows); events != "" {
 		parts = append(parts, events)
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, append(parts, footer)...)
@@ -361,24 +363,35 @@ func (m Model) header() string {
 	return strings.Join(lines, "\n")
 }
 
-// certTable lists the certificates in the store of the daemon.
-func (m Model) certTable(now time.Time) string {
-	if len(m.state.Certs) == 0 {
+// certTable lists the certificates in the store of the daemon in rows lines,
+// its padding line and column titles included, or in three if rows is
+// smaller. When they do not all fit, the last line says how many it leaves
+// out.
+func (m Model) certTable(now time.Time, rows int) string {
+	certs := m.state.Certs
+	if len(certs) == 0 {
 		return blockStyle.Render("No certificates stored.")
 	}
 	width := len("Name")
-	for _, c := range m.state.Certs {
+	for _, c := range certs {
 		width = max(width, len(c.Name))
+	}
+	shown := certs
+	if fit := max(rows-2, 1); len(certs) > fit {
+		shown = certs[:fit-1]
 	}
 	lines := []string{shared.TableHeader.Render(fmt.Sprintf("%-*s  %-20s  %-7s  %-9s  %s",
 		width, "Name", "Not After", "Outputs", "on_change", "Pending"))}
-	for _, c := range m.state.Certs {
+	for _, c := range shown {
 		notAfter := fmt.Sprintf("%-20s", notAfterText(c.NotAfter, now))
 		if due(c, now) {
 			notAfter = dueStyle.Render(notAfter)
 		}
 		lines = append(lines, fmt.Sprintf("%-*s  %s  %-7d  %-9s  %s",
 			width, c.Name, notAfter, c.Outputs, yesNo(c.OnChange), yesNo(c.HookPending)))
+	}
+	if more := len(certs) - len(shown); more > 0 {
+		lines = append(lines, fmt.Sprintf("+%d more; sigilc status --json lists them all", more))
 	}
 	return blockStyle.Render(strings.Join(lines, "\n"))
 }
