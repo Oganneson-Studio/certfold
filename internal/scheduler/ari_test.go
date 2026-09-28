@@ -257,6 +257,39 @@ func TestPassedWindowRenewsAtOnce(t *testing.T) {
 	}
 }
 
+// Only the first window of a certificate this process issued can trip the
+// guard. Once the CA sent a window ahead, a window it moves into the past, as
+// when it revokes the certificate, has it renewed at once, naming the
+// certificate it replaces.
+func TestLaterPassedWindowOfNewCertificateRenewsAtOnce(t *testing.T) {
+	db := mustOpenDB(t)
+	clock := newTestClock(ariStart)
+	iss := newARIIssuer(t, clock.Now)
+	r := New(iss, db, nil, clock.Now)
+	cfg := minimalCfg("api-prod", nil)
+	events := captureEvents(t)
+	tickAndCheck(t, r, cfg) // issues, in this process
+	rec := mustCert(t, db, "api-prod")
+	ahead := window(ariStart.Add(58*day), ariStart.Add(60*day), 0)
+	iss.answerWith(ahead, nil)
+	tickAndCheck(t, r, cfg) // asks
+	assertPlan(t, r, rec, ahead)
+
+	now := ariStart.Add(ariDefaultInterval)
+	clock.Set(now)
+	iss.answerWith(window(now.Add(-2*time.Hour), now.Add(-time.Hour), 0), nil)
+	tickAndCheck(t, r, cfg) // asks again
+	tickAndCheck(t, r, cfg) // renews
+	issued := iss.issued()
+	if len(issued) != 2 || string(issued[1]) != rec.FullchainPEM {
+		t.Fatalf("%d Issue calls; want a second one replacing the stored certificate", len(issued))
+	}
+	assertStatus(t, db, store.IssuanceStatus{Name: "api-prod", LastAttemptAt: now})
+	if lines := eventLines(events); !slices.Contains(lines, "INFO certificate issuance started cert=api-prod reason=ari") {
+		t.Fatalf("no issuance with reason ari in the events:\n  %s", strings.Join(lines, "\n  "))
+	}
+}
+
 // The CA is asked again when its Retry-After says, within bounds, and later
 // after an error. A CA without renewal info leaves the plan to the lifetime
 // ratio.
@@ -1034,6 +1067,40 @@ func TestPassedWindowOfReplacedCertificateSparesTheNewOne(t *testing.T) {
 	close(release)
 	waitForChecks(t, r)
 	assertStatus(t, db, store.IssuanceStatus{Name: "api-prod", LastAttemptAt: ariStart})
+}
+
+// The answer to a query that ends once shutdown began is dropped, not
+// recorded.
+func TestAnswerAfterShutdownIsDropped(t *testing.T) {
+	db := mustOpenDB(t)
+	clock := newTestClock(ariStart)
+	iss := newARIIssuer(t, clock.Now)
+	r := New(iss, db, nil, clock.Now)
+	cfg := minimalCfg("api-prod", nil)
+	storeCert(t, db, cfg, "api-prod", ariStart.Add(-10*day))
+	asked, release := make(chan struct{}, 1), make(chan struct{})
+	iss.setAnswer(func([]byte) (*acme.RenewalInfo, error) {
+		asked <- struct{}{}
+		<-release
+		return nil, errors.New("CA too slow")
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if _, err := r.tick(ctx, static(cfg)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-asked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stored certificate was not asked about")
+	}
+
+	cancel()
+	close(release)
+	waitForChecks(t, r)
+	if st := ariStateOf(t, r, "api-prod"); !st.nextCheck.IsZero() || st.lastErr != "" {
+		t.Fatalf("the answer after shutdown was recorded: next query at %s, error %q", st.nextCheck, st.lastErr)
+	}
 }
 
 // Shutdown does not wait for a query, which lego cannot interrupt, and no

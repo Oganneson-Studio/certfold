@@ -122,8 +122,9 @@ func (r *Renewer) planRenewalInfo(ctx context.Context, current func() *config.Se
 	r.ariMu.Unlock()
 
 	if start {
-		// Not in wg: it changes nothing but memory, and shutdown need not wait
-		// for lego's timeouts.
+		// Not in wg, so that shutdown does not wait for lego's timeouts. It
+		// records its answers in memory, except the backoff of a passed window
+		// in the store, and drops those that come once ctx is done.
 		go r.checkRenewalInfo(ctx, current, checks)
 	}
 	return wakeAt
