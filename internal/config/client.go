@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -161,10 +162,17 @@ func (c *ClientConfig) Validate() error {
 			}
 			if o.Path == "" {
 				v.Add(base+".path", "must be set")
-			} else if prev, dup := outputPaths[filepath.Clean(o.Path)]; dup {
-				v.Add(base+".path", "duplicate output path %q (also at %s)", o.Path, prev)
 			} else {
-				outputPaths[filepath.Clean(o.Path)] = base
+				key := filepath.Clean(o.Path)
+				if runtime.GOOS == "windows" {
+					// NTFS ignores case: Cert.pem and cert.pem are one file.
+					key = strings.ToLower(key)
+				}
+				if prev, dup := outputPaths[key]; dup {
+					v.Add(base+".path", "duplicate output path %q (also at %s)", o.Path, prev)
+				} else {
+					outputPaths[key] = base
+				}
 			}
 			if o.Mode != 0 && (o.Mode < 0 || o.Mode > 0o777) {
 				v.Add(base+".mode", "must be a valid octal file mode (got %#o)", o.Mode)

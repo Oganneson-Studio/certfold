@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"math/big"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -410,6 +411,27 @@ func TestParseClient_CertificatesValidationErrors(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", tt.want, err)
 			}
 		})
+	}
+}
+
+func TestParseClient_OutputPathsDifferingInCase(t *testing.T) {
+	block := `  api-prod:
+    outputs:
+      - format: pem-cert
+        path: /etc/nginx/certs/Api.pem
+      - format: pem-key
+        path: /etc/nginx/certs/api.pem
+`
+	_, err := ParseClient([]byte(validClientYAML + "certificates:\n" + block))
+	if runtime.GOOS != "windows" {
+		if err != nil {
+			t.Fatalf("paths differing in case are two files here, got %v", err)
+		}
+		return
+	}
+	want := `certificates.api-prod.outputs[1].path: duplicate output path "/etc/nginx/certs/api.pem" (also at certificates.api-prod.outputs[0])`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("expected error containing %q, got %v", want, err)
 	}
 }
 
