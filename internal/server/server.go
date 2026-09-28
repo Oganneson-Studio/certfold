@@ -98,8 +98,9 @@ func Run(ctx context.Context, configPath string) error {
 			Renew: func(ctx context.Context, name string) error {
 				return r.RenewNamed(ctx, runtimeConfig.Current, name)
 			},
-			Current: runtimeConfig.Current,
-			Issuing: r.Issuing,
+			Current:     runtimeConfig.Current,
+			Issuing:     r.Issuing,
+			RenewalPlan: r.RenewalPlan,
 		},
 		Tokens: &ipc.TokenControlDeps{
 			Create: func(ctx context.Context, name string, ttl time.Duration) (ipc.CreateTokenResponse, error) {

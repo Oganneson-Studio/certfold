@@ -5,7 +5,6 @@ import (
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/logging"
-	"github.com/Oganneson-Studio/sigil/internal/renewal"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
@@ -14,6 +13,8 @@ import (
 // enrollment-token secret hashes.
 
 // CertificateInfo is the read-only certificate metadata exposed over IPC.
+// RenewSource says what set RenewAt: "ari", the renewal window the CA
+// suggests, or "ratio", a share of the certificate's lifetime.
 type CertificateInfo struct {
 	Name          string    `json:"name"`
 	CA            string    `json:"ca"`
@@ -21,6 +22,7 @@ type CertificateInfo struct {
 	Subscribers   []string  `json:"subscribers"`
 	NotAfter      time.Time `json:"not_after"`
 	RenewAt       time.Time `json:"renew_at"`
+	RenewSource   string    `json:"renew_source,omitempty"`
 	Fingerprint   string    `json:"fingerprint"`
 	IssuedAt      time.Time `json:"issued_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -122,10 +124,11 @@ type FetchClientRequest struct {
 
 // certificateInfos lists the certificates of cfg in configuration order.
 // Stored material is reported only when its spec fingerprint matches the
-// running configuration, so it is the material clients can fetch; RenewAt
-// stays zero as well when the stored certificate cannot be parsed. Records
-// of certificates that are no longer configured are left out.
-func certificateInfos(cfg *config.ServerConfig, records []*store.CertRecord, statuses []*store.IssuanceStatus, issuing func(string) bool, now time.Time) []*CertificateInfo {
+// running configuration, so it is the material clients can fetch; plan gives
+// its RenewAt and RenewSource. Records of certificates that are no longer
+// configured are left out.
+func certificateInfos(cfg *config.ServerConfig, records []*store.CertRecord, statuses []*store.IssuanceStatus,
+	issuing func(string) bool, plan func(*store.CertRecord) (time.Time, string), now time.Time) []*CertificateInfo {
 	stored := make(map[string]*store.CertRecord, len(records))
 	for _, record := range records {
 		stored[record.Name] = record
@@ -149,9 +152,7 @@ func certificateInfos(cfg *config.ServerConfig, records []*store.CertRecord, sta
 			info.Fingerprint = record.Fingerprint
 			info.IssuedAt = record.IssuedAt
 			info.UpdatedAt = record.UpdatedAt
-			if renewAt, err := renewal.RenewAt(record.FullchainPEM); err == nil {
-				info.RenewAt = renewAt
-			}
+			info.RenewAt, info.RenewSource = plan(record)
 		}
 		if status := attempts[spec.Name]; status != nil {
 			info.Failures = status.Failures

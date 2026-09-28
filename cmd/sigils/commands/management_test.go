@@ -263,7 +263,8 @@ func TestCertAddTellsStoppedDaemonFromUnreachableOne(t *testing.T) {
 }
 
 // serveCertificates serves the certificates of cfg, backed by db, on a new
-// IPC endpoint and returns the endpoint.
+// IPC endpoint and returns the endpoint. Each stored certificate is due for
+// renewal by ARI 20 days before it expires.
 func serveCertificates(t *testing.T, db *store.DB, cfg *config.ServerConfig) string {
 	t.Helper()
 	socket := testIPCSocket(t)
@@ -277,6 +278,9 @@ func serveCertificates(t *testing.T, db *store.DB, cfg *config.ServerConfig) str
 		_ = ipc.Serve(ctx, l, ipc.ServerDeps{DB: db, Certificates: &ipc.CertificateControlDeps{
 			Current: func() *config.ServerConfig { return cfg },
 			Issuing: func(string) bool { return false },
+			RenewalPlan: func(record *store.CertRecord) (time.Time, string) {
+				return record.NotAfter.Add(-20 * 24 * time.Hour), "ari"
+			},
 		}})
 	}()
 	if _, err := ipc.NewClient(socket); err != nil {
