@@ -60,7 +60,9 @@ func New(deps Deps, getCertificate func(*tls.ClientHelloInfo) (*tls.Certificate,
 		ClientAuth:     tls.VerifyClientCertIfGiven,
 		ClientCAs:      pool,
 		GetCertificate: getCertificate,
-		MinVersion:     tls.VersionTLS13,
+		// For the install scripts: Windows PowerShell 5.1 offers at most TLS
+		// 1.2 on older Windows. sigilc itself requires TLS 1.3.
+		MinVersion: tls.VersionTLS12,
 	}
 
 	return &http.Server{
