@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,7 +57,8 @@ func writeRuntimeConfig(t *testing.T, path, raw string) {
 func TestServerConfigRuntimeReloadPublishesMutableGeneration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "server.yaml")
 	initial := parseRuntimeConfig(t, initialRuntimeConfig)
-	runtime := newServerConfigRuntime(path, initial)
+	notified := 0
+	runtime := newServerConfigRuntime(path, initial, func() { notified++ })
 
 	nextRaw := strings.NewReplacer(
 		"ops@example.com", "security@example.com",
@@ -81,6 +83,57 @@ func TestServerConfigRuntimeReloadPublishesMutableGeneration(t *testing.T) {
 	}
 	if got.Clients[0].PushEndpoint != "https://push.example.com/notify" {
 		t.Fatalf("push route = %q", got.Clients[0].PushEndpoint)
+	}
+	if notified != 1 {
+		t.Fatalf("reload notified %d times, want once", notified)
+	}
+}
+
+// publisherFunc stands in for the scheduler's PublishConfig.
+type publisherFunc func(context.Context, func()) error
+
+func (f publisherFunc) PublishConfig(ctx context.Context, publish func()) error {
+	return f(ctx, publish)
+}
+
+func TestServerConfigRuntimeNotifiesAfterPublishing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "server.yaml")
+	initial := parseRuntimeConfig(t, initialRuntimeConfig)
+	writeRuntimeConfig(t, path, strings.Replace(initialRuntimeConfig, "ops@example.com", "security@example.com", 1))
+
+	var runtime *serverConfigRuntime
+	notified := 0
+	notify := func() {
+		notified++
+		if runtime.Current() == initial {
+			t.Error("notified before the new generation was published")
+		}
+	}
+
+	failing := publisherFunc(func(context.Context, func()) error {
+		return errors.New("clear issuance backoff: database is locked")
+	})
+	runtime = newServerConfigRuntime(path, initial, notify, failing)
+	if err := runtime.Reload(context.Background()); err == nil {
+		t.Fatal("Reload ignored the publisher's error")
+	}
+	if notified != 0 {
+		t.Fatalf("a reload that was not published notified %d times", notified)
+	}
+
+	publishing := publisherFunc(func(_ context.Context, publish func()) error {
+		publish()
+		if notified != 0 {
+			t.Error("notified from the publish callback, which may only publish")
+		}
+		return nil
+	})
+	runtime = newServerConfigRuntime(path, initial, notify, publishing)
+	if err := runtime.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if notified != 1 {
+		t.Fatalf("reload notified %d times, want once", notified)
 	}
 }
 
@@ -113,7 +166,8 @@ func TestServerConfigRuntimeRejectsImmutableChangesWithoutPublishing(t *testing.
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "server.yaml")
 			initial := parseRuntimeConfig(t, initialRuntimeConfig)
-			runtime := newServerConfigRuntime(path, initial)
+			notified := 0
+			runtime := newServerConfigRuntime(path, initial, func() { notified++ })
 			writeRuntimeConfig(t, path, strings.Replace(initialRuntimeConfig, tt.old, tt.new, 1))
 
 			err := runtime.Reload(context.Background())
@@ -122,6 +176,9 @@ func TestServerConfigRuntimeRejectsImmutableChangesWithoutPublishing(t *testing.
 			}
 			if runtime.Current() != initial {
 				t.Fatal("rejected reload changed the published generation")
+			}
+			if notified != 0 {
+				t.Fatalf("rejected reload notified %d times", notified)
 			}
 		})
 	}
@@ -132,7 +189,7 @@ func TestServerConfigRuntimeReloadWithUnchangedDNSResolversPublishes(t *testing.
 		"  default_ca: \"le\"\n  dns_resolvers: [\"1.1.1.1\", \"8.8.8.8:53\"]", 1)
 	path := filepath.Join(t.TempDir(), "server.yaml")
 	initial := parseRuntimeConfig(t, withResolvers)
-	runtime := newServerConfigRuntime(path, initial)
+	runtime := newServerConfigRuntime(path, initial, func() {})
 	writeRuntimeConfig(t, path, strings.Replace(withResolvers, "ops@example.com", "security@example.com", 1))
 
 	if err := runtime.Reload(context.Background()); err != nil {
@@ -146,7 +203,8 @@ func TestServerConfigRuntimeReloadWithUnchangedDNSResolversPublishes(t *testing.
 func TestServerConfigRuntimeInvalidReloadKeepsPreviousGeneration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "server.yaml")
 	initial := parseRuntimeConfig(t, initialRuntimeConfig)
-	runtime := newServerConfigRuntime(path, initial)
+	notified := 0
+	runtime := newServerConfigRuntime(path, initial, func() { notified++ })
 	writeRuntimeConfig(t, path, "server: [invalid")
 
 	if err := runtime.Reload(context.Background()); err == nil {
@@ -154,5 +212,8 @@ func TestServerConfigRuntimeInvalidReloadKeepsPreviousGeneration(t *testing.T) {
 	}
 	if runtime.Current() != initial {
 		t.Fatal("invalid reload changed the published generation")
+	}
+	if notified != 0 {
+		t.Fatalf("invalid reload notified %d times", notified)
 	}
 }

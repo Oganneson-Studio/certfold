@@ -8,12 +8,14 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -24,11 +26,22 @@ import (
 	"github.com/Oganneson-Studio/sigil/pkg/proto"
 )
 
+// lastSeenInterval is the least time between two writes of one client's
+// last_seen. A variable so that tests can shorten it.
+var lastSeenInterval = time.Minute
+
 type handlers struct {
 	deps Deps
+
+	// seenMu guards lastSeen, which holds for each client the time its
+	// last_seen was last written, or is being written.
+	seenMu   sync.Mutex
+	lastSeen map[string]time.Time
 }
 
-func newHandlers(deps Deps) *handlers { return &handlers{deps: deps} }
+func newHandlers(deps Deps) *handlers {
+	return &handlers{deps: deps, lastSeen: make(map[string]time.Time)}
+}
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -218,31 +231,12 @@ func (h *handlers) listCertificates(w http.ResponseWriter, r *http.Request) {
 	}
 	clientName := cert.Subject.CommonName
 
-	ctx := r.Context()
-	all, err := h.deps.DB.Certs.List(ctx, nil)
+	view, err := h.certificateView(r.Context(), clientName)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-
-	// Filter by the subscriber list and ensure stored material still matches
-	// the current spec. A hot reload must never expose a same-name stale cert.
-	cfg := h.deps.serverConfig()
-	subscribed := subscribedSpecs(cfg, clientName)
-	var out []proto.CertSummary
-	for _, c := range all {
-		if spec, ok := subscribed[c.Name]; ok && certRecordMatchesSpec(c, cfg, spec) {
-			out = append(out, proto.CertSummary{
-				Name:        c.Name,
-				Fingerprint: c.Fingerprint,
-				NotAfter:    c.NotAfter,
-			})
-		}
-	}
-	if out == nil {
-		out = []proto.CertSummary{}
-	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, view)
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +276,7 @@ func (h *handlers) getCertBundle(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, proto.CertBundle{
 		Name:         rec.Name,
+		Fingerprint:  rec.Fingerprint,
 		FullchainPEM: rec.FullchainPEM,
 		KeyPEM:       rec.KeyPEM,
 	})
@@ -399,21 +394,56 @@ func (h *handlers) requireActiveClient(next http.Handler) http.Handler {
 		}
 		clientName := cert.Subject.CommonName
 		fingerprint := ca.Fingerprint(cert.Raw)
+		now := time.Now()
 		rec, err := h.deps.DB.Clients.Get(r.Context(), clientName, nil)
 		if err != nil {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		if rec.Fingerprint != fingerprint {
-			if rec.PendingFingerprint != fingerprint || !time.Now().UTC().Before(rec.PendingNotAfter) {
+			if rec.PendingFingerprint != fingerprint || !now.Before(rec.PendingNotAfter) {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
 			if err := h.deps.DB.Clients.PromotePendingIdentity(
-				r.Context(), clientName, fingerprint, time.Now().UTC(),
+				r.Context(), clientName, fingerprint, now,
 			); err != nil {
+				// A concurrent first use of the same identity may have
+				// promoted it since the lookup above.
+				current, err := h.deps.DB.Clients.Get(r.Context(), clientName, nil)
+				if err != nil || current.Fingerprint != fingerprint {
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+			}
+		}
+
+		// Record last_seen at most once per lastSeenInterval for each client.
+		// The throttle is kept here, not in the UPDATE, so that an UPDATE of
+		// zero rows still means the client is gone. Claiming the entry before
+		// the write leaves one writer among concurrent requests. The claim
+		// stands whatever the write returns, so a database that fails it is
+		// tried again once per interval.
+		h.seenMu.Lock()
+		last, seen := h.lastSeen[clientName]
+		write := !seen || now.Sub(last) >= lastSeenInterval
+		if write {
+			h.lastSeen[clientName] = now
+		}
+		h.seenMu.Unlock()
+		if write {
+			// A single conditional write: the client may have been removed, or
+			// its identity changed, since the lookup above.
+			err := h.deps.DB.Clients.MarkSeen(r.Context(), clientName, fingerprint, now)
+			if err == sql.ErrNoRows {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
+			}
+			if err != nil {
+				// The lookup above authenticated the client; last_seen only
+				// records that it was here. A database that cannot take writes
+				// must not keep it from the certificates already stored.
+				log.Printf("sigils: record last_seen of client %s: %v", clientName, err)
 			}
 		}
 		next.ServeHTTP(w, r)

@@ -72,9 +72,12 @@ func Run(ctx context.Context, configPath string) error {
 	// so they are set once, before any issuance can run; changing them needs a
 	// restart.
 	acme.SetDNSResolvers(cfg.ACME.DNSResolvers)
+	// Stored certificates and published reloads wake the clients waiting in
+	// GET /v1/sync.
+	changes := api.NewChanges()
 	pushNotifier := scheduler.NewHTTPPushNotifier(nil)
-	r := scheduler.New(acme.NewIssuer(db.Accounts), db.Certs, db.Issuance, pushNotifier, nil, nil)
-	runtimeConfig := newServerConfigRuntime(configPath, cfg, r)
+	r := scheduler.New(acme.NewIssuer(db.Accounts), db.Certs, db.Issuance, pushNotifier, changes.Notify, nil)
+	runtimeConfig := newServerConfigRuntime(configPath, cfg, changes.Notify, r)
 	schedulerDone := make(chan struct{})
 	go func() {
 		defer close(schedulerDone)
@@ -117,6 +120,8 @@ func Run(ctx context.Context, configPath string) error {
 		MiniCA:        miniCA,
 		DataDir:       cfg.Server.DataDir,
 		EnrollServer:  enrollSrv,
+		Changes:       changes,
+		Done:          ctx.Done(),
 	}, serverTLSCert)
 	httpsDone := make(chan error, 1)
 	go func() { httpsDone <- httpSrv.ServeTLS(httpsListener, "", "") }()
@@ -132,7 +137,9 @@ func Run(ctx context.Context, configPath string) error {
 	}
 
 	// Stop taking requests, then wait for background work, then close the
-	// store (deferred above).
+	// store (deferred above). Cancelling before Shutdown answers the requests
+	// waiting in GET /v1/sync at once, which would otherwise hold Shutdown
+	// until shutdownTimeout.
 	cancel()
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancelShutdown()
