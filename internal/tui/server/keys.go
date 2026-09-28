@@ -18,7 +18,7 @@ type keyMap struct {
 	Help    key.Binding
 	Quit    key.Binding
 
-	// Lists: the tables and the Events tab.
+	// Lists: the tables, the Events tab and the new-token box.
 	Up       key.Binding
 	Down     key.Binding
 	PageUp   key.Binding
@@ -27,13 +27,17 @@ type keyMap struct {
 	Bottom   key.Binding
 
 	// Tab actions.
-	Renew  key.Binding
-	Delete key.Binding
-	Revoke key.Binding
+	Renew    key.Binding
+	Delete   key.Binding
+	NewToken key.Binding
+	Revoke   key.Binding
 
-	// The confirmation.
+	// Dialogs.
 	Confirm key.Binding
 	Cancel  key.Binding
+	Submit  key.Binding
+	Field   key.Binding
+	Close   key.Binding
 }
 
 func defaultKeys() keyMap {
@@ -53,12 +57,16 @@ func defaultKeys() keyMap {
 		Top:      key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "oldest")),
 		Bottom:   key.NewBinding(key.WithKeys("G"), key.WithHelp("G", "newest")),
 
-		Renew:  key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "renew")),
-		Delete: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete client")),
-		Revoke: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "revoke token")),
+		Renew:    key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "renew")),
+		Delete:   key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete client")),
+		NewToken: key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new token")),
+		Revoke:   key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "revoke token")),
 
 		Confirm: key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "confirm")),
 		Cancel:  key.NewBinding(key.WithKeys("n", "esc"), key.WithHelp("n/esc", "cancel")),
+		Submit:  key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "create")),
+		Field:   key.NewBinding(key.WithKeys("tab", "shift+tab", "up", "down"), key.WithHelp("tab", "next field")),
+		Close:   key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "close")),
 	}
 }
 
@@ -71,16 +79,23 @@ type keyHelp struct {
 func (h keyHelp) ShortHelp() []key.Binding  { return h.short }
 func (h keyHelp) FullHelp() [][]key.Binding { return h.full }
 
-// keyHelp returns the keys of the open confirmation, or else those of the
-// current tab and the global keys. The short help leaves out the moves, so
-// that it fits in 80 columns: help.Model does not cut a line that has no room
-// left for its ellipsis.
+// keyHelp returns the keys of the open dialog, or else those of the current
+// tab and the global keys. The short help leaves out the moves, so that it
+// fits in 80 columns: help.Model does not cut a line that has no room left
+// for its ellipsis.
 func (m Model) keyHelp() keyHelp {
 	k := m.keys
-	if m.confirm != nil {
+	switch {
+	case m.confirm != nil:
 		yes := k.Confirm
 		yes.SetHelp("y", m.confirm.verb)
 		return dialogHelp(yes, k.Cancel)
+	case m.form != nil:
+		cancel := k.Close
+		cancel.SetHelp("esc", "cancel")
+		return dialogHelp(k.Submit, k.Field, cancel)
+	case m.created != nil:
+		return dialogHelp(k.Up, k.Down, k.PageUp, k.PageDown, k.Close)
 	}
 
 	var moves, actions []key.Binding
@@ -90,7 +105,7 @@ func (m Model) keyHelp() keyHelp {
 	case tabClients:
 		moves, actions = []key.Binding{k.Up, k.Down}, []key.Binding{k.Delete}
 	case tabTokens:
-		moves, actions = []key.Binding{k.Up, k.Down}, []key.Binding{k.Revoke}
+		moves, actions = []key.Binding{k.Up, k.Down}, []key.Binding{k.NewToken, k.Revoke}
 	case tabEvents:
 		moves, actions = []key.Binding{k.Up, k.Down, k.PageUp, k.PageDown}, []key.Binding{k.Top, k.Bottom}
 	}

@@ -39,22 +39,27 @@ func (m Model) contentHeight() int {
 	return max(m.height-lipgloss.Height(m.renderTabBar())-lipgloss.Height(m.renderStatus())-lipgloss.Height(m.renderHelp()), 0)
 }
 
-// renderContent renders the open confirmation, or else the current tab, in
+// renderContent renders the open dialog, or else the current tab, in
 // exactly contentHeight lines.
 func (m Model) renderContent() string {
+	if m.created != nil {
+		return m.created.view.View()
+	}
 	h, w := m.contentHeight(), max(m.width-4, 0)
 	var body string
 	switch {
 	case m.confirm != nil:
 		body = m.confirm.view(w)
+	case m.form != nil:
+		body = m.form.view(w)
 	case m.tab == tabOverview:
 		body = m.renderOverview(w)
 	case m.tab == tabCertificates:
 		body = m.renderCertificates(w)
 	case m.tab == tabClients:
-		body = orHint(m.clients, m.clientsTable.View(), "No clients are enrolled. Create an enrollment token with `sigils token create`.")
+		body = orHint(m.clients, m.clientsTable.View(), "No clients are enrolled. Create an enrollment token on the Tokens tab.")
 	case m.tab == tabTokens:
-		body = orHint(m.tokens, m.tokensTable.View(), "No enrollment tokens. Create one with `sigils token create`.")
+		body = orHint(m.tokens, m.tokensTable.View(), "No enrollment tokens. Press n to create one.")
 	case m.tab == tabEvents:
 		body = orHint(m.events, m.eventsView.View(), "No events yet.")
 	}

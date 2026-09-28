@@ -32,6 +32,19 @@ func TestEveryHelpKeyIsWired(t *testing.T) {
 			m, _ := press(t, onTab(t, newFake(80), tabTokens), "d")
 			return m
 		}},
+		{"token form", func(t *testing.T) Model {
+			m, _ := press(t, onTab(t, newFake(80), tabTokens), "n")
+			return m
+		}},
+		{"new token", func(t *testing.T) Model {
+			m, _ := press(t, onTab(t, newFake(80), tabTokens), "n", "web-9", "enter")
+			if m.created == nil {
+				t.Fatal("creating a token did not show it")
+			}
+			v := &m.created.view
+			v.SetYOffset((v.TotalLineCount() - v.Height) / 2)
+			return m
+		}},
 	}
 	for _, c := range contexts {
 		t.Run(c.name, func(t *testing.T) {

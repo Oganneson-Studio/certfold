@@ -84,13 +84,16 @@ type Model struct {
 	lastRefresh time.Time
 	// refreshErr is the error of the last refresh; the next refresh that
 	// succeeds clears it. actionErr is the error of the last renewal, client
-	// removal or token revocation. It stays until the next of these starts,
-	// so the refresh two seconds later does not hide it.
+	// removal, token revocation or token creation. It stays until the next of
+	// these starts, so the refresh two seconds later does not hide it.
 	refreshErr error
 	actionErr  error
 
-	// confirm, while open, takes every key but ctrl+c.
+	// At most one dialog is open. While one is, it takes every key but
+	// ctrl+c.
 	confirm *confirmation
+	form    *tokenForm
+	created *createdToken
 }
 
 type tickMsg struct{}
@@ -109,6 +112,13 @@ type refreshMsg struct {
 // actionMsg is the result of a renewal, a client removal or a token
 // revocation.
 type actionMsg struct{ err error }
+
+// createdMsg is the result of a token creation.
+type createdMsg struct {
+	name  string
+	token *ipc.CreateTokenResponse
+	err   error
+}
 
 // New returns a Model that shows and changes the state of the sigils daemon
 // behind backend.
@@ -190,6 +200,16 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 			m.actionErr = msg.err
 			return nil
 		}
+		return m.startRefresh()
+	case createdMsg:
+		if msg.err != nil {
+			m.actionErr = msg.err
+			return nil
+		}
+		// The token cannot be shown again, so it takes the place of a
+		// dialog opened while it was being created.
+		m.confirm, m.form = nil, nil
+		m.created = newCreatedToken(msg.name, msg.token)
 		return m.startRefresh()
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -323,8 +343,14 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	if msg.Type == tea.KeyCtrlC {
 		return tea.Quit
 	}
-	if m.confirm != nil {
+	switch {
+	case m.confirm != nil:
 		return m.updateConfirm(msg)
+	case m.form != nil:
+		return m.updateForm(msg)
+	case m.created != nil:
+		m.updateCreated(msg)
+		return nil
 	}
 
 	k := m.keys
@@ -385,6 +411,8 @@ func (m *Model) handleTabKey(msg tea.KeyMsg) {
 		t.MoveUp(1)
 	case key.Matches(msg, k.Down):
 		t.MoveDown(1)
+	case m.tab == tabTokens && key.Matches(msg, k.NewToken):
+		m.form = newTokenForm()
 	default:
 		row := t.SelectedRow()
 		if row == nil {
@@ -410,8 +438,15 @@ func (m *Model) handleTabKey(msg tea.KeyMsg) {
 
 // layout sizes the tables and the views to the window.
 func (m *Model) layout() {
+	height := m.contentHeight()
+	if m.created != nil {
+		// The new-token box fills the content area without padding, so its
+		// lines hold as much of the commands as the window allows.
+		m.created.resize(m.width, height)
+	}
+
 	// Inside the padding of shared.ContentStyle.
-	w, h := max(m.width-4, 0), max(m.contentHeight()-2, 0)
+	w, h := max(m.width-4, 0), max(height-2, 0)
 	m.help.Width = w
 
 	fitColumn(&m.certsTable, 4, w)
