@@ -93,10 +93,11 @@ func TestIssuanceIsReportedAsEvents(t *testing.T) {
 	assertEvents(t, events,
 		"INFO certificate issuance started cert=api-prod reason=new",
 		issuedEvent(first, start.Add(60*24*time.Hour)),
+		// Renewals name the certificate they replace in the order.
 		"INFO certificate issuance started cert=api-prod reason=ratio",
-		issuedEvent(second, clock.Add(60*24*time.Hour)),
+		issuedEvent(second, clock.Add(60*24*time.Hour))+" replacing=true",
 		"INFO certificate issuance started cert=api-prod reason=manual",
-		issuedEvent(third, clock.Add(61*24*time.Hour)),
+		issuedEvent(third, clock.Add(61*24*time.Hour))+" replacing=true",
 		"INFO certificate issuance started cert=api-prod reason=manual",
 		// The error is sanitized as for last_error.
 		`ERROR certificate issuance failed cert=api-prod error="acme failed [2J" failures=1 next_attempt=2025-03-02T00:05:00.000Z`,

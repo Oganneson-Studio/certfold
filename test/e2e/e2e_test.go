@@ -6,6 +6,7 @@
 package e2e
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -278,6 +279,170 @@ func TestEnrollFetchRenewAndRevoke(t *testing.T) {
 // to enroll and for every pull after enrollment.
 func TestPublicTLSEnrollAndFetch(t *testing.T) {
 	enrollAndFetch(t, stack.publicTLS)
+}
+
+// TestRenewalTimeFollowsTheCAWindow checks that both servers asked pebble for
+// the renewal window of test-cert (RFC 9773) and renew it within the window.
+func TestRenewalTimeFollowsTheCAWindow(t *testing.T) {
+	for _, d := range stack.deployments() {
+		t.Run(d.alias, func(t *testing.T) { waitForCAWindow(t, d) })
+	}
+}
+
+// TestARIDirectedRenewal has pebble answer that test-cert of the public TLS
+// server is due now, as a CA does when it revokes certificates. After a reload
+// the server asks again, renews at once naming the certificate it replaces,
+// and the client, whose daemon TestPublicTLSEnrollAndFetch started, gets the
+// new one.
+func TestARIDirectedRenewal(t *testing.T) {
+	d := stack.publicTLS
+	// The server must have the usual window of the certificate first: a first
+	// window that has passed would count as a CA error, to be retried after a
+	// backoff.
+	before := waitForCAWindow(t, d)
+	block, _ := pem.Decode([]byte(mustExec(t, d.clientContainer, "cat", testCertOutputs+"/fullchain.pem")))
+	if block == nil {
+		t.Fatal("fullchain.pem of the client holds no PEM block")
+	}
+	// Pebble returns the response as is, with a Retry-After of 6 hours. The
+	// times must be RFC 3339 with a zone, and end after start: RenewalInfo
+	// rejects any other window, and the plan would stay with pebble's usual
+	// one.
+	now := time.Now().UTC().Truncate(time.Second)
+	windowStart, windowEnd := now.Add(-2*time.Hour), now.Add(-time.Hour)
+	body, err := json.Marshal(map[string]string{
+		"Certificate": string(pem.EncodeToMemory(block)),
+		"ARIResponse": fmt.Sprintf(`{"suggestedWindow":{"start":%q,"end":%q}}`,
+			windowStart.Format(time.RFC3339), windowEnd.Format(time.RFC3339)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The manual renewal of TestEnrollFetchRenewAndRevoke replaced a
+	// certificate as well.
+	replacements := strings.Count(stack.logs(stack.pebbleContainer), "is a replacement of")
+	client := &http.Client{Timeout: 10 * time.Second, Transport: stack.pebbleTransport()}
+	resp, err := client.Post(fmt.Sprintf("https://127.0.0.1:%d/set-renewal-info/", stack.pebbleAdminPort),
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("set pebble's renewal info: %v", err)
+	}
+	answer, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("set pebble's renewal info: status %d: %s", resp.StatusCode, answer)
+	}
+
+	// A reload has the server ask again at once.
+	mustExec(t, d.serverContainer, "sigils", "reload")
+	start := time.Now()
+	renewed := testCertState(t, d)
+	for ; renewed.Fingerprint == before.Fingerprint || renewed.Fingerprint == ""; renewed = testCertState(t, d) {
+		if time.Since(start) > 30*time.Second {
+			t.Fatalf("test-cert was not renewed within 30s of the reload; cert list shows %+v\nserver logs:\n%s",
+				renewed, stack.logs(d.serverContainer))
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Logf("the server renewed test-cert %s after the reload", time.Since(start).Round(100*time.Millisecond))
+	if n := strings.Count(stack.logs(stack.pebbleContainer), "is a replacement of"); n <= replacements {
+		t.Fatalf("pebble logged no new replacement order: the renewal did not name the certificate it replaces")
+	}
+
+	events := serverEvents(t, d)
+	for _, want := range []struct{ message, attrs string }{
+		{"renewal window updated", "cert=test-cert window_start=" + eventTime(windowStart) + " window_end=" + eventTime(windowEnd) + " "},
+		{"certificate issuance started", "cert=test-cert reason=ari"},
+		{"certificate issued", "cert=test-cert "},
+	} {
+		if !slices.ContainsFunc(events, func(e serverEvent) bool {
+			return e.Message == want.message && strings.HasPrefix(e.Attrs+" ", want.attrs) &&
+				(want.message != "certificate issued" || strings.HasSuffix(e.Attrs, " replacing=true"))
+		}) {
+			t.Errorf("no event %q with %q among the events of %s:\n%s", want.message, want.attrs, d.alias, formatEvents(events))
+		}
+	}
+
+	start = time.Now()
+	for {
+		out := mustExec(t, d.clientContainer, "sigilc", "status", "--json")
+		var status struct {
+			Certs []struct{ Name, Fingerprint string } `json:"certs"`
+		}
+		if err := json.Unmarshal([]byte(out), &status); err != nil {
+			t.Fatalf("parse client status: %v\n%s", err, out)
+		}
+		if slices.ContainsFunc(status.Certs, func(c struct{ Name, Fingerprint string }) bool {
+			return c.Name == "test-cert" && c.Fingerprint == renewed.Fingerprint
+		}) {
+			break
+		}
+		if time.Since(start) > 15*time.Second {
+			t.Fatalf("client did not get the renewed test-cert within 15s; client status:\n%s", out)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	// Pebble answers with the usual window for the new certificate.
+	if after := waitForCAWindow(t, d); after.Fingerprint != renewed.Fingerprint {
+		t.Fatalf("cert list shows fingerprint %s, want the renewed %s", after.Fingerprint, renewed.Fingerprint)
+	}
+}
+
+// testCertState returns what the server of d lists for test-cert.
+func testCertState(t *testing.T, d *deployment) certState {
+	t.Helper()
+	out := mustExec(t, d.serverContainer, "sigils", "--json", "cert", "list")
+	var certs []certState
+	if err := json.Unmarshal([]byte(out), &certs); err != nil {
+		t.Fatalf("parse cert list: %v\n%s", err, out)
+	}
+	for _, cert := range certs {
+		if cert.Name == "test-cert" {
+			return cert
+		}
+	}
+	t.Fatalf("cert list has no test-cert:\n%s", out)
+	return certState{}
+}
+
+// waitForCAWindow waits until the server of d renews test-cert at a time from
+// the renewal window pebble suggests, and returns what it lists for test-cert.
+// The server asks for the window once it has stored the certificate. Pebble's
+// window spans the 24 hours around the point a third of the lifetime before
+// expiry: 30 days for its 90-day certificates.
+func waitForCAWindow(t *testing.T, d *deployment) certState {
+	t.Helper()
+	start := time.Now()
+	cert := testCertState(t, d)
+	for ; cert.RenewSource != "ari"; cert = testCertState(t, d) {
+		if time.Since(start) > 15*time.Second {
+			t.Fatalf("%s does not renew test-cert as its CA suggests within 15s; cert list shows %+v\nserver logs:\n%s",
+				d.alias, cert, stack.logs(d.serverContainer))
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	day := 24 * time.Hour
+	if left := cert.NotAfter.Sub(cert.RenewAt); left < 29*day-time.Minute || left > 31*day+time.Minute {
+		t.Fatalf("%s renews test-cert at %s, %s before it expires at %s; want 29 to 31 days", d.alias, cert.RenewAt, left, cert.NotAfter)
+	}
+	if !cert.RenewAt.After(cert.IssuedAt) {
+		t.Fatalf("%s renews test-cert at %s, not after it was issued at %s", d.alias, cert.RenewAt, cert.IssuedAt)
+	}
+	return cert
+}
+
+func formatEvents(events []serverEvent) string {
+	var b strings.Builder
+	for _, e := range events {
+		fmt.Fprintf(&b, "  %s %s %s\n", e.Level, e.Message, e.Attrs)
+	}
+	return b.String()
+}
+
+// eventTime formats t as events show a time.
+func eventTime(t time.Time) string {
+	return t.UTC().Format("2006-01-02T15:04:05.000Z07:00")
 }
 
 // TestPublicTLSCertificateReload replaces the server.tls_cert_file and key of

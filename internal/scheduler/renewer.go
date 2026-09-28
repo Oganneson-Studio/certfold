@@ -44,14 +44,15 @@ const (
 
 // issuer is the subset of acme.Issuer used by Renewer.
 type issuer interface {
-	Issue(ctx context.Context, cfg *config.ServerConfig, spec config.CertificateSpec) (*acme.Result, error)
+	Issue(ctx context.Context, cfg *config.ServerConfig, spec config.CertificateSpec, replacing []byte) (*acme.Result, error)
+	RenewalInfo(cfg *config.ServerConfig, spec config.CertificateSpec, certPEM []byte) (*acme.RenewalInfo, error)
 }
 
 // Renewer drives certificate renewal for all specs in ServerConfig.
 //
 // An issuance holds its certificate's lock, then an issuance slot, then genMu
 // for reading while it stores the outcome. Always taken in that order, these
-// cannot deadlock.
+// cannot deadlock. ariMu comes last: nothing else is taken while it is held.
 type Renewer struct {
 	issuer issuer
 	db     *store.DB
@@ -60,6 +61,9 @@ type Renewer struct {
 	// waiting in GET /v1/sync.
 	stored func()
 	clock  func() time.Time
+	// started is when the Renewer was created, to the second, as the store
+	// keeps times: certificates stored since were issued by this process.
+	started time.Time
 
 	// genMu orders storing an issuance outcome (read) against publishing a
 	// configuration generation (write). Both sections are short database
@@ -72,6 +76,13 @@ type Renewer struct {
 
 	wg   sync.WaitGroup // issuances started by ticks
 	wake chan struct{}
+
+	// ariMu guards the renewal info of the stored certificates. The IPC
+	// listing of certificates takes it through RenewalPlan.
+	ariMu       sync.Mutex
+	ari         map[string]*ariState // by certificate name
+	ariChecking bool                 // a checkRenewalInfo goroutine runs
+	ariTrips    map[string]int       // consecutive errWindowPassed failures, by certificate name
 }
 
 // New creates a Renewer. stored may be nil (does nothing) and must not block;
@@ -84,13 +95,16 @@ func New(iss issuer, db *store.DB, stored func(), clock func() time.Time) *Renew
 		stored = func() {}
 	}
 	return &Renewer{
-		issuer: iss,
-		db:     db,
-		stored: stored,
-		clock:  clock,
-		locks:  make(map[string]chan struct{}),
-		slots:  make(chan struct{}, maxConcurrentIssuance),
-		wake:   make(chan struct{}, 1),
+		issuer:   iss,
+		db:       db,
+		stored:   stored,
+		clock:    clock,
+		started:  clock().Truncate(time.Second),
+		locks:    make(map[string]chan struct{}),
+		slots:    make(chan struct{}, maxConcurrentIssuance),
+		wake:     make(chan struct{}, 1),
+		ari:      make(map[string]*ariState),
+		ariTrips: make(map[string]int),
 	}
 }
 
@@ -139,13 +153,15 @@ func (r *Renewer) RunDynamic(ctx context.Context, current func() *config.ServerC
 // tick starts an issuance for every certificate that is due and not already
 // being issued, without waiting for them. A certificate is due when nothing
 // is stored for its current specification, or when the renewal plan of the
-// stored one says so. tick returns when the loop must tick again at the
-// latest: the earliest retry time or renewal time still ahead, or the zero
-// time if there is none. The certificates it starts or skips as already
-// being issued count for none, lest the loop wake at once: the end of an
-// issuance wakes it instead, unless ctx is cancelled, the failure of the
-// issuance cannot be stored, or the certificate is no longer configured when
-// the issuance starts. Then the loop ticks again at its hourly interval.
+// stored one says so. It then starts asking for the renewal info that is due,
+// as planRenewalInfo does. tick returns when the loop must tick again at the
+// latest: the earliest retry time, renewal time or renewal info query still
+// ahead, or the zero time if there is none. The certificates it starts or
+// skips as already being issued count for none, lest the loop wake at once:
+// the end of an issuance wakes it instead, unless ctx is cancelled, the
+// failure of the issuance cannot be stored, or the certificate is no longer
+// configured when the issuance starts. Then the loop ticks again at its hourly
+// interval.
 func (r *Renewer) tick(ctx context.Context, current func() *config.ServerConfig) (time.Time, error) {
 	cfg := current()
 	if cfg == nil {
@@ -175,6 +191,7 @@ func (r *Renewer) tick(ctx context.Context, current func() *config.ServerConfig)
 			wakeAt = at
 		}
 	}
+	issuing := make(map[string]bool)
 	for _, spec := range cfg.Certificates {
 		if next := nextAttempt[spec.Name]; now.Before(next) {
 			wakeBy(next)
@@ -189,6 +206,7 @@ func (r *Renewer) tick(ctx context.Context, current func() *config.ServerConfig)
 			}
 			reason = source
 		}
+		issuing[spec.Name] = true
 		lock := r.lock(spec.Name)
 		select {
 		case lock <- struct{}{}:
@@ -199,6 +217,9 @@ func (r *Renewer) tick(ctx context.Context, current func() *config.ServerConfig)
 		// issue reports its outcome as events. The other errors come from a
 		// shutdown, or from a reload that removed the certificate meanwhile.
 		r.wg.Go(func() { _ = r.issueLocked(ctx, current, name, reason, lock) })
+	}
+	if at := r.planRenewalInfo(ctx, current, cfg, stored, issuing, now); !at.IsZero() {
+		wakeBy(at)
 	}
 	return wakeAt, nil
 }
@@ -213,11 +234,15 @@ func matches(cfg *config.ServerConfig, spec config.CertificateSpec, rec *store.C
 }
 
 // RenewalPlan returns when the stored certificate rec is due for renewal, and
-// the rule that says so: "ratio", the share of its lifetime that
-// renewal.RenewAt leaves. A certificate that cannot be read gets the zero
-// time, which is due at once. The IPC listing of certificates calls it too,
-// concurrently with the scheduler.
+// the rule that says so: "ari", a time within the renewal window the CA sent
+// for it, or else "ratio", the share of its lifetime that renewal.RenewAt
+// leaves. A certificate that cannot be read gets the zero time, which is due
+// at once. The IPC listing of certificates calls it too, concurrently with
+// the scheduler; it takes ariMu only.
 func (r *Renewer) RenewalPlan(rec *store.CertRecord) (time.Time, string) {
+	if at, ok := r.ariPick(rec); ok {
+		return at, "ari"
+	}
 	at, _ := renewal.RenewAt(rec.FullchainPEM) // the zero time on error
 	return at, "ratio"
 }
@@ -248,8 +273,9 @@ func dueOnArrival(fullchainPEM []byte, now time.Time) (time.Time, error) {
 // in-flight issuance: an issuance whose specification changed meanwhile
 // discards its result when storing it. It clears the retry backoff of every
 // certificate, keeping the last error, and wakes the scheduler for an
-// immediate tick. The callback must only perform the atomic publication and
-// must not block.
+// immediate tick, which also asks again for the renewal info of every
+// certificate. The callback must only perform the atomic publication and must
+// not block.
 func (r *Renewer) PublishConfig(ctx context.Context, publish func()) error {
 	r.genMu.Lock()
 	if err := ctx.Err(); err != nil {
@@ -263,6 +289,7 @@ func (r *Renewer) PublishConfig(ctx context.Context, publish func()) error {
 	publish()
 	r.genMu.Unlock()
 
+	r.recheckRenewalInfo()
 	r.wakeUp()
 	return nil
 }
@@ -326,7 +353,8 @@ func (r *Renewer) wakeUp() {
 
 // issueLocked issues the named certificate once an issuance slot is free,
 // then releases the certificate's lock, which the caller holds. reason says
-// why it is issued: "new", "manual" or the source of its renewal plan.
+// why it is issued: "new", "manual" or the source of its renewal plan, "ari"
+// or "ratio".
 func (r *Renewer) issueLocked(ctx context.Context, current func() *config.ServerConfig, name, reason string, lock chan struct{}) error {
 	wake := false
 	err := acquire(ctx, r.slots)
@@ -353,6 +381,9 @@ func (r *Renewer) issueLocked(ctx context.Context, current func() *config.Server
 // that the next one waits out a backoff that grows as long as the CA issues
 // such certificates, rather than follow at once.
 //
+// A renewal hands the certificate it replaces to the issuer, as replacing
+// decides, to name in the order.
+//
 // issue reports the attempt and its outcome as events, once genMu is
 // released.
 func (r *Renewer) issue(ctx context.Context, current func() *config.ServerConfig, name, reason string) (bool, error) {
@@ -362,8 +393,9 @@ func (r *Renewer) issue(ctx context.Context, current func() *config.ServerConfig
 		return false, fmt.Errorf("cert %q not found", name)
 	}
 	fp := config.CertificateSpecFingerprint(cfg, spec)
+	replacing := r.replacing(ctx, cfg, spec)
 	slog.Info("certificate issuance started", "cert", name, "reason", reason)
-	result, err := r.issuer.Issue(ctx, cfg, spec)
+	result, err := r.issuer.Issue(ctx, cfg, spec, replacing)
 	if err != nil {
 		// Its text can quote the ACME CA and the DNS provider API, and
 		// RenewNamed hands it over IPC to a terminal.
@@ -404,8 +436,20 @@ func (r *Renewer) issue(ctx context.Context, current func() *config.ServerConfig
 		if err == nil {
 			r.genMu.RUnlock()
 			r.stored()
-			slog.Info("certificate issued", "cert", name, "not_after", result.NotAfter,
-				"renew_at", renewAt, "fingerprint", certificateFingerprint(result.Certificate))
+			if reason != "ari" {
+				r.resetARITrips(name)
+			}
+			attrs := []any{"cert", name, "not_after", result.NotAfter,
+				"renew_at", renewAt, "fingerprint", certificateFingerprint(result.Certificate)}
+			// replacing=true says that the stored certificate was handed to
+			// Issue, not that the order named it: lego leaves the name out
+			// for a CA that offers no renewal info, acme for a certificate
+			// without an authority key identifier, and lego again when it
+			// orders anew after the CA answers alreadyReplaced.
+			if replacing != nil {
+				attrs = append(attrs, "replacing", true)
+			}
+			slog.Info("certificate issued", attrs...)
 			if dueErr != nil {
 				slog.Error("certificate issuance failed", "cert", name, "error", dueErr,
 					"failures", status.Failures, "next_attempt", status.NextAttemptAt)

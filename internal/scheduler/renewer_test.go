@@ -39,7 +39,7 @@ type mockIssuer struct {
 	called chan struct{}
 }
 
-func (m *mockIssuer) Issue(_ context.Context, cfg *config.ServerConfig, _ config.CertificateSpec) (*acme.Result, error) {
+func (m *mockIssuer) Issue(_ context.Context, cfg *config.ServerConfig, _ config.CertificateSpec, _ []byte) (*acme.Result, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls++
@@ -51,6 +51,11 @@ func (m *mockIssuer) Issue(_ context.Context, cfg *config.ServerConfig, _ config
 		}
 	}
 	return m.result, m.err
+}
+
+// RenewalInfo leaves the renewal plan to the lifetime ratio.
+func (m *mockIssuer) RenewalInfo(*config.ServerConfig, config.CertificateSpec, []byte) (*acme.RenewalInfo, error) {
+	return nil, acme.ErrNoRenewalInfo
 }
 
 // gatedIssuer hands every Issue call to the test and blocks it until the test
@@ -75,7 +80,12 @@ func newGatedIssuer(t *testing.T, notAfter time.Time) *gatedIssuer {
 	return &gatedIssuer{calls: make(chan *issueCall), result: successResult(t, notAfter)}
 }
 
-func (g *gatedIssuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec config.CertificateSpec) (*acme.Result, error) {
+// RenewalInfo leaves the renewal plan to the lifetime ratio.
+func (g *gatedIssuer) RenewalInfo(*config.ServerConfig, config.CertificateSpec, []byte) (*acme.RenewalInfo, error) {
+	return nil, acme.ErrNoRenewalInfo
+}
+
+func (g *gatedIssuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec config.CertificateSpec, _ []byte) (*acme.Result, error) {
 	g.mu.Lock()
 	g.active++
 	g.peak = max(g.peak, g.active)
@@ -624,8 +634,21 @@ func TestTimerWakesAtEarliestRetry(t *testing.T) {
 	}
 }
 
+// heldRenewalInfo is a gatedIssuer whose renewal info queries wait until
+// release is closed, so that their end does not wake the loop.
+type heldRenewalInfo struct {
+	*gatedIssuer
+	release chan struct{}
+}
+
+func (h heldRenewalInfo) RenewalInfo(*config.ServerConfig, config.CertificateSpec, []byte) (*acme.RenewalInfo, error) {
+	<-h.release
+	return nil, acme.ErrNoRenewalInfo
+}
+
 // ⑰ A failure's retry time is stored after the tick that started the
 // issuance has set its timer, so storing it wakes the loop to plan again.
+// The query about api-stage is held, lest its end wake the loop instead.
 func TestRecordedBackoffWakesScheduler(t *testing.T) {
 	ctx := context.Background()
 	db := mustOpenDB(t)
@@ -647,7 +670,9 @@ func TestRecordedBackoffWakesScheduler(t *testing.T) {
 		t.Fatal(err)
 	}
 	iss := newGatedIssuer(t, start.Add(90*24*time.Hour))
-	r := New(iss, db, nil, now)
+	held := heldRenewalInfo{gatedIssuer: iss, release: make(chan struct{})}
+	t.Cleanup(func() { close(held.release) })
+	r := New(held, db, nil, now)
 	runCtx, cancel := context.WithCancel(ctx)
 	t.Cleanup(cancel)
 	done := make(chan error, 1)

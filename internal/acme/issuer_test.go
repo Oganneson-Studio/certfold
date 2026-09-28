@@ -368,15 +368,19 @@ type fakeACME struct {
 	*httptest.Server
 	orders int
 
-	mu        sync.Mutex
-	nonces    int
-	keys      map[string]*ecdsa.PublicKey // by account URL
-	accounts  []string                    // account URL answering each new-account request
-	orderKIDs []string                    // account URL of each verified new-order request
-	arrivals  int
-	problems  []string
-	together  chan struct{}
-	closeOnce sync.Once
+	mu            sync.Mutex
+	nonces        int
+	keys          map[string]*ecdsa.PublicKey // by account URL
+	accounts      []string                    // account URL answering each new-account request
+	orderKIDs     []string                    // account URL of each verified new-order request
+	orderPayloads [][]byte                    // JSON payload of each verified new-order request
+	// renewalInfo, when set by offerRenewalInfo, answers GET
+	// /renewal-info/{id}, and the directory offers renewalInfo.
+	renewalInfo http.HandlerFunc
+	arrivals    int
+	problems    []string
+	together    chan struct{}
+	closeOnce   sync.Once
 }
 
 func newFakeACME(t *testing.T, orders int) *fakeACME {
@@ -384,13 +388,29 @@ func newFakeACME(t *testing.T, orders int) *fakeACME {
 	f := &fakeACME{orders: orders, keys: map[string]*ecdsa.PublicKey{}, together: make(chan struct{})}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /dir", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{
+		dir := map[string]string{
 			"newNonce":   f.URL + "/nonce",
 			"newAccount": f.URL + "/new-acct",
 			"newOrder":   f.URL + "/new-order",
 			"revokeCert": f.URL + "/revoke-cert",
 			"keyChange":  f.URL + "/key-change",
-		})
+		}
+		f.mu.Lock()
+		if f.renewalInfo != nil {
+			dir["renewalInfo"] = f.URL + "/renewal-info"
+		}
+		f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(dir)
+	})
+	mux.HandleFunc("GET /renewal-info/{id}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		handler := f.renewalInfo
+		f.mu.Unlock()
+		if handler == nil {
+			http.NotFound(w, r)
+			return
+		}
+		handler(w, r)
 	})
 	mux.HandleFunc("HEAD /nonce", func(w http.ResponseWriter, r *http.Request) { f.setNonce(w) })
 	mux.HandleFunc("POST /new-acct", f.newAccount)
@@ -406,6 +426,13 @@ func newFakeACME(t *testing.T, orders int) *fakeACME {
 	}
 	t.Setenv("LEGO_CA_CERTIFICATES", caFile)
 	return f
+}
+
+// offerRenewalInfo makes the directory offer renewalInfo, served by handler.
+func (f *fakeACME) offerRenewalInfo(handler http.HandlerFunc) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.renewalInfo = handler
 }
 
 func (f *fakeACME) setNonce(w http.ResponseWriter) {
@@ -436,15 +463,15 @@ func (f *fakeACME) reject(w http.ResponseWriter, format string, args ...any) {
 
 // verify checks the signature of the flattened JWS in r's body against its
 // embedded jwk or, for a kid, the key registered for that account. It returns
-// the kid and the key.
-func (f *fakeACME) verify(r *http.Request) (string, *ecdsa.PublicKey, error) {
+// the kid, the key and the decoded payload.
+func (f *fakeACME) verify(r *http.Request) (string, *ecdsa.PublicKey, []byte, error) {
 	var jws struct{ Protected, Payload, Signature string }
 	if err := json.NewDecoder(r.Body).Decode(&jws); err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	rawHeader, err := base64.RawURLEncoding.DecodeString(jws.Protected)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	var header struct {
 		KID string `json:"kid"`
@@ -453,39 +480,43 @@ func (f *fakeACME) verify(r *http.Request) (string, *ecdsa.PublicKey, error) {
 		} `json:"jwk"`
 	}
 	if err := json.Unmarshal(rawHeader, &header); err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	var key *ecdsa.PublicKey
 	if header.JWK != nil {
 		x, errX := base64.RawURLEncoding.DecodeString(header.JWK.X)
 		y, errY := base64.RawURLEncoding.DecodeString(header.JWK.Y)
 		if errX != nil || errY != nil {
-			return "", nil, fmt.Errorf("bad jwk")
+			return "", nil, nil, fmt.Errorf("bad jwk")
 		}
 		if key, err = ecdsa.ParseUncompressedPublicKey(elliptic.P256(), slices.Concat([]byte{4}, x, y)); err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
 	} else {
 		f.mu.Lock()
 		key = f.keys[header.KID]
 		f.mu.Unlock()
 		if key == nil {
-			return "", nil, fmt.Errorf("unknown account %q", header.KID)
+			return "", nil, nil, fmt.Errorf("unknown account %q", header.KID)
 		}
 	}
 	sig, err := base64.RawURLEncoding.DecodeString(jws.Signature)
 	if err != nil || len(sig) != 64 {
-		return "", nil, fmt.Errorf("bad ES256 signature encoding")
+		return "", nil, nil, fmt.Errorf("bad ES256 signature encoding")
 	}
 	digest := sha256.Sum256([]byte(jws.Protected + "." + jws.Payload))
 	if !ecdsa.Verify(key, digest[:], new(big.Int).SetBytes(sig[:32]), new(big.Int).SetBytes(sig[32:])) {
-		return "", nil, fmt.Errorf("signature does not match the key of account %q", header.KID)
+		return "", nil, nil, fmt.Errorf("signature does not match the key of account %q", header.KID)
 	}
-	return header.KID, key, nil
+	payload, err := base64.RawURLEncoding.DecodeString(jws.Payload)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	return header.KID, key, payload, nil
 }
 
 func (f *fakeACME) newAccount(w http.ResponseWriter, r *http.Request) {
-	_, key, err := f.verify(r)
+	_, key, _, err := f.verify(r)
 	if err != nil {
 		f.reject(w, "new-account: %v", err)
 		return
@@ -516,10 +547,11 @@ func (f *fakeACME) newAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fakeACME) newOrder(w http.ResponseWriter, r *http.Request) {
-	kid, _, err := f.verify(r)
+	kid, _, payload, err := f.verify(r)
 	f.mu.Lock()
 	if err == nil {
 		f.orderKIDs = append(f.orderKIDs, kid)
+		f.orderPayloads = append(f.orderPayloads, payload)
 	} else {
 		f.problems = append(f.problems, fmt.Sprintf("new-order: %v", err))
 	}
@@ -575,7 +607,7 @@ func TestIssueInitializesTheAccountOnceForConcurrentIssuances(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, errs[i] = issuer.Issue(context.Background(), cfg, spec)
+			_, errs[i] = issuer.Issue(context.Background(), cfg, spec, nil)
 		}()
 	}
 	close(start)
@@ -660,7 +692,7 @@ func TestStalledCADoesNotDelayAccountSetupForAnotherCA(t *testing.T) {
 			CA:          ca,
 			DNSProvider: "hook",
 			KeyType:     "ec256",
-		})
+		}, nil)
 		return err
 	}
 
@@ -754,11 +786,11 @@ func TestAccountStoreErrorsDoNotReplaceTheAccount(t *testing.T) {
 			spec := config.CertificateSpec{Name: "api", Domains: []string{"api.example.com"}, CA: "fake", DNSProvider: "hook", KeyType: "ec256"}
 			if tt.registered {
 				// The fake CA fails the order, after the account is registered.
-				_, _ = NewIssuer(db.Accounts).Issue(ctx, cfg, spec)
+				_, _ = NewIssuer(db.Accounts).Issue(ctx, cfg, spec, nil)
 			}
 
 			accounts := &failingAccounts{AccountRepo: db.Accounts, failAt: tt.failAt}
-			_, err = (&Issuer{accounts: accounts}).Issue(ctx, cfg, spec)
+			_, err = (&Issuer{accounts: accounts}).Issue(ctx, cfg, spec, nil)
 			if !errors.Is(err, errStoreDown) {
 				t.Fatalf("Issue error = %v, want the store's error", err)
 			}
@@ -802,7 +834,7 @@ func TestDamagedStoredRegistrationIsRepairedWithTheSameAccount(t *testing.T) {
 	spec := config.CertificateSpec{Name: "api", Domains: []string{"api.example.com"}, CA: "fake", DNSProvider: "hook", KeyType: "ec256"}
 	issuer := NewIssuer(db.Accounts)
 	// The fake CA fails the order, after the account is registered.
-	_, _ = issuer.Issue(ctx, cfg, spec)
+	_, _ = issuer.Issue(ctx, cfg, spec, nil)
 	rec, err := db.Accounts.Get(ctx, "fake", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -813,7 +845,7 @@ func TestDamagedStoredRegistrationIsRepairedWithTheSameAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, issueErr := issuer.Issue(ctx, cfg, spec)
+	_, issueErr := issuer.Issue(ctx, cfg, spec, nil)
 
 	rec, err = db.Accounts.Get(ctx, "fake", nil)
 	if err != nil {
