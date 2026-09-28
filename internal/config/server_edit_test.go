@@ -2,10 +2,8 @@ package config
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 )
@@ -79,46 +77,30 @@ func TestAddCertificateSpecPreservesPlaceholdersAndUsesDefaultCA(t *testing.T) {
 	}
 }
 
+// Values taken from the command line are not environment references: a '$'
+// in them stays literal. No setting of a certificate admits a '$', so such a
+// value is refused as it was given, instead of expanding into one that
+// passes.
 func TestAddCertificateSpecKeepsDollarSignsLiteral(t *testing.T) {
-	t.Setenv("HOME", "/expanded/home")
+	t.Setenv("SIGIL_TEST_NAME", "api-prod")
+	t.Setenv("SIGIL_TEST_PROVIDER", "route")
 	path := writeEditTestConfig(t, "  []\n")
-	// Certificate names admit no '$', but the names of DNS providers do: they
-	// are keys, which are not expanded, and a certificate refers to its
-	// provider by name.
-	providers := []string{"a$b", "a$$b", "${HOME}"}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var defined strings.Builder
-	for _, provider := range providers {
-		fmt.Fprintf(&defined, "  %q:\n    type: route53\n", provider)
-	}
-	raw = bytes.Replace(raw, []byte("dns_providers:\n"), []byte("dns_providers:\n"+defined.String()), 1)
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for i, provider := range providers {
-		if _, err := AddCertificateSpec(path, CertificateSpec{
-			Name:        fmt.Sprintf("cert-%d", i),
+	for _, tc := range []struct {
+		name, provider, want string
+	}{
+		{"${SIGIL_TEST_NAME}", "route", `invalid certificate name "${SIGIL_TEST_NAME}"`},
+		{"a$$b", "route", `invalid certificate name "a$$b"`},
+		{"api-prod", "${SIGIL_TEST_PROVIDER}", `references unknown DNS provider "${SIGIL_TEST_PROVIDER}"`},
+	} {
+		_, err := AddCertificateSpec(path, CertificateSpec{
+			Name:        tc.name,
 			Domains:     []string{"api.example.com"},
-			DNSProvider: provider,
+			DNSProvider: tc.provider,
 			KeyType:     "ec256",
-		}); err != nil {
-			t.Fatalf("AddCertificateSpec(%q): %v", provider, err)
+		})
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("AddCertificateSpec(%q, %q): error = %v, want %s", tc.name, tc.provider, err, tc.want)
 		}
-	}
-
-	cfg, err := LoadServer(path)
-	if err != nil {
-		t.Fatalf("load updated config: %v", err)
-	}
-	var got []string
-	for _, cert := range cfg.Certificates {
-		got = append(got, cert.DNSProvider)
-	}
-	if !slices.Equal(got, providers) {
-		t.Fatalf("DNS providers = %q, want %q", got, providers)
 	}
 }
 

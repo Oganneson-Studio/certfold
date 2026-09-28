@@ -23,13 +23,13 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// The errors sigils prints may quote what it reads, as the error of an
-// invalid server.yaml quotes the names of its DNS providers: they reach the
-// terminal without control characters.
+// The errors sigils prints may quote what it reads, as a type error of
+// server.yaml quotes the value: they reach the terminal without control
+// characters, and with the newlines between errors.
 func TestErrorIsPrintable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "server.yaml")
 	// A YAML escape: a raw control character would fail the YAML parser.
-	if err := os.WriteFile(path, []byte("dns_providers:\n  \"x\\e]0;pwned\\a\":\n    type: exec\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("dns_providers:\n  p:\n    type: exec\n    skip_propagation_check: \"\\e]0;pwned\\a\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	exe, err := os.Executable()
@@ -47,8 +47,8 @@ func TestErrorIsPrintable(t *testing.T) {
 		t.Fatalf("sigils config validate: %v, want exit status 1; stderr:\n%s", err, stderr.String())
 	}
 	printed := stderr.String()
-	if !strings.Contains(printed, "error: validation failed:\n") || !strings.Contains(printed, "dns_providers.x ]0;pwned .command: required") {
-		t.Fatalf("sigils config validate printed %q, want the invalid DNS provider on a line of its own", printed)
+	if !strings.Contains(printed, "error: parse yaml: yaml: unmarshal errors:\n") || !strings.Contains(printed, "cannot unmarshal !!str ` ]0;pwned ` into bool") {
+		t.Fatalf("sigils config validate printed %q, want the type error with its value on a line of its own", printed)
 	}
 	if i := strings.IndexFunc(printed, func(r rune) bool { return r != '\n' && unicode.IsControl(r) }); i >= 0 {
 		t.Fatalf("sigils config validate printed a control character: %q", printed)

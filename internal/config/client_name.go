@@ -20,8 +20,9 @@ func ValidateCertificateName(name string) error {
 	return validateName("certificate", name)
 }
 
-// validateName checks name against the rule of client and certificate names.
-// kind says which of the two the error is about.
+// validateName checks name against the rule of client names, which every
+// name in server.yaml follows as well: those of certificates, CAs and DNS
+// providers. kind says which of these the error is about.
 func validateName(kind, name string) error {
 	valid := name != "" && len(name) <= 63 && name[0] != '-' && name[len(name)-1] != '-'
 	for _, r := range name {

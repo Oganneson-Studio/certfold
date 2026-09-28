@@ -215,7 +215,14 @@ func (c *ServerConfig) Validate() error {
 	if len(c.ACME.CAs) == 0 {
 		v.Add("acme.cas", "at least one CA must be defined")
 	}
+	// The names of CAs and DNS providers follow the rule of certificate
+	// names, which keeps them printable. An invalid one is reported alone:
+	// the paths of the other errors of its entry would quote it.
 	for name, ca := range c.ACME.CAs {
+		if err := validateName("CA", name); err != nil {
+			v.Add("acme.cas", "%v", err)
+			continue
+		}
 		path := fmt.Sprintf("acme.cas.%s", name)
 		if _, err := url.ParseRequestURI(ca.Directory); err != nil || !strings.HasPrefix(ca.Directory, "https://") {
 			v.Add(path+".directory", "must be an https URL")
@@ -236,6 +243,10 @@ func (c *ServerConfig) Validate() error {
 	}
 
 	for name, p := range c.DNSProviders {
+		if err := validateName("DNS provider", name); err != nil {
+			v.Add("dns_providers", "%v", err)
+			continue
+		}
 		path := fmt.Sprintf("dns_providers.%s", name)
 		if p.Type == "" {
 			v.Add(path+".type", "must be set")

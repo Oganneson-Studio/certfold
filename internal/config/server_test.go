@@ -27,10 +27,10 @@ acme:
       eab_hmac: "h"
 
 dns_providers:
-  cf_main:
+  cf-main:
     type: cloudflare
     api_token: "tok"
-  aliyun_a:
+  aliyun-a:
     type: aliyun
     access_key: "k"
     access_secret: "s"
@@ -39,12 +39,12 @@ certificates:
   - name: api-prod
     domains: ["api.example.com", "*.api.example.com"]
     ca: letsencrypt
-    dns_provider: cf_main
+    dns_provider: cf-main
     subscribers: [web-1, web-2]
   - name: internal
     domains: ["internal.example.com"]
     ca: zerossl
-    dns_provider: aliyun_a
+    dns_provider: aliyun-a
     key_type: rsa4096
 `
 
@@ -68,8 +68,8 @@ func TestParseServer_Valid(t *testing.T) {
 	if cfg.Certificates[1].KeyType != "rsa4096" {
 		t.Errorf("cert[1] explicit key_type: got %q", cfg.Certificates[1].KeyType)
 	}
-	if cfg.DNSProviders["cf_main"].Config["api_token"] != "tok" {
-		t.Errorf("cf_main api_token: got %v", cfg.DNSProviders["cf_main"].Config["api_token"])
+	if cfg.DNSProviders["cf-main"].Config["api_token"] != "tok" {
+		t.Errorf("cf-main api_token: got %v", cfg.DNSProviders["cf-main"].Config["api_token"])
 	}
 }
 
@@ -117,7 +117,7 @@ func TestParseServer_ValidationErrors(t *testing.T) {
 		},
 		{
 			name:   "cert dns_provider refers to unknown provider",
-			mutate: func(s string) string { return strings.Replace(s, `dns_provider: cf_main`, `dns_provider: ghost`, 1) },
+			mutate: func(s string) string { return strings.Replace(s, `dns_provider: cf-main`, `dns_provider: ghost`, 1) },
 			want:   `unknown DNS provider "ghost"`,
 		},
 		{
