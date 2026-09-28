@@ -262,13 +262,14 @@ func runTokenList(cmd *cobra.Command, _ []string) error {
 	if asJSON {
 		return printJSON(tokens)
 	}
-	fmt.Printf("%-20s %-20s %-10s %s\n", "ID", "NAME", "STATUS", "EXPIRES")
+	// Token IDs are 32 hex characters.
+	fmt.Printf("%-32s %-20s %-10s %s\n", "ID", "NAME", "STATUS", "EXPIRES")
 	for _, tok := range tokens {
 		status := "unused"
 		if !tok.UsedAt.IsZero() {
 			status = "used"
 		}
-		fmt.Printf("%-20s %-20s %-10s %s\n",
+		fmt.Printf("%-32s %-20s %-10s %s\n",
 			tok.TokenID, tok.Name, status, tok.ExpiresAt.Format("2006-01-02 15:04"))
 	}
 	return nil
