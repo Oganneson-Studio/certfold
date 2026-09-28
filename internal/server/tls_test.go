@@ -6,8 +6,6 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
-	"log"
-	"log/slog"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -21,20 +19,6 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/logging"
 	"github.com/Oganneson-Studio/sigil/internal/renewal"
 )
-
-// captureTLSEvents sends the default logger to a new Ring for the rest of the
-// test, and returns the Ring. Setup routes the standard log package through
-// it as well, so the cleanup restores that too.
-func captureTLSEvents(t *testing.T) *logging.Ring {
-	t.Helper()
-	logger, writer, flags := slog.Default(), log.Writer(), log.Flags()
-	t.Cleanup(func() {
-		slog.SetDefault(logger)
-		log.SetOutput(writer)
-		log.SetFlags(flags)
-	})
-	return logging.Setup(slog.NewTextHandler(io.Discard, nil)).Events
-}
 
 // assertTLSEvents checks that ring holds one event for each entry of want, as
 // "LEVEL message attrs" starting with the entry.
@@ -132,7 +116,7 @@ func newFilesTLSSource(t *testing.T, miniCA *ca.MiniCA, first tlsPair, start tim
 }
 
 func TestTLSSourceLoadsReplacedFiles(t *testing.T) {
-	events := captureTLSEvents(t)
+	events := setupLogs(t, io.Discard).Events
 	miniCA := mustBootstrapTLSCA(t)
 	start := time.Now().Add(-time.Hour)
 	src, cfg := newFilesTLSSource(t, miniCA, issueTLSPair(t, miniCA), start)
@@ -151,7 +135,7 @@ func TestTLSSourceLoadsReplacedFiles(t *testing.T) {
 // certificate stays in use, and the failure is logged once, until the other
 // file is written too.
 func TestTLSSourceKeepsCertificateThroughHalfWrittenPair(t *testing.T) {
-	events := captureTLSEvents(t)
+	events := setupLogs(t, io.Discard).Events
 	miniCA := mustBootstrapTLSCA(t)
 	start := time.Now().Add(-time.Hour)
 	first := issueTLSPair(t, miniCA)
@@ -176,7 +160,7 @@ func TestTLSSourceKeepsCertificateThroughHalfWrittenPair(t *testing.T) {
 }
 
 func TestTLSSourceKeepsCertificateWhenFilesAreRemoved(t *testing.T) {
-	events := captureTLSEvents(t)
+	events := setupLogs(t, io.Discard).Events
 	miniCA := mustBootstrapTLSCA(t)
 	start := time.Now().Add(-time.Hour)
 	first := issueTLSPair(t, miniCA)
@@ -224,7 +208,7 @@ func newMiniCATLSSource(t *testing.T, dataDir string, now *time.Time) *tlsSource
 // tests make one handshake per step of the clock.
 
 func TestTLSSourceReissuesMiniCACertificateWhenDue(t *testing.T) {
-	events := captureTLSEvents(t)
+	events := setupLogs(t, io.Discard).Events
 	now := time.Now()
 	src := newMiniCATLSSource(t, t.TempDir(), &now)
 	cert, err := src.GetCertificate(&tls.ClientHelloInfo{})
@@ -279,7 +263,7 @@ func repairMiniCA(t *testing.T, dataDir string) {
 // failure is logged once while it lasts, however often it is tried, and again
 // when it recurs after a success.
 func TestTLSSourceLogsReissueFailureOnce(t *testing.T) {
-	events := captureTLSEvents(t)
+	events := setupLogs(t, io.Discard).Events
 	dataDir := t.TempDir()
 	now := time.Now()
 	src := newMiniCATLSSource(t, dataDir, &now)
@@ -320,7 +304,7 @@ func TestTLSSourceLogsReissueFailureOnce(t *testing.T) {
 // reissueRetry do not try again, even once the mini-CA could issue: any
 // connection starts one. The first handshake after the wait does.
 func TestTLSSourceWaitsBeforeRetryingReissue(t *testing.T) {
-	events := captureTLSEvents(t)
+	events := setupLogs(t, io.Discard).Events
 	dataDir := t.TempDir()
 	now := time.Now()
 	src := newMiniCATLSSource(t, dataDir, &now)
@@ -351,7 +335,7 @@ func TestTLSSourceWaitsBeforeRetryingReissue(t *testing.T) {
 // real listener on both sides of a replacement of the files, the later ones
 // concurrently.
 func TestTLSSourceServesReplacedFilesToNewConnections(t *testing.T) {
-	captureTLSEvents(t)
+	setupLogs(t, io.Discard)
 	miniCA := mustBootstrapTLSCA(t)
 	start := time.Now().Add(-time.Hour)
 	first := issueTLSPair(t, miniCA)
