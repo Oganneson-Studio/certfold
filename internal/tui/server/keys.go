@@ -1,0 +1,109 @@
+package server
+
+import (
+	"slices"
+
+	"github.com/charmbracelet/bubbles/key"
+)
+
+// keyMap holds every key the TUI handles. The help line is built from the
+// same bindings, so TestEveryHelpKeyIsWired can check that each key it shows
+// does something.
+type keyMap struct {
+	// Everywhere but in a dialog.
+	Tab     key.Binding
+	NextTab key.Binding
+	PrevTab key.Binding
+	Refresh key.Binding
+	Help    key.Binding
+	Quit    key.Binding
+
+	// Lists: the tables and the Events tab.
+	Up       key.Binding
+	Down     key.Binding
+	PageUp   key.Binding
+	PageDown key.Binding
+	Top      key.Binding
+	Bottom   key.Binding
+
+	// Tab actions.
+	Renew  key.Binding
+	Delete key.Binding
+	Revoke key.Binding
+
+	// The confirmation.
+	Confirm key.Binding
+	Cancel  key.Binding
+}
+
+func defaultKeys() keyMap {
+	return keyMap{
+		Tab:     key.NewBinding(key.WithKeys("1", "2", "3", "4", "5"), key.WithHelp("1-5", "tabs")),
+		NextTab: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next tab")),
+		PrevTab: key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "previous tab")),
+		Refresh: key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
+		Help:    key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "more keys")),
+		// ctrl+c also quits while a dialog is open; q goes to the dialog.
+		Quit: key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+
+		Up:       key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
+		Down:     key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
+		PageUp:   key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "page up")),
+		PageDown: key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("pgdn", "page down")),
+		Top:      key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "oldest")),
+		Bottom:   key.NewBinding(key.WithKeys("G"), key.WithHelp("G", "newest")),
+
+		Renew:  key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "renew")),
+		Delete: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete client")),
+		Revoke: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "revoke token")),
+
+		Confirm: key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "confirm")),
+		Cancel:  key.NewBinding(key.WithKeys("n", "esc"), key.WithHelp("n/esc", "cancel")),
+	}
+}
+
+// keyHelp is the help.KeyMap of what the model shows.
+type keyHelp struct {
+	short []key.Binding
+	full  [][]key.Binding
+}
+
+func (h keyHelp) ShortHelp() []key.Binding  { return h.short }
+func (h keyHelp) FullHelp() [][]key.Binding { return h.full }
+
+// keyHelp returns the keys of the open confirmation, or else those of the
+// current tab and the global keys. The short help leaves out the moves, so
+// that it fits in 80 columns: help.Model does not cut a line that has no room
+// left for its ellipsis.
+func (m Model) keyHelp() keyHelp {
+	k := m.keys
+	if m.confirm != nil {
+		yes := k.Confirm
+		yes.SetHelp("y", m.confirm.verb)
+		return dialogHelp(yes, k.Cancel)
+	}
+
+	var moves, actions []key.Binding
+	switch m.tab {
+	case tabCertificates:
+		moves, actions = []key.Binding{k.Up, k.Down}, []key.Binding{k.Renew}
+	case tabClients:
+		moves, actions = []key.Binding{k.Up, k.Down}, []key.Binding{k.Delete}
+	case tabTokens:
+		moves, actions = []key.Binding{k.Up, k.Down}, []key.Binding{k.Revoke}
+	case tabEvents:
+		moves, actions = []key.Binding{k.Up, k.Down, k.PageUp, k.PageDown}, []key.Binding{k.Top, k.Bottom}
+	}
+	help := k.Help
+	if m.help.ShowAll {
+		help.SetHelp("?", "fewer keys")
+	}
+	return keyHelp{
+		short: append(slices.Clone(actions), k.Tab, k.Refresh, help, k.Quit),
+		full:  [][]key.Binding{slices.Concat(moves, actions), {k.Tab, k.NextTab, k.PrevTab, k.Refresh, help, k.Quit}},
+	}
+}
+
+func dialogHelp(bindings ...key.Binding) keyHelp {
+	return keyHelp{short: bindings, full: [][]key.Binding{bindings}}
+}

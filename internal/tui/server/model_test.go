@@ -11,40 +11,26 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 )
 
-// newTestModel returns a Model pre-loaded with sample data (no IPC).
-func newTestModel() Model {
-	m := New(nil)
-	m.width = 100
-	m.height = 30
-	m.certs = []*ipc.CertificateInfo{
-		{Name: "api-prod", CA: "le", Domains: []string{"api.example.com"},
-			NotAfter: time.Now().Add(90 * 24 * time.Hour), UpdatedAt: time.Now()},
-	}
-	m.clients = []*ipc.ClientInfo{
-		{Name: "web-1", Fingerprint: "sha256:AABB", EnrolledAt: time.Now()},
-	}
-	m.tokens = []*ipc.TokenInfo{
-		{TokenID: "tok-1", Name: "web-1", ExpiresAt: time.Now().Add(time.Hour)},
-	}
-	m.updateTableRows()
-	return m
+// newTestModel returns a Model loaded from a fakeBackend (no IPC).
+func newTestModel(t *testing.T) Model {
+	return loaded(t, newFake(3))
 }
 
-func TestModel_InitialTabIsDashboard(t *testing.T) {
-	m := newTestModel()
-	if m.tab != 0 {
-		t.Errorf("initial tab: got %d, want 0", m.tab)
+func TestModel_InitialTabIsOverview(t *testing.T) {
+	m := newTestModel(t)
+	if m.tab != tabOverview {
+		t.Errorf("initial tab: got %d, want %d", m.tab, tabOverview)
 	}
 }
 
 func TestModel_QuitKey(t *testing.T) {
-	tm := teatest.NewTestModel(t, newTestModel(), teatest.WithInitialTermSize(100, 30))
+	tm := teatest.NewTestModel(t, newTestModel(t), teatest.WithInitialTermSize(100, 30))
 	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	tm.WaitFinished(t, teatest.WithFinalTimeout(3*time.Second))
 }
 
 func TestModel_TabSwitchByNumber(t *testing.T) {
-	m := newTestModel()
+	m := newTestModel(t)
 	for i := 1; i <= numTabs; i++ {
 		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{rune('0' + i)}})
 		if got := updated.(Model).tab; got != i-1 {
@@ -54,7 +40,7 @@ func TestModel_TabSwitchByNumber(t *testing.T) {
 }
 
 func TestModel_TabCycle(t *testing.T) {
-	m := newTestModel()
+	m := newTestModel(t)
 	for i := 0; i < numTabs+1; i++ {
 		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
 		m = updated.(Model)
@@ -63,22 +49,31 @@ func TestModel_TabCycle(t *testing.T) {
 	if m.tab != 1 {
 		t.Errorf("after %d tabs: got tab %d", numTabs+1, m.tab)
 	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	updated, _ = updated.(Model).Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if got := updated.(Model).tab; got != numTabs-1 {
+		t.Errorf("shift+tab twice from tab 1: got tab %d, want %d", got, numTabs-1)
+	}
 }
 
-func TestModel_DashboardView(t *testing.T) {
-	m := newTestModel()
-	view := m.View()
-	if !strings.Contains(view, "Dashboard") {
-		t.Error("dashboard view missing 'Dashboard'")
-	}
-	if !strings.Contains(view, "Certificates") {
-		t.Error("dashboard view missing 'Certificates'")
+func TestModel_OverviewView(t *testing.T) {
+	m := newTestModel(t)
+	for _, want := range []string{
+		"Overview",
+		"Certificates 3 issuing 0 · backoff 1 · valid 1 · pending 1",
+		"Clients 3",
+		"Tokens 3 unused 1 · used 1 · expired 1",
+		"event-3",
+	} {
+		if !shows(m, want) {
+			t.Errorf("overview missing %q: %q", want, m.View())
+		}
 	}
 }
 
 func TestModel_CertsTabView(t *testing.T) {
-	m := newTestModel()
-	m.tab = 1
+	m := newTestModel(t)
+	m.tab = tabCertificates
 	view := m.View()
 	if !strings.Contains(view, "api-prod") {
 		t.Errorf("certs tab missing 'api-prod': %q", view)
@@ -86,44 +81,43 @@ func TestModel_CertsTabView(t *testing.T) {
 }
 
 func TestModel_CertsTabShowsMissingExpiryAsDash(t *testing.T) {
-	m := newTestModel()
+	m := newTestModel(t)
+	m.tab = tabCertificates
 	// A configured certificate that has not been issued has no expiry.
-	updated, _ := m.Update(refreshMsg{certs: []*ipc.CertificateInfo{
-		{Name: "new-cert", CA: "le", Domains: []string{"new.example.com"}, State: ipc.CertStatePending},
-	}})
-	m = updated.(Model)
-	m.tab = 1
-	if got := m.certsTable.Rows()[0][2]; got != "-" {
-		t.Errorf("Not After cell = %q, want -", got)
+	if got := m.certsTable.Rows()[2]; got[0] != "new-cert" || got[2] != "-" || got[3] != "-" {
+		t.Errorf("row of new-cert = %q, want - for Not After and Renew At", got)
 	}
+	m.certsTable.SetCursor(2)
 	if view := m.View(); !strings.Contains(view, "new-cert") || strings.Contains(view, "0001-01-01") {
 		t.Errorf("certs tab should list new-cert without a zero date: %q", view)
 	}
 }
 
 func TestModel_ClientsTabView(t *testing.T) {
-	m := newTestModel()
-	m.tab = 2
-	view := m.View()
-	if !strings.Contains(view, "web-1") {
-		t.Errorf("clients tab missing 'web-1': %q", view)
+	m := newTestModel(t)
+	m.tab = tabClients
+	// web-2 subscribes to both certificates.
+	if !shows(m, "web-2") || m.clientsTable.Rows()[1][3] != "api-prod,mail" {
+		t.Errorf("clients tab should list web-2 with its certificates: %q", m.View())
 	}
 }
 
 func TestModel_RefreshMsg(t *testing.T) {
-	m := newTestModel()
-	newCerts := []*ipc.CertificateInfo{
-		{Name: "new-cert", CA: "le", Domains: []string{"new.example.com"}, UpdatedAt: time.Now()},
+	fake := newFake(3)
+	m := loaded(t, fake)
+	fake.mu.Lock()
+	fake.certs = []*ipc.CertificateInfo{
+		{Name: "new-cert", CA: "le", Domains: []string{"new.example.com"}, State: ipc.CertStatePending},
 	}
-	updated, _ := m.Update(refreshMsg{certs: newCerts, clients: nil, tokens: nil})
-	m2 := updated.(Model)
+	fake.mu.Unlock()
+	m2 := refresh(t, m)
 	if len(m2.certs) != 1 || m2.certs[0].Name != "new-cert" {
 		t.Errorf("certs not updated: %v", m2.certs)
 	}
 }
 
 func TestModel_WindowSizeMsg(t *testing.T) {
-	m := newTestModel()
+	m := newTestModel(t)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m2 := updated.(Model)
 	if m2.width != 120 || m2.height != 40 {
