@@ -114,6 +114,7 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 		Server: &ipc.ServerControlDeps{Reload: runtimeConfig.Reload},
 		Certificates: &ipc.CertificateControlDeps{
 			Renew: func(ctx context.Context, name string) error {
+				slog.Info("manual renewal requested", "cert", name)
 				return r.RenewNamed(ctx, runtimeConfig.Current, name)
 			},
 			Current:     runtimeConfig.Current,
@@ -185,6 +186,12 @@ func createToken(ctx context.Context, enrollSrv *enroll.Server, cfg *config.Serv
 	if err != nil {
 		return ipc.CreateTokenResponse{}, err
 	}
+	// An event names the token by its ID: the token itself enrolls a client.
+	payload, err := enroll.DecodeToken(token)
+	if err != nil {
+		return ipc.CreateTokenResponse{}, err
+	}
+	slog.Info("enrollment token created", "token", payload.TokenID, "client", payload.Name, "expires_at", payload.ExpiresAt)
 	return ipc.CreateTokenResponse{
 		Token:               token,
 		ServerURL:           serverURL,

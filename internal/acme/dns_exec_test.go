@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/sigil/internal/logging"
 )
 
 // The test binary doubles as the program of an exec provider: when
@@ -118,14 +120,20 @@ func setHookBounds(t *testing.T, timeout, waitDelay time.Duration) {
 	t.Cleanup(func() { dnsHookTimeout, dnsHookWaitDelay = oldTimeout, oldWaitDelay })
 }
 
-// captureLog redirects the standard logger for the duration of t.
-func captureLog(t *testing.T) *bytes.Buffer {
+// captureLog runs logging.Setup with a service log in the returned buffer for
+// the duration of t, and returns the events too. Setup also routes the
+// standard log package through slog, which restoring the default logger does
+// not undo, so the cleanup restores that as well.
+func captureLog(t *testing.T) (*bytes.Buffer, *logging.Ring) {
 	t.Helper()
+	logger, writer, flags := slog.Default(), log.Writer(), log.Flags()
+	t.Cleanup(func() {
+		slog.SetDefault(logger)
+		log.SetOutput(writer)
+		log.SetFlags(flags)
+	})
 	var buf bytes.Buffer
-	old := log.Writer()
-	log.SetOutput(&buf)
-	t.Cleanup(func() { log.SetOutput(old) })
-	return &buf
+	return &buf, logging.Setup(slog.NewTextHandler(&buf, nil)).Events
 }
 
 // txtValue is the TXT record content for keyAuth, computed independently of
@@ -204,7 +212,7 @@ func TestExecProviderPassesActionRecordAndValue(t *testing.T) {
 }
 
 func TestExecProviderErrorOmitsArgumentsAndOutput(t *testing.T) {
-	logs := captureLog(t)
+	logs, events := captureLog(t)
 	p := hookProvider(t, "fail", "--token="+argvSecret)
 
 	err := p.Present("example.com", "token", "token.thumbprint")
@@ -222,13 +230,25 @@ func TestExecProviderErrorOmitsArgumentsAndOutput(t *testing.T) {
 			t.Errorf("error %q leaks %q", msg, secret)
 		}
 	}
-	// The output goes to the log instead, where the operator can see why the
-	// program failed; the arguments do not.
+	// The output goes to the service log instead, where the operator can see
+	// why the program failed; the arguments do not.
 	if !strings.Contains(logs.String(), outputSecret) {
-		t.Errorf("log does not contain the program output: %q", logs.String())
+		t.Errorf("service log does not contain the program output: %q", logs.String())
 	}
 	if strings.Contains(logs.String(), argvSecret) {
-		t.Errorf("log leaks the arguments: %q", logs.String())
+		t.Errorf("service log leaks the arguments: %q", logs.String())
+	}
+	// The event says the program failed but withholds its output.
+	got := events.Since(0)
+	if len(got) != 1 || got[0].Level != "WARN" || got[0].Message != "exec DNS provider failed" ||
+		!strings.Contains(got[0].Attrs, "action=present record=_acme-challenge.example.com.") ||
+		!strings.Contains(got[0].Attrs, "output=(withheld)") {
+		t.Fatalf("events = %+v, want one WARN exec DNS provider failed with the output withheld", got)
+	}
+	for _, secret := range []string{argvSecret, outputSecret} {
+		if strings.Contains(got[0].Message+got[0].Attrs, secret) {
+			t.Errorf("event %+v leaks %q", got[0], secret)
+		}
 	}
 }
 

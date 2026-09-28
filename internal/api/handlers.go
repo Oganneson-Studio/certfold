@@ -8,7 +8,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -211,6 +211,7 @@ func (h *handlers) enroll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sign error", http.StatusInternalServerError)
 		return
 	}
+	slog.Info("client enrolled", "client", name, "token", tokenID)
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 	writeJSON(w, http.StatusOK, proto.EnrollResponse{
@@ -305,6 +306,7 @@ func (h *handlers) renewIdentity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "store error", http.StatusInternalServerError)
 		return
 	}
+	slog.Info("client identity renewal issued", "client", clientName, "not_after", issued.NotAfter)
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 	writeJSON(w, http.StatusOK, proto.RenewIdentityResponse{ClientCert: string(certPEM)})
 }
@@ -362,6 +364,8 @@ func (h *handlers) requireActiveClient(next http.Handler) http.Handler {
 					http.Error(w, "unauthorized", http.StatusUnauthorized)
 					return
 				}
+			} else {
+				slog.Info("client identity switched", "client", clientName)
 			}
 		}
 
@@ -390,7 +394,7 @@ func (h *handlers) requireActiveClient(next http.Handler) http.Handler {
 				// The lookup above authenticated the client; last_seen only
 				// records that it was here. A database that cannot take writes
 				// must not keep it from the certificates already stored.
-				log.Printf("sigils: record last_seen of client %s: %v", clientName, err)
+				slog.Error("record last_seen failed", "client", clientName, "error", err)
 			}
 		}
 		next.ServeHTTP(w, r)

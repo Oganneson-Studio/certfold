@@ -3,12 +3,14 @@ package acme
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os/exec"
 	"slices"
 	"time"
 
 	"github.com/go-acme/lego/v4/challenge/dns01"
+
+	"github.com/Oganneson-Studio/sigil/internal/logging"
 )
 
 // Bounds on one run of an exec provider's program. They are variables only so
@@ -58,7 +60,8 @@ func (p *execProvider) Timeout() (timeout, interval time.Duration) {
 // run runs the program for action. The error it returns names only the
 // action, the record and the exit status or timeout: it becomes the
 // certificate's last error, which IPC shows, while the arguments may hold
-// credentials and the output may repeat them. The output is logged instead.
+// credentials and the output may repeat them. The output is logged instead,
+// as a Private value that only the service log holds.
 func (p *execProvider) run(action, domain, keyAuth string) error {
 	info := dns01.GetChallengeInfo(domain, keyAuth)
 
@@ -81,7 +84,8 @@ func (p *execProvider) run(action, domain, keyAuth string) error {
 		if n := len(out); n > dnsHookLogLimit {
 			out = append([]byte("..."), out[n-dnsHookLogLimit:]...)
 		}
-		log.Printf("sigils: exec DNS provider %s %s failed: %v; output: %q", action, info.EffectiveFQDN, err, out)
+		slog.Warn("exec DNS provider failed",
+			"action", action, "record", info.EffectiveFQDN, "error", err, "output", logging.Private(out))
 	}
 	return fmt.Errorf("exec: %s %s: %w", action, info.EffectiveFQDN, err)
 }

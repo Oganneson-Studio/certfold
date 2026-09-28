@@ -1,10 +1,23 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +25,10 @@ import (
 	legolog "github.com/go-acme/lego/v4/log"
 
 	"github.com/Oganneson-Studio/sigil/internal/ca"
+	"github.com/Oganneson-Studio/sigil/internal/enroll"
+	"github.com/Oganneson-Studio/sigil/internal/ipc"
 	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/sigil/pkg/proto"
 )
 
 // startRun runs the daemon on a loopback port with logs until the test ends,
@@ -100,5 +116,84 @@ func TestRunLogsEventsAndKeepsServerErrorsOutOfThem(t *testing.T) {
 		if strings.Contains(e.Message+e.Attrs, "TLS handshake error") {
 			t.Errorf("handshake error became the event %+v", e)
 		}
+	}
+}
+
+// skipWithoutPipeAccess skips the test when err shows that this process may
+// not open the sigils pipe, which admits only SYSTEM and elevated
+// administrators.
+func skipWithoutPipeAccess(t *testing.T, err error) {
+	t.Helper()
+	if runtime.GOOS == "windows" && errors.Is(err, os.ErrPermission) {
+		t.Skip("the sigils pipe admits only SYSTEM and elevated administrators")
+	}
+}
+
+func TestRunKeepsEnrollmentTokensOutOfEvents(t *testing.T) {
+	sink := &lockedBuffer{}
+	logs := setupLogs(t, sink)
+	miniCA, listen, socket, stop := startRun(t, logs)
+
+	c, err := ipc.NewClient(socket)
+	if err != nil {
+		skipWithoutPipeAccess(t, err)
+		t.Fatal(err)
+	}
+	// Without public_url the token is bound to the listen address.
+	created, err := c.CreateToken(context.Background(), ipc.CreateTokenRequest{Name: "web-1", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := enroll.DecodeToken(created.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "web-1"}}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(proto.EnrollRequest{
+		Token: created.Token,
+		CSR:   string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(miniCA.Cert())
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots}}}
+	defer client.CloseIdleConnections()
+	resp, err := client.Post("https://"+listen+"/v1/enroll", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("enroll status = %d", resp.StatusCode)
+	}
+	stop()
+
+	events := logs.Events.Since(0)
+	if e := findEvent(t, events, "enrollment token created"); !strings.HasPrefix(e.Attrs, "token="+payload.TokenID+" client=web-1 expires_at=") {
+		t.Errorf("token creation event = %+v, want the token ID, the client and the expiry", e)
+	}
+	if e := findEvent(t, events, "client enrolled"); e.Attrs != "client=web-1 token="+payload.TokenID {
+		t.Errorf("enrollment event = %+v, want the client and the token ID", e)
+	}
+	// Only the ID: the token itself enrolls a client. Its start is enough to
+	// find it in attributes cut to 2 KiB.
+	leak := created.Token[:64]
+	for _, e := range events {
+		if strings.Contains(e.Message+e.Attrs, leak) {
+			t.Errorf("event %+v holds the token", e)
+		}
+	}
+	if strings.Contains(sink.String(), leak) {
+		t.Errorf("service log holds the token:\n%s", sink.String())
 	}
 }
