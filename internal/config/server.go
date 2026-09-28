@@ -202,11 +202,8 @@ func (c *ServerConfig) Validate() error {
 		v.Add("server.tls", "tls_cert_file and tls_key_file must be set together")
 	}
 	if c.Server.PublicURL != "" {
-		if u, err := url.ParseRequestURI(c.Server.PublicURL); err != nil || u.Scheme != "https" {
-			v.Add("server.public_url", "must be an https URL, got %q", c.Server.PublicURL)
-		} else if i := strings.IndexFunc(c.Server.PublicURL, unquotable); i >= 0 {
-			r, _ := utf8.DecodeRuneInString(c.Server.PublicURL[i:])
-			v.Add("server.public_url", "must not contain %q: install commands quote the URL for sh and PowerShell", r)
+		if err := ValidatePublicURL(c.Server.PublicURL); err != nil {
+			v.Add("server.public_url", "%v", err)
 		}
 	}
 
@@ -376,6 +373,21 @@ func (c *ServerConfig) PublicBaseURL() string {
 	}
 	// Best-effort: wrap listen address with https scheme.
 	return "https://" + strings.TrimLeft(c.Server.Listen, ":")
+}
+
+// ValidatePublicURL reports whether s can be server.public_url: an https URL
+// without the characters unquotable reports. Enrollment tokens carry the
+// public URL to sigilc, which checks the URL of a token under the same rule
+// before it writes the URL to client.yaml and prints it.
+func ValidatePublicURL(s string) error {
+	if u, err := url.ParseRequestURI(s); err != nil || u.Scheme != "https" {
+		return fmt.Errorf("must be an https URL, got %q", s)
+	}
+	if i := strings.IndexFunc(s, unquotable); i >= 0 {
+		r, _ := utf8.DecodeRuneInString(s[i:])
+		return fmt.Errorf("must not contain %q: install commands quote the URL for sh and PowerShell", r)
+	}
+	return nil
 }
 
 // unquotable reports whether r may not appear in server.public_url, which the

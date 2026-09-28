@@ -145,7 +145,11 @@ func DecodeToken(tokenStr string) (*tokenPayload, error) {
 	return decodeToken(tokenStr)
 }
 
-// decodeToken base64url-decodes and JSON-unmarshals a token string.
+// decodeToken base64url-decodes and JSON-unmarshals a token string, and checks
+// the client name and the server URL it carries under the rules Create and
+// server.public_url follow. sigilc writes both to client.yaml and prints
+// them, so a token that another program made must not bring it control
+// characters.
 func decodeToken(tokenStr string) (*tokenPayload, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(tokenStr)
 	if err != nil {
@@ -154,6 +158,12 @@ func decodeToken(tokenStr string) (*tokenPayload, error) {
 	var p tokenPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, fmt.Errorf("json: %w", err)
+	}
+	if err := config.ValidateClientName(p.Name); err != nil {
+		return nil, err
+	}
+	if err := config.ValidatePublicURL(p.ServerURL); err != nil {
+		return nil, fmt.Errorf("server URL: %w", err)
 	}
 	return &p, nil
 }

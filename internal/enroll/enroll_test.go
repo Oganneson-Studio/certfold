@@ -143,6 +143,7 @@ func TestVerify_UnknownToken(t *testing.T) {
 
 	payload := tokenPayload{
 		ServerURL: "https://sigil.example.com",
+		Name:      "web-1",
 		TokenID:   "deadbeefdeadbeefdeadbeefdeadbeef",
 		Secret:    strings.Repeat("a", 64),
 		ExpiresAt: time.Now().Add(time.Hour),
@@ -330,7 +331,7 @@ func TestPostEnroll(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	token := encodeTestToken(t, tokenPayload{ServerURL: ts.URL, CACert: testServerCertPEM(t, ts)})
+	token := encodeTestToken(t, tokenPayload{ServerURL: ts.URL, Name: "web-1", CACert: testServerCertPEM(t, ts)})
 	kc, _ := GenerateKeyAndCSR("web-1")
 	got, err := PostEnroll(ts.URL, token, kc.CSRDER)
 	if err != nil {
