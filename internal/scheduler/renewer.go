@@ -10,7 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"math/rand"
 	"slices"
 	"strings"
@@ -115,7 +115,7 @@ func (r *Renewer) RunDynamic(ctx context.Context, current func() *config.ServerC
 	for {
 		wakeAt, err := r.tick(ctx, current)
 		if err != nil {
-			log.Printf("sigils: renewal tick failed: %v", err)
+			slog.Error("renewal tick failed", "error", err)
 		}
 
 		jitter := time.Duration(rand.Int63n(int64(2*jitterWindow))) - jitterWindow
@@ -177,11 +177,14 @@ func (r *Renewer) tick(ctx context.Context, current func() *config.ServerConfig)
 			wakeBy(next)
 			continue
 		}
+		reason := "new"
 		if rec := stored[spec.Name]; matches(cfg, spec, rec) {
-			if at, _ := r.RenewalPlan(rec); now.Before(at) {
+			at, source := r.RenewalPlan(rec)
+			if now.Before(at) {
 				wakeBy(at)
 				continue
 			}
+			reason = source
 		}
 		lock := r.lock(spec.Name)
 		select {
@@ -190,11 +193,9 @@ func (r *Renewer) tick(ctx context.Context, current func() *config.ServerConfig)
 			continue // already being issued
 		}
 		name := spec.Name
-		r.wg.Go(func() {
-			if err := r.issueLocked(ctx, current, name, lock); err != nil {
-				log.Printf("sigils: renewal of certificate %s failed: %v", name, err)
-			}
-		})
+		// issue reports its outcome as events. The other errors come from a
+		// shutdown, or from a reload that removed the certificate meanwhile.
+		r.wg.Go(func() { _ = r.issueLocked(ctx, current, name, reason, lock) })
 	}
 	return wakeAt, nil
 }
@@ -271,7 +272,7 @@ func (r *Renewer) RenewNamed(ctx context.Context, current func() *config.ServerC
 	if err := acquire(ctx, lock); err != nil {
 		return err
 	}
-	return r.issueLocked(ctx, current, name, lock)
+	return r.issueLocked(ctx, current, name, "manual", lock)
 }
 
 // Issuing reports whether an issuance of the named certificate is running or
@@ -317,12 +318,13 @@ func (r *Renewer) wakeUp() {
 }
 
 // issueLocked issues the named certificate once an issuance slot is free,
-// then releases the certificate's lock, which the caller holds.
-func (r *Renewer) issueLocked(ctx context.Context, current func() *config.ServerConfig, name string, lock chan struct{}) error {
+// then releases the certificate's lock, which the caller holds. reason says
+// why it is issued: "new", "manual" or the source of its renewal plan.
+func (r *Renewer) issueLocked(ctx context.Context, current func() *config.ServerConfig, name, reason string, lock chan struct{}) error {
 	wake := false
 	err := acquire(ctx, r.slots)
 	if err == nil {
-		wake, err = r.issue(ctx, current, name)
+		wake, err = r.issue(ctx, current, name, reason)
 		<-r.slots
 	}
 	<-lock
@@ -343,13 +345,17 @@ func (r *Renewer) issueLocked(ctx context.Context, current func() *config.Server
 // being the newest the clients can have, but the attempt counts as failed, so
 // that the next one waits out a backoff that grows as long as the CA issues
 // such certificates, rather than follow at once.
-func (r *Renewer) issue(ctx context.Context, current func() *config.ServerConfig, name string) (bool, error) {
+//
+// issue reports the attempt and its outcome as events, once genMu is
+// released.
+func (r *Renewer) issue(ctx context.Context, current func() *config.ServerConfig, name, reason string) (bool, error) {
 	cfg := current()
 	spec, ok := specNamed(cfg, name)
 	if !ok {
 		return false, fmt.Errorf("cert %q not found", name)
 	}
 	fp := config.CertificateSpecFingerprint(cfg, spec)
+	slog.Info("certificate issuance started", "cert", name, "reason", reason)
 	result, err := r.issuer.Issue(ctx, cfg, spec)
 	if err != nil {
 		// Its text can quote the ACME CA and the DNS provider API, and
@@ -359,11 +365,13 @@ func (r *Renewer) issue(ctx context.Context, current func() *config.ServerConfig
 	now := r.clock()
 	if err != nil && ctx.Err() != nil {
 		// Shutdown or an abandoned manual renewal, not a verdict on the configuration.
+		slog.Error("certificate issuance failed", "cert", name, "error", err)
 		return false, err
 	}
+	var renewAt time.Time
 	var dueErr error
 	if err == nil {
-		_, dueErr = dueOnArrival(result.Certificate, now)
+		renewAt, dueErr = dueOnArrival(result.Certificate, now)
 	}
 
 	// The outcome is checked against the running configuration and stored
@@ -376,7 +384,7 @@ func (r *Renewer) issue(ctx context.Context, current func() *config.ServerConfig
 		spec, ok = specNamed(latest, name)
 		if !ok || config.CertificateSpecFingerprint(latest, spec) != fp {
 			r.genMu.RUnlock()
-			log.Printf("sigils: discarding the certificate issued for %s: its configuration changed during issuance", name)
+			slog.Warn("issued certificate discarded", "cert", name)
 			return true, fmt.Errorf("cert %q changed during issuance; the certificate was discarded", name)
 		}
 		status := &store.IssuanceStatus{Name: name, LastAttemptAt: now}
@@ -389,6 +397,12 @@ func (r *Renewer) issue(ctx context.Context, current func() *config.ServerConfig
 		if err == nil {
 			r.genMu.RUnlock()
 			r.stored()
+			slog.Info("certificate issued", "cert", name, "not_after", result.NotAfter,
+				"renew_at", renewAt, "fingerprint", certificateFingerprint(result.Certificate))
+			if dueErr != nil {
+				slog.Error("certificate issuance failed", "cert", name, "error", dueErr,
+					"failures", status.Failures, "next_attempt", status.NextAttemptAt)
+			}
 			return true, dueErr
 		}
 	}
@@ -397,15 +411,19 @@ func (r *Renewer) issue(ctx context.Context, current func() *config.ServerConfig
 		// fixing the DNS credentials that made it fail; the fingerprint covers
 		// neither. The woken tick retries under the new generation at once.
 		r.genMu.RUnlock()
+		slog.Error("certificate issuance failed", "cert", name, "error", err)
 		return true, err
 	}
-	backoffErr := r.backoff(dbCtx, name, now, err)
+	status, backoffErr := r.backoff(dbCtx, name, now, err)
 	r.genMu.RUnlock()
 	if backoffErr != nil {
 		// Without a stored retry time, waking would retry at once.
-		log.Printf("sigils: record issuance failure of certificate %s: %v", name, backoffErr)
+		slog.Error("certificate issuance failed", "cert", name, "error", err)
+		slog.Error("record issuance failure failed", "cert", name, "error", backoffErr)
 		return false, err
 	}
+	slog.Error("certificate issuance failed", "cert", name, "error", err,
+		"failures", status.Failures, "next_attempt", status.NextAttemptAt)
 	// The loop set its timer before this attempt ended; wake it to plan for
 	// the new retry time.
 	return true, err
@@ -449,13 +467,17 @@ func (r *Renewer) save(ctx context.Context, spec config.CertificateSpec, fp stri
 }
 
 // backoff records a failed attempt of the named certificate together with its
-// next retry time. The caller holds genMu for reading.
-func (r *Renewer) backoff(ctx context.Context, name string, now time.Time, cause error) error {
+// next retry time, and returns what it recorded. The caller holds genMu for
+// reading.
+func (r *Renewer) backoff(ctx context.Context, name string, now time.Time, cause error) (*store.IssuanceStatus, error) {
 	status, err := r.failed(ctx, name, now, cause)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return r.db.Issuance.Upsert(ctx, status, nil)
+	if err := r.db.Issuance.Upsert(ctx, status, nil); err != nil {
+		return nil, err
+	}
+	return status, nil
 }
 
 // failed returns the issuance status of an attempt of the named certificate
