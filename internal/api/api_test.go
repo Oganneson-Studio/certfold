@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -919,7 +920,9 @@ func TestSyncAnswersStoredCertificateAtOnce(t *testing.T) {
 }
 
 // A client must not learn anything about certificates it does not subscribe
-// to, including when they change.
+// to, including when they change. Their changes still wake its request, which
+// must keep its deadline: the certificates of other clients keep changing
+// here until it answers.
 func TestSyncKeepsWaitingThroughOtherClientsChanges(t *testing.T) {
 	setSyncMaxWait(t, time.Second)
 	deps := buildDeps(t)
@@ -935,14 +938,25 @@ func TestSyncKeepsWaitingThroughOtherClientsChanges(t *testing.T) {
 	start := time.Now()
 	answered := startSync(handler, syncRequest(identity, etag))
 	assertWaiting(t, answered)
-	seedCert(t, deps, cfg, cfg.Certificates[1], "sha256:DB")
-	deps.Changes.Notify()
-	rec := awaitSync(t, answered)
-	if rec.Code != http.StatusNotModified || rec.Header().Get("ETag") != etag {
-		t.Fatalf("status = %d, ETag = %s; want 304 with %s", rec.Code, rec.Header().Get("ETag"), etag)
-	}
-	if elapsed := time.Since(start); elapsed < syncMaxWait {
-		t.Fatalf("answered after %s, before waiting out %s", elapsed, syncMaxWait)
+	changes := time.NewTicker(100 * time.Millisecond)
+	defer changes.Stop()
+	timeout := time.After(5 * time.Second)
+	for i := 0; ; i++ {
+		select {
+		case rec := <-answered:
+			if rec.Code != http.StatusNotModified || rec.Header().Get("ETag") != etag {
+				t.Fatalf("status = %d, ETag = %s; want 304 with %s", rec.Code, rec.Header().Get("ETag"), etag)
+			}
+			if elapsed := time.Since(start); elapsed < syncMaxWait {
+				t.Fatalf("answered after %s, before waiting out %s", elapsed, syncMaxWait)
+			}
+			return
+		case <-changes.C:
+			seedCert(t, deps, cfg, cfg.Certificates[1], fmt.Sprintf("sha256:DB-%d", i))
+			deps.Changes.Notify()
+		case <-timeout:
+			t.Fatal("sync did not answer within 5s while other certificates kept changing")
+		}
 	}
 }
 
