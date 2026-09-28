@@ -182,6 +182,7 @@ func createToken(ctx context.Context, enrollSrv *enroll.Server, cfg *config.Serv
 	if ttl <= 0 {
 		return ipc.CreateTokenResponse{}, fmt.Errorf("token lifetime must be positive, got %s", ttl)
 	}
+	serverURL := cfg.PublicBaseURL()
 	if cfg.Server.PublicURL == "" {
 		// Without public_url the base URL is derived from server.listen, which
 		// the daemon listens on, so it splits into a host and a port.
@@ -189,8 +190,12 @@ func createToken(ctx context.Context, enrollSrv *enroll.Server, cfg *config.Serv
 		if host == "" || net.ParseIP(host).IsUnspecified() {
 			return ipc.CreateTokenResponse{}, fmt.Errorf("server.public_url must be set: server.listen %q names no host clients can reach", cfg.Server.Listen)
 		}
+		// The token carries the URL to sigilc, which refuses one that could
+		// not be server.public_url: check it before the token is stored.
+		if err := config.ValidatePublicURL(serverURL); err != nil {
+			return ipc.CreateTokenResponse{}, fmt.Errorf("server.public_url must be set: the URL derived from server.listen %w", err)
+		}
 	}
-	serverURL := cfg.PublicBaseURL()
 	token, err := enrollSrv.Create(ctx, serverURL, name, ttl)
 	if err != nil {
 		return ipc.CreateTokenResponse{}, err
