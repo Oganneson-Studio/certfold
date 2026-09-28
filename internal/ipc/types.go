@@ -5,6 +5,7 @@ import (
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/sigil/internal/scheduler"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
@@ -19,6 +20,7 @@ type CertificateInfo struct {
 	Domains       []string  `json:"domains"`
 	Subscribers   []string  `json:"subscribers"`
 	NotAfter      time.Time `json:"not_after"`
+	RenewAt       time.Time `json:"renew_at"`
 	Fingerprint   string    `json:"fingerprint"`
 	IssuedAt      time.Time `json:"issued_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -120,8 +122,9 @@ type FetchClientRequest struct {
 
 // certificateInfos lists the certificates of cfg in configuration order.
 // Stored material is reported only when its spec fingerprint matches the
-// running configuration, so it is the material clients can fetch. Records of
-// certificates that are no longer configured are left out.
+// running configuration, so it is the material clients can fetch; RenewAt
+// stays zero as well when the stored certificate cannot be parsed. Records
+// of certificates that are no longer configured are left out.
 func certificateInfos(cfg *config.ServerConfig, records []*store.CertRecord, statuses []*store.IssuanceStatus, issuing func(string) bool, now time.Time) []*CertificateInfo {
 	stored := make(map[string]*store.CertRecord, len(records))
 	for _, record := range records {
@@ -146,6 +149,9 @@ func certificateInfos(cfg *config.ServerConfig, records []*store.CertRecord, sta
 			info.Fingerprint = record.Fingerprint
 			info.IssuedAt = record.IssuedAt
 			info.UpdatedAt = record.UpdatedAt
+			if renewAt, err := scheduler.RenewAt(record.FullchainPEM); err == nil {
+				info.RenewAt = renewAt
+			}
 		}
 		if status := attempts[spec.Name]; status != nil {
 			info.Failures = status.Failures
