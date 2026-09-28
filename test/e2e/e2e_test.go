@@ -13,6 +13,8 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
+	"net/http"
 	"os"
 	"runtime"
 	"slices"
@@ -278,6 +280,46 @@ func TestPublicTLSEnrollAndFetch(t *testing.T) {
 	enrollAndFetch(t, stack.publicTLS)
 }
 
+// TestPublicTLSCertificateReload replaces the server.tls_cert_file and key of
+// the public TLS server from the host, and checks that new connections get
+// the new certificate without a restart. It needs the client daemon that
+// TestPublicTLSEnrollAndFetch started.
+func TestPublicTLSCertificateReload(t *testing.T) {
+	d := stack.publicTLS
+	serial := big.NewInt(3)
+	// Both files are written, and closed, before the first new connection.
+	if err := writeServerTLS(d.hostPath("tls"), d.alias, serial, d.publicRoot, d.publicRootKey); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	for {
+		got, err := servedSerial(d)
+		if err == nil && got.Cmp(serial) == 0 {
+			break
+		}
+		if time.Since(start) > 10*time.Second {
+			t.Fatalf("server presents serial %v (error %v) 10s after its files were replaced, want %s\nserver logs:\n%s",
+				got, err, serial, stack.logs(d.serverContainer))
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	// The client trusts the new certificate through the same root.
+	mustExec(t, d.clientContainer, "sigilc", "fetch")
+}
+
+// servedSerial returns the serial of the certificate that the server of d
+// presents to a new connection.
+func servedSerial(d *deployment) (*big.Int, error) {
+	client := &http.Client{Timeout: 5 * time.Second, Transport: d.readinessTransport()}
+	defer client.CloseIdleConnections()
+	resp, err := client.Get(d.hostURL() + "/install.sh")
+	if err != nil {
+		return nil, err
+	}
+	resp.Body.Close()
+	return resp.TLS.PeerCertificates[0].SerialNumber, nil
+}
+
 // TestIssuanceUsesDNSResolvers checks that the servers looked up every
 // challenge name through acme.dns_resolvers. Only lego sends CNAME queries,
 // which follow CNAMEs of the name; pebble queries TXT records alone. The first
@@ -447,21 +489,46 @@ func TestRevokedTokenIsRejected(t *testing.T) {
 }
 
 func TestInstallScriptUsesNetworkAlias(t *testing.T) {
-	resp, err := insecureHTTPGet(stack.miniCA.hostURL() + "/install.sh")
+	sh := getInstallScript(t, "/install.sh")
+	if !strings.Contains(sh, `SERVER_URL="https://sigils:18443"`) {
+		t.Fatalf("install.sh does not use configured public URL:\n%s", sh)
+	}
+	if strings.Contains(sh, "172.30.0.") {
+		t.Fatal("install.sh still contains a fixed container IP")
+	}
+
+	// install.ps1 is the same for every request: the token is the -Token
+	// argument of the command that runs it.
+	ps1 := getInstallScript(t, "/install.ps1")
+	for _, want := range []string{
+		`$ServerURL = 'https://sigils:18443'`,
+		`param([Parameter(Mandatory = $true)][string]$Token)`,
+	} {
+		if !strings.Contains(ps1, want) {
+			t.Errorf("install.ps1 lacks %s:\n%s", want, ps1)
+		}
+	}
+	if withToken := getInstallScript(t, "/install.ps1?token=zzz"); withToken != ps1 {
+		t.Errorf("install.ps1?token=zzz differs from install.ps1:\n%s", withToken)
+	}
+}
+
+// getInstallScript returns the body of GET path from the mini-CA server.
+func getInstallScript(t *testing.T, path string) string {
+	t.Helper()
+	resp, err := insecureHTTPGet(stack.miniCA.hostURL() + path)
 	if err != nil {
-		t.Fatalf("GET /install.sh: %v", err)
+		t.Fatalf("GET %s: %v", path, err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), `SERVER_URL="https://sigils:18443"`) {
-		t.Fatalf("install script does not use configured public URL:\n%s", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s: status %d: %s", path, resp.StatusCode, body)
 	}
-	if strings.Contains(string(body), "172.30.0.") {
-		t.Fatal("install script still contains a fixed container IP")
-	}
+	return string(body)
 }
 
 func createToken(t *testing.T, d *deployment, name, ttl string) string {

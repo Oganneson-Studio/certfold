@@ -74,8 +74,10 @@ type deployment struct {
 	serverContainer string
 	clientContainer string
 	serverPort      int
-	// publicRoot signs the server's tls_cert_file; nil for a mini-CA server.
-	publicRoot *x509.Certificate
+	// publicRoot signs the server's tls_cert_file with publicRootKey; both
+	// are nil for a mini-CA server.
+	publicRoot    *x509.Certificate
+	publicRootKey *ecdsa.PrivateKey
 	// certs are the certificates the server issues; the client subscribes to
 	// the first, test-cert. Each has a domain of its own: challtestsrv's
 	// clear-txt removes every value of a name, so issuances for one domain
@@ -397,7 +399,7 @@ exec curl -fsS --max-time 10 -X POST --data-binary "$body" "$url"
 func (s *e2eStack) writeFixtures() error {
 	pebbleDir := filepath.Join(s.runDir, "pebble")
 	var err error
-	if s.pebbleTLSRoot, err = writePublicTLS(pebbleDir, "pebble"); err != nil {
+	if s.pebbleTLSRoot, _, err = writePublicTLS(pebbleDir, "pebble"); err != nil {
 		return err
 	}
 	// A Retry-After of one second keeps lego's polling short. pebble's VA
@@ -421,7 +423,7 @@ func (s *e2eStack) writeFixtures() error {
 	if err := os.WriteFile(filepath.Join(s.runDir, "dns-hook.sh"), []byte(dnsHook), 0o600); err != nil {
 		return err
 	}
-	if s.publicTLS.publicRoot, err = writePublicTLS(s.publicTLS.hostPath("tls"), s.publicTLS.alias); err != nil {
+	if s.publicTLS.publicRoot, s.publicTLS.publicRootKey, err = writePublicTLS(s.publicTLS.hostPath("tls"), s.publicTLS.alias); err != nil {
 		return err
 	}
 	for _, d := range s.deployments() {
@@ -498,10 +500,10 @@ certificates:
 }
 
 // writePublicTLS writes a test root to dir/root.pem and a certificate for host
-// signed by it to dir/server.pem and dir/server-key.pem. The root stands in
-// for a CA the connecting side trusts: a public CA, or the private CA of an
-// ACME server.
-func writePublicTLS(dir, host string) (*x509.Certificate, error) {
+// signed by it to dir/server.pem and dir/server-key.pem, and returns the root
+// and its key. The root stands in for a CA the connecting side trusts: a
+// public CA, or the private CA of an ACME server.
+func writePublicTLS(dir, host string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
 	now := time.Now().UTC()
 	root, rootKey, err := issueCertificate(&x509.Certificate{
 		SerialNumber:          big.NewInt(1),
@@ -513,10 +515,26 @@ func writePublicTLS(dir, host string) (*x509.Certificate, error) {
 		IsCA:                  true,
 	}, nil, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, nil, err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "root.pem"), certificatePEM(root), 0o600); err != nil {
+		return nil, nil, err
+	}
+	if err := writeServerTLS(dir, host, big.NewInt(2), root, rootKey); err != nil {
+		return nil, nil, err
+	}
+	return root, rootKey, nil
+}
+
+// writeServerTLS writes a certificate for host with serial, signed by root, to
+// dir/server.pem and its key to dir/server-key.pem, each in place.
+func writeServerTLS(dir, host string, serial *big.Int, root *x509.Certificate, rootKey *ecdsa.PrivateKey) error {
+	now := time.Now().UTC()
 	server, serverKey, err := issueCertificate(&x509.Certificate{
-		SerialNumber: big.NewInt(2),
+		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: host},
 		DNSNames:     []string{host},
 		NotBefore:    now.Add(-time.Hour),
@@ -525,25 +543,16 @@ func writePublicTLS(dir, host string) (*x509.Certificate, error) {
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}, root, rootKey)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	keyPEM, err := privateKeyPEM(serverKey)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, err
+	if err := os.WriteFile(filepath.Join(dir, "server.pem"), certificatePEM(server), 0o600); err != nil {
+		return err
 	}
-	for name, data := range map[string][]byte{
-		"root.pem":       certificatePEM(root),
-		"server.pem":     certificatePEM(server),
-		"server-key.pem": keyPEM,
-	} {
-		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
-			return nil, err
-		}
-	}
-	return root, nil
+	return os.WriteFile(filepath.Join(dir, "server-key.pem"), keyPEM, 0o600)
 }
 
 // issueCertificate creates a certificate from template for a new P-256 key,
