@@ -3,8 +3,12 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -21,6 +25,7 @@ import (
 
 	"github.com/Oganneson-Studio/sigil/internal/ca"
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
+	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
 func testIPCSocket(t *testing.T) string {
@@ -102,6 +107,119 @@ func TestRunServesUntilCancelled(t *testing.T) {
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("Run did not return after cancellation")
+	}
+}
+
+// enrollClient records the client name in the store under dataDir, as
+// enrollment would, and returns its mTLS identity.
+func enrollClient(t *testing.T, miniCA *ca.MiniCA, dataDir, name string) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: name}}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr, err := x509.ParseCertificateRequest(csrDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certDER, err := miniCA.Sign(csr, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open(filepath.Join(dataDir, "sigils.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.Clients.Upsert(context.Background(), &store.ClientRecord{
+		Name:        name,
+		Fingerprint: ca.Fingerprint(certDER),
+		EnrolledAt:  time.Now().UTC(),
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{certDER}, PrivateKey: key}
+}
+
+// TestRunAnswersWaitingSyncAtShutdown checks that stopping the daemon answers
+// a GET /v1/sync that waits for a change, instead of letting it hold up the
+// shutdown.
+func TestRunAnswersWaitingSyncAtShutdown(t *testing.T) {
+	dataDir := t.TempDir()
+	miniCA, err := ca.Bootstrap(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := enrollClient(t, miniCA, dataDir, "web-1")
+	port := freeTCPPort(t)
+	path := writeServerConfig(t, fmt.Sprintf("127.0.0.1:%d", port), dataDir, testIPCSocket(t))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- Run(ctx, path) }()
+	waitServing(t, miniCA, port, result)
+
+	roots := x509.NewCertPool()
+	roots.AddCert(miniCA.Cert())
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+		RootCAs:      roots,
+		Certificates: []tls.Certificate{identity},
+	}}}
+	defer client.CloseIdleConnections()
+	syncURL := fmt.Sprintf("https://127.0.0.1:%d/v1/sync", port)
+	first, err := client.Get(syncURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Body.Close()
+	etag := first.Header.Get("ETag")
+	if first.StatusCode != http.StatusOK || etag == "" {
+		t.Fatalf("first sync: status = %d, ETag = %q", first.StatusCode, etag)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, syncURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("If-None-Match", etag)
+	answered := make(chan error, 1)
+	go func() {
+		resp, err := client.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusNotModified {
+				err = fmt.Errorf("status %d, want 304", resp.StatusCode)
+			}
+		}
+		answered <- err
+	}()
+	select {
+	case err := <-answered:
+		t.Fatalf("sync answered before shutdown: %v", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-answered:
+		if err != nil {
+			t.Fatalf("waiting sync at shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiting sync was not answered within 5s of shutdown")
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("Run returned %v after cancellation, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return within 5s of cancellation")
 	}
 }
 

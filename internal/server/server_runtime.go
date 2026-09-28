@@ -19,15 +19,19 @@ type configPublisher interface {
 // Reload validates every change before updating any consumer.
 type serverConfigRuntime struct {
 	path string
+	// changed is called after every published reload. The daemon passes a
+	// function that wakes the clients waiting in GET /v1/sync.
+	changed func()
 
 	mu      sync.Mutex
 	current atomic.Pointer[config.ServerConfig]
 	renewer configPublisher
 }
 
-func newServerConfigRuntime(path string, initial *config.ServerConfig, publishers ...configPublisher) *serverConfigRuntime {
+func newServerConfigRuntime(path string, initial *config.ServerConfig, changed func(), publishers ...configPublisher) *serverConfigRuntime {
 	runtime := &serverConfigRuntime{
-		path: path,
+		path:    path,
+		changed: changed,
 	}
 	if len(publishers) > 0 {
 		runtime.renewer = publishers[0]
@@ -63,9 +67,15 @@ func (r *serverConfigRuntime) Reload(ctx context.Context) error {
 	// publishes the new generation without a mixed old/new configuration window.
 	publish := func() { r.current.Store(next) }
 	if r.renewer != nil {
-		return r.renewer.PublishConfig(ctx, publish)
+		if err := r.renewer.PublishConfig(ctx, publish); err != nil {
+			return err
+		}
+	} else {
+		publish()
 	}
-	publish()
+	// After PublishConfig rather than in publish: its callback may only
+	// perform the atomic publication.
+	r.changed()
 	return nil
 }
 
