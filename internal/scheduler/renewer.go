@@ -21,6 +21,7 @@ import (
 
 	"github.com/Oganneson-Studio/sigil/internal/acme"
 	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/sigil/internal/logging"
 	"github.com/Oganneson-Studio/sigil/internal/renewal"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
@@ -511,7 +512,9 @@ func retryDelay(failures int) time.Duration {
 // lastError prepares an issuance error for storage. It can quote responses of
 // the ACME CA and the DNS provider API, and the CLI prints it to a terminal as
 // is, so control characters become spaces and the length is bounded.
-// strings.Map also turns invalid UTF-8 into U+FFFD.
+// strings.Map also turns invalid UTF-8 into U+FFFD. It can also quote the URL
+// of a request to the DNS provider API, whose query may hold credentials, so
+// the query of every URL is withheld.
 func lastError(err error) string {
 	msg := strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
@@ -519,6 +522,8 @@ func lastError(err error) string {
 		}
 		return r
 	}, err.Error())
+	// Before the cut, which must bound the longer text of a short query.
+	msg = logging.RedactURLQueries(msg)
 	if len(msg) > maxLastErrorBytes {
 		cut := maxLastErrorBytes
 		for !utf8.RuneStart(msg[cut]) {
