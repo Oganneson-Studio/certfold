@@ -4,8 +4,10 @@ package scheduler
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"database/sql"
 	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log"
@@ -19,6 +21,7 @@ import (
 
 	"github.com/Oganneson-Studio/sigil/internal/acme"
 	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/sigil/internal/renewal"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
@@ -93,8 +96,8 @@ func New(iss issuer, db *store.DB, stored func(), clock func() time.Time) *Renew
 // RunDynamic runs the renewal loop until ctx is cancelled. Each tick reads a
 // fresh configuration snapshot and starts the due issuances without waiting
 // for them. The first tick runs immediately; later ones run every
-// defaultTickInterval +/- jitterWindow, at the earliest stored retry time if
-// that comes first, or when woken.
+// defaultTickInterval +/- jitterWindow, at the earliest stored retry time or
+// renewal time if that comes first, or when woken.
 //
 // Once ctx is cancelled, issuances still waiting for a slot give up, and
 // RunDynamic returns after the running ones have stored their outcome: lego
@@ -110,15 +113,15 @@ func (r *Renewer) RunDynamic(ctx context.Context, current func() *config.ServerC
 	defer r.wg.Wait()
 
 	for {
-		retryAt, err := r.tick(ctx, current)
+		wakeAt, err := r.tick(ctx, current)
 		if err != nil {
 			log.Printf("sigils: renewal tick failed: %v", err)
 		}
 
 		jitter := time.Duration(rand.Int63n(int64(2*jitterWindow))) - jitterWindow
 		interval := defaultTickInterval + jitter
-		if !retryAt.IsZero() {
-			interval = min(interval, retryAt.Sub(r.clock()))
+		if !wakeAt.IsZero() {
+			interval = min(interval, wakeAt.Sub(r.clock()))
 		}
 		timer := time.NewTimer(interval)
 		select {
@@ -133,8 +136,13 @@ func (r *Renewer) RunDynamic(ctx context.Context, current func() *config.ServerC
 }
 
 // tick starts an issuance for every certificate that is due and not already
-// being issued, without waiting for them. It returns the earliest retry time
-// still ahead, or the zero time if no certificate is in backoff.
+// being issued, without waiting for them. A certificate is due when nothing
+// is stored for its current specification, or when the renewal plan of the
+// stored one says so. tick returns when the loop must tick again at the
+// latest: the earliest retry time or renewal time still ahead, or the zero
+// time if there is none. The certificates it starts or skips as already
+// being issued count for none, lest the loop wake at once: the end of each
+// issuance wakes it instead.
 func (r *Renewer) tick(ctx context.Context, current func() *config.ServerConfig) (time.Time, error) {
 	cfg := current()
 	if cfg == nil {
@@ -158,16 +166,22 @@ func (r *Renewer) tick(ctx context.Context, current func() *config.ServerConfig)
 	}
 
 	now := r.clock()
-	var retryAt time.Time
+	var wakeAt time.Time
+	wakeBy := func(at time.Time) {
+		if wakeAt.IsZero() || at.Before(wakeAt) {
+			wakeAt = at
+		}
+	}
 	for _, spec := range cfg.Certificates {
 		if next := nextAttempt[spec.Name]; now.Before(next) {
-			if retryAt.IsZero() || next.Before(retryAt) {
-				retryAt = next
-			}
+			wakeBy(next)
 			continue
 		}
-		if !due(now, cfg, spec, stored[spec.Name]) {
-			continue
+		if rec := stored[spec.Name]; matches(cfg, spec, rec) {
+			if at, _ := r.RenewalPlan(rec); now.Before(at) {
+				wakeBy(at)
+				continue
+			}
 		}
 		lock := r.lock(spec.Name)
 		select {
@@ -182,23 +196,44 @@ func (r *Renewer) tick(ctx context.Context, current func() *config.ServerConfig)
 			}
 		})
 	}
-	return retryAt, nil
+	return wakeAt, nil
 }
 
-// due reports whether spec needs issuance: nothing is stored for its current
-// specification, or the stored certificate is within its renewal window.
-func due(now time.Time, cfg *config.ServerConfig, spec config.CertificateSpec, rec *store.CertRecord) bool {
-	renewDays := spec.RenewDaysBefore
-	if renewDays == 0 {
-		renewDays = config.DefaultRenewDaysBefore
-	}
-	renewThreshold := time.Duration(renewDays) * 24 * time.Hour
-
-	metadataMatches := rec != nil &&
+// matches reports whether rec holds material issued for spec as cfg
+// configures it.
+func matches(cfg *config.ServerConfig, spec config.CertificateSpec, rec *store.CertRecord) bool {
+	return rec != nil &&
 		rec.CA == spec.CA &&
 		slices.Equal(rec.Domains, spec.Domains) &&
 		rec.SpecFingerprint == config.CertificateSpecFingerprint(cfg, spec)
-	return !metadataMatches || !now.Add(renewThreshold).Before(rec.NotAfter)
+}
+
+// RenewalPlan returns when the stored certificate rec is due for renewal, and
+// the rule that says so: "ratio", the share of its lifetime that
+// renewal.RenewAt leaves. A certificate that cannot be read gets the zero
+// time, which is due at once. The IPC listing of certificates calls it too,
+// concurrently with the scheduler.
+func (r *Renewer) RenewalPlan(rec *store.CertRecord) (time.Time, string) {
+	at, _ := renewal.RenewAt(rec.FullchainPEM) // the zero time on error
+	return at, "ratio"
+}
+
+// dueOnArrival returns when the certificate in fullchainPEM, issued at now, is
+// due for renewal, or an error if it is due already or cannot be read. Stored
+// as a success, such a certificate would be issued again at once, and so on
+// without end.
+func dueOnArrival(fullchainPEM []byte, now time.Time) (time.Time, error) {
+	at, err := renewal.RenewAt(string(fullchainPEM))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("issued certificate is already due for renewal: %w", err)
+	}
+	if now.Before(at) {
+		return at, nil
+	}
+	block, _ := pem.Decode(fullchainPEM)
+	leaf, _ := x509.ParseCertificate(block.Bytes) // as RenewAt did
+	return at, fmt.Errorf("issued certificate is already due for renewal (lifetime %s, renewal due %s)",
+		leaf.NotAfter.Sub(leaf.NotBefore), at.UTC().Format(time.RFC3339))
 }
 
 // PublishConfig publishes a configuration generation without waiting for
@@ -301,8 +336,13 @@ func (r *Renewer) issueLocked(ctx context.Context, current func() *config.Server
 // issue obtains the named certificate using the running configuration and
 // stores the outcome. It reports whether the scheduler should tick again:
 // either the configuration changed during the attempt, so the certificate is
-// due under the new one, or a retry time was stored that the loop's timer
-// does not know about yet.
+// due under the new one, or a certificate or a retry time was stored whose
+// renewal or retry time the loop's timer does not know about yet.
+//
+// A certificate that is due for renewal as it arrives is stored all the same,
+// being the newest the clients can have, but the attempt counts as failed, so
+// that the next one waits out a backoff that grows as long as the CA issues
+// such certificates, rather than follow at once.
 func (r *Renewer) issue(ctx context.Context, current func() *config.ServerConfig, name string) (bool, error) {
 	cfg := current()
 	spec, ok := specNamed(cfg, name)
@@ -321,6 +361,10 @@ func (r *Renewer) issue(ctx context.Context, current func() *config.ServerConfig
 		// Shutdown or an abandoned manual renewal, not a verdict on the configuration.
 		return false, err
 	}
+	var dueErr error
+	if err == nil {
+		_, dueErr = dueOnArrival(result.Certificate, now)
+	}
 
 	// The outcome is checked against the running configuration and stored
 	// under the generation read lock, so no reload can publish in between.
@@ -335,10 +379,17 @@ func (r *Renewer) issue(ctx context.Context, current func() *config.ServerConfig
 			log.Printf("sigils: discarding the certificate issued for %s: its configuration changed during issuance", name)
 			return true, fmt.Errorf("cert %q changed during issuance; the certificate was discarded", name)
 		}
-		if err = r.save(dbCtx, spec, fp, result, now); err == nil {
+		status := &store.IssuanceStatus{Name: name, LastAttemptAt: now}
+		if dueErr != nil {
+			status, err = r.failed(dbCtx, name, now, dueErr)
+		}
+		if err == nil {
+			err = r.save(dbCtx, spec, fp, result, status)
+		}
+		if err == nil {
 			r.genMu.RUnlock()
 			r.stored()
-			return false, nil
+			return true, dueErr
 		}
 	}
 	if latest != cfg {
@@ -360,15 +411,15 @@ func (r *Renewer) issue(ctx context.Context, current func() *config.ServerConfig
 	return true, err
 }
 
-// save stores a certificate issued for spec and records the attempt as a
-// success, in one transaction: otherwise a failure to record the status would
-// leave the certificate stored, and fetched by clients, while the attempt
-// counts as failed and the stored callback does not run. The caller holds
-// genMu for reading.
+// save stores a certificate issued for spec, at status.LastAttemptAt, and
+// records the outcome of the attempt, status, in one transaction: otherwise a
+// failure to record the status would leave the certificate stored, and
+// fetched by clients, while the attempt counts as failed and the stored
+// callback does not run. The caller holds genMu for reading.
 //
 // The store has a single connection, which the transaction holds until it
 // ends: a call inside it that is not given tx waits forever.
-func (r *Renewer) save(ctx context.Context, spec config.CertificateSpec, fp string, result *acme.Result, now time.Time) error {
+func (r *Renewer) save(ctx context.Context, spec config.CertificateSpec, fp string, result *acme.Result, status *store.IssuanceStatus) error {
 	tx, err := r.db.BeginTx(ctx)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -383,12 +434,12 @@ func (r *Renewer) save(ctx context.Context, spec config.CertificateSpec, fp stri
 		KeyPEM:          string(result.PrivateKey),
 		NotAfter:        result.NotAfter,
 		Fingerprint:     certificateFingerprint(result.Certificate),
-		IssuedAt:        now,
-		UpdatedAt:       now,
+		IssuedAt:        status.LastAttemptAt,
+		UpdatedAt:       status.LastAttemptAt,
 	}, tx); err != nil {
 		return fmt.Errorf("upsert cert: %w", err)
 	}
-	if err := r.db.Issuance.Upsert(ctx, &store.IssuanceStatus{Name: spec.Name, LastAttemptAt: now}, tx); err != nil {
+	if err := r.db.Issuance.Upsert(ctx, status, tx); err != nil {
 		return fmt.Errorf("record issuance status: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -400,21 +451,33 @@ func (r *Renewer) save(ctx context.Context, spec config.CertificateSpec, fp stri
 // backoff records a failed attempt of the named certificate together with its
 // next retry time. The caller holds genMu for reading.
 func (r *Renewer) backoff(ctx context.Context, name string, now time.Time, cause error) error {
+	status, err := r.failed(ctx, name, now, cause)
+	if err != nil {
+		return err
+	}
+	return r.db.Issuance.Upsert(ctx, status, nil)
+}
+
+// failed returns the issuance status of an attempt of the named certificate
+// that failed at now: one failure more than the stored status has, and a
+// retry time that backs off accordingly. The caller holds genMu for reading,
+// which keeps PublishConfig from clearing the stored status meanwhile.
+func (r *Renewer) failed(ctx context.Context, name string, now time.Time, cause error) (*store.IssuanceStatus, error) {
 	failures := 1
 	prev, err := r.db.Issuance.Get(ctx, name, nil)
 	switch {
 	case err == nil:
 		failures = prev.Failures + 1
 	case !errors.Is(err, sql.ErrNoRows):
-		return err
+		return nil, err
 	}
-	return r.db.Issuance.Upsert(ctx, &store.IssuanceStatus{
+	return &store.IssuanceStatus{
 		Name:          name,
 		Failures:      failures,
 		LastError:     lastError(cause),
 		LastAttemptAt: now,
 		NextAttemptAt: now.Add(retryDelay(failures)),
-	}, nil)
+	}, nil
 }
 
 // retryDelay is the backoff after the given number of consecutive failures:

@@ -35,12 +35,12 @@ BEGIN SELECT RAISE(ABORT, 'status write refused'); END`); err != nil {
 
 	now := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	var calls atomic.Int32
-	mi := &mockIssuer{result: successResult(now.Add(90 * 24 * time.Hour))}
+	mi := &mockIssuer{result: successResult(t, now.Add(90*24*time.Hour))}
 	r := New(mi, db, func() { calls.Add(1) }, func() time.Time { return now })
 
 	// RenewNamed rather than a tick: a call inside the transaction that is not
 	// given it waits forever, which receive turns into a failure.
-	renewed := renewAsync(context.Background(), r, static(minimalCfg("api-prod", 30, nil)), "api-prod")
+	renewed := renewAsync(context.Background(), r, static(minimalCfg("api-prod", nil)), "api-prod")
 	if err := receive(t, renewed, "RenewNamed"); err == nil || !strings.Contains(err.Error(), "status write refused") {
 		t.Fatalf("RenewNamed error = %v, want the refused status write", err)
 	}
