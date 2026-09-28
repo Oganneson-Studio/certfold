@@ -12,6 +12,8 @@ import (
 
 // applyOwnership sets the owner SID on path via SetNamedSecurityInfo.
 // group is ignored on Windows; only owner is applied. No-op when owner is empty.
+// Its error does not name path, a temporary file with a random name; the
+// caller names the output.
 func applyOwnership(path, owner, group string) error {
 	if owner == "" {
 		return nil
@@ -28,7 +30,7 @@ func applyOwnership(path, owner, group string) error {
 		windows.OWNER_SECURITY_INFORMATION,
 		sid, nil, nil, nil,
 	); err != nil {
-		return fmt.Errorf("SetNamedSecurityInfo %s: %w", path, err)
+		return fmt.Errorf("SetNamedSecurityInfo: %w", err)
 	}
 	return nil
 }

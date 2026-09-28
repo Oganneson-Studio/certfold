@@ -5,6 +5,7 @@ import (
 	"crypto"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -69,6 +70,9 @@ type CertBundle struct {
 //     returned; the targets already replaced stay replaced, and the next
 //     reconcile completes the rest.
 //
+// The errors name the output, never a temporary file, whose random name would
+// make a failure that repeats read differently each time.
+//
 // changed reports whether the content of at least one target was replaced,
 // also when err is not nil. Repairing metadata alone does not count, and is
 // not checked with another stat, because some filesystems cannot hold
@@ -116,7 +120,7 @@ func Reconcile(bundle *CertBundle, specs []config.OutputSpec) (changed bool, err
 			for _, name := range temps[i:] {
 				_ = os.Remove(name)
 			}
-			return changed, fmt.Errorf("write %s: %w", spec.Path, err)
+			return changed, fmt.Errorf("replace %s: %w", spec.Path, withoutTempName(err))
 		}
 		changed = changed || rewrites[i]
 	}
@@ -176,7 +180,7 @@ func stage(bundle *CertBundle, spec config.OutputSpec) (string, error) {
 	// written.
 	tmp, err := createTemp(dir, spec)
 	if err != nil {
-		return "", fmt.Errorf("create temp: %w", err)
+		return "", fmt.Errorf("create temp: %w", withoutTempName(err))
 	}
 	name := tmp.Name()
 	cleanup := func() {
@@ -186,15 +190,15 @@ func stage(bundle *CertBundle, spec config.OutputSpec) (string, error) {
 
 	if _, err := tmp.Write(data); err != nil {
 		cleanup()
-		return "", fmt.Errorf("write temp: %w", err)
+		return "", fmt.Errorf("write temp: %w", withoutTempName(err))
 	}
 	if err := tmp.Sync(); err != nil {
 		cleanup()
-		return "", fmt.Errorf("sync temp: %w", err)
+		return "", fmt.Errorf("sync temp: %w", withoutTempName(err))
 	}
 	if err := applyMode(tmp, spec); err != nil {
 		cleanup()
-		return "", fmt.Errorf("chmod temp: %w", err)
+		return "", fmt.Errorf("chmod temp: %w", withoutTempName(err))
 	}
 	if err := applyOwnership(name, spec.Owner, spec.Group); err != nil {
 		cleanup()
@@ -202,9 +206,27 @@ func stage(bundle *CertBundle, spec config.OutputSpec) (string, error) {
 	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(name)
-		return "", fmt.Errorf("close temp: %w", err)
+		return "", fmt.Errorf("close temp: %w", withoutTempName(err))
 	}
 	return name, nil
+}
+
+// withoutTempName returns the cause of err, an error of an operation on a
+// temporary file, without the *os.PathError or *os.LinkError around it that
+// names the file: the name is random, so a failure that repeats would read
+// differently each time, and sigilc logs its last error again whenever the
+// text changes. The caller names the output instead. Other errors are
+// returned as they are.
+func withoutTempName(err error) error {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return pathErr.Err
+	}
+	var linkErr *os.LinkError
+	if errors.As(err, &linkErr) {
+		return linkErr.Err
+	}
+	return err
 }
 
 func outputMode(spec config.OutputSpec) int {

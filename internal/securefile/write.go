@@ -3,6 +3,7 @@
 package securefile
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,7 +26,8 @@ func EnsurePrivateDirectory(path string) error {
 
 // WriteFile atomically replaces path with data. The temporary file gets
 // platform-native private access controls from CreateTemp before any data is
-// written, and keeps them when it replaces path.
+// written, and keeps them when it replaces path. The errors name path, never
+// the temporary file.
 func WriteFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	_, statErr := os.Stat(dir)
@@ -44,7 +46,7 @@ func WriteFile(path string, data []byte) error {
 
 	tmp, err := CreateTemp(dir, ".sigil-private-*")
 	if err != nil {
-		return fmt.Errorf("create temporary file: %w", err)
+		return fmt.Errorf("create temporary file for %s: %w", path, withoutTempName(err))
 	}
 	tmpPath := tmp.Name()
 	cleanup := func() {
@@ -54,19 +56,36 @@ func WriteFile(path string, data []byte) error {
 
 	if _, err := tmp.Write(data); err != nil {
 		cleanup()
-		return fmt.Errorf("write temporary file: %w", err)
+		return fmt.Errorf("write temporary file for %s: %w", path, withoutTempName(err))
 	}
 	if err := tmp.Sync(); err != nil {
 		cleanup()
-		return fmt.Errorf("sync temporary file: %w", err)
+		return fmt.Errorf("sync temporary file for %s: %w", path, withoutTempName(err))
 	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("close temporary file: %w", err)
+		return fmt.Errorf("close temporary file for %s: %w", path, withoutTempName(err))
 	}
 	if err := replaceFile(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("replace private file: %w", err)
+		return fmt.Errorf("replace %s: %w", path, withoutTempName(err))
 	}
 	return nil
+}
+
+// withoutTempName returns the cause of err, an error of an operation on the
+// temporary file, without the *os.PathError or *os.LinkError around it that
+// names the file: the name is random, so a failure that repeats would read
+// differently each time, and a daemon that logs an error only when its text
+// changes would log it every time. Other errors are returned as they are.
+func withoutTempName(err error) error {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return pathErr.Err
+	}
+	var linkErr *os.LinkError
+	if errors.As(err, &linkErr) {
+		return linkErr.Err
+	}
+	return err
 }
