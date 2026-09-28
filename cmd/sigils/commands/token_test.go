@@ -174,8 +174,13 @@ func TestTokenCreateIssuesTokenThroughDaemon(t *testing.T) {
 				t.Fatalf("no Token line in output:\n%s", stdout)
 			}
 			for _, want := range []string{
-				"curl -fsSL " + wantURL + "/install.sh | sudo sh -s -- --token " + token,
-				"iwr -useb '" + wantURL + "/install.ps1?token=" + token + "' | iex",
+				"Install (Linux/macOS):\n" +
+					"  curl -fsSL '" + wantURL + "/install.sh' | sudo sh -s -- --token '" + token + "'\n",
+				// The Windows command passes the token as an argument of the
+				// script, which the server no longer writes into it.
+				"Install (Windows, elevated PowerShell):\n" +
+					"  [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; " +
+					"& ([scriptblock]::Create((irm '" + wantURL + "/install.ps1'))) -Token '" + token + "'\n",
 			} {
 				if !strings.Contains(stdout, want) {
 					t.Errorf("output lacks %q:\n%s", want, stdout)
