@@ -17,7 +17,8 @@ type Event struct {
 	// by spaces and invalid UTF-8 replaced by U+FFFD.
 	Message string `json:"message"`
 	// Attrs holds the attributes as key=value, quoted as slog.TextHandler
-	// quotes them, with the keys in a group written g.k. It is cut to 2 KiB.
+	// quotes them, with the keys in a group written g.k. Longer attributes
+	// are cut at a rune boundary to at most 2 KiB, followed by "...".
 	Attrs string `json:"attrs,omitempty"`
 }
 

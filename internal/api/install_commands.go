@@ -10,7 +10,7 @@ import "fmt"
 //
 // ps1 first adds TLS 1.2 (3072) to the protocols Windows PowerShell 5.1
 // offers, which older Windows versions leave out. Where the setting is
-// SystemDefault, this leaves TLS 1.2 alone, so the server must accept it.
+// SystemDefault, this leaves only TLS 1.2, so the server must accept it.
 func InstallCommands(serverURL, token string) (sh, ps1 string) {
 	sh = fmt.Sprintf("curl -fsSL '%s/install.sh' | sudo sh -s -- --token '%s'", serverURL, token)
 	ps1 = fmt.Sprintf("[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; "+
