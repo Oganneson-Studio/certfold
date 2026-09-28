@@ -27,9 +27,9 @@ const withheld = "(in service log)"
 const maxAttrsBytes = 2 << 10
 
 // NewHandler returns a handler that passes every record at Info and above to
-// sink unchanged, and adds it to ring with the Private values withheld.
-// Records below Info are dropped. Attributes and groups given through
-// WithAttrs and WithGroup reach both.
+// sink unchanged, unless sink is not enabled for its level, and adds it to
+// ring with the Private values withheld. Records below Info are dropped.
+// Attributes and groups given through WithAttrs and WithGroup reach both.
 //
 // A Private value is recognized in the attribute as the caller gave it,
 // before slog resolves it: the built-in handlers resolve a value before they
