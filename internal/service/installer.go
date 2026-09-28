@@ -61,12 +61,8 @@ func buildServiceConfig(cfg Config) *ksvc.Config {
 	// Platform-specific tuning.
 	switch runtime.GOOS {
 	case "linux":
-		sc.Dependencies = []string{
-			"After=network-online.target",
-			"Wants=network-online.target",
-		}
 		sc.Option = ksvc.KeyValue{
-			"Restart": "on-failure",
+			"SystemdScript": systemdUnit,
 		}
 	case "darwin":
 		sc.Option = ksvc.KeyValue{
@@ -86,6 +82,28 @@ func buildServiceConfig(cfg Config) *ksvc.Config {
 
 	return sc
 }
+
+// systemdUnit replaces the unit kardianos writes by default, which restarts a
+// failed daemon only after 120 seconds. A daemon that keeps failing, such as
+// one whose configuration does not load, is restarted every 5 seconds without
+// end: without StartLimit settings, systemd's default limit of 5 starts in 10
+// seconds is never reached. Installing the service again replaces the unit of
+// an earlier install. The template syntax is that of kardianos v1.3.0.
+const systemdUnit = `[Unit]
+Description={{Description}}
+ConditionFileIsExecutable={{Path | cmdEscape}}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart={{Path | cmdEscape}}{{range Arguments}} {{. | cmd}}{{end}}
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=-/etc/sysconfig/{{Name}}
+
+[Install]
+WantedBy=multi-user.target
+`
 
 func roleAttrs(r Role) (name, displayName, desc, defaultConfig string) {
 	switch r {
