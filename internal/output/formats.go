@@ -26,26 +26,14 @@ type CertBundle struct {
 	KeyPEM []byte
 }
 
-// Write converts bundle to the format described by spec and atomically writes
-// it to spec.Path, applying mode/owner/group if set.
-func Write(bundle *CertBundle, spec config.OutputSpec) error {
-	data, err := encode(bundle, spec)
-	if err != nil {
-		return fmt.Errorf("encode %s: %w", spec.Format, err)
-	}
-	if err := atomicWrite(spec, data); err != nil {
-		return fmt.Errorf("write %s: %w", spec.Path, err)
-	}
-	return applyOwnership(spec.Path, spec.Owner, spec.Group)
-}
-
 // Reconcile brings the outputs of one certificate, specs, in line with bundle
 // and reports whether it rewrote the content of any of them.
 //
 // The content of an output matches bundle when all of these hold:
 //   - os.Lstat finds a regular file at its path. A missing file does not
 //     match, and neither does a symbolic link or any other kind of file; a
-//     symbolic link is replaced by a regular file, as Write replaces it.
+//     symbolic link is replaced by a regular file, and the file it points to
+//     is left alone.
 //   - The file holds bundle. A pkcs12 file must decode with
 //     pkcs12.DecodeChain(content, spec.Password), and its leaf, the Raw of
 //     each chain certificate and its private key (compared with Equal) must
@@ -74,8 +62,8 @@ func Write(bundle *CertBundle, spec config.OutputSpec) error {
 //  1. Stage each of them in order: MkdirAll its directory with 0o755,
 //     createTemp, write, Sync, applyMode, applyOwnership on the temporary
 //     file, Close. If any step fails, every temporary file of the group is
-//     removed and the error returned; no target has been touched. Write sets
-//     ownership after the rename instead, which would break this guarantee.
+//     removed and the error returned; no target has been touched. Setting
+//     ownership after the rename instead would break this guarantee.
 //  2. Commit: rename each temporary file over its target in order. If a
 //     rename fails, the temporary files left are removed and the error
 //     returned; the targets already replaced stay replaced, and the next
@@ -90,8 +78,7 @@ func Write(bundle *CertBundle, spec config.OutputSpec) error {
 // the mode differing again. Were that a change, it would run the
 // certificate's on_change program on every reconcile, with no error to back
 // off from; as it is, it costs one chmod call. Private-key outputs on Windows
-// keep being created by securefile.CreateTemp with read access for owner, as
-// Write creates them.
+// are created by securefile.CreateTemp with read access for owner.
 func Reconcile(bundle *CertBundle, specs []config.OutputSpec) (changed bool, err error) {
 	var stale []config.OutputSpec
 	// rewrites[i] reports whether stale[i] is staged for its content, and not
@@ -300,43 +287,6 @@ func pkcs12Contents(bundle *CertBundle) (privKey interface{}, leaf *x509.Certifi
 		return nil, nil, nil, fmt.Errorf("parse chain: %w", err)
 	}
 	return privKey, leaf, chain, nil
-}
-
-// atomicWrite writes data to spec.Path using a temp-file + rename so callers
-// always see a complete file. createTemp gives the temp file its access
-// controls before any data is written.
-func atomicWrite(spec config.OutputSpec, data []byte) error {
-	dir := filepath.Dir(spec.Path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("mkdir: %w", err)
-	}
-
-	// Write to a sibling temp file so rename stays on the same filesystem.
-	tmp, err := createTemp(dir, spec)
-	if err != nil {
-		return fmt.Errorf("create temp: %w", err)
-	}
-	tmpName := tmp.Name()
-
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("write temp: %w", err)
-	}
-	if err := applyMode(tmp, spec); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("chmod temp: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("close temp: %w", err)
-	}
-	if err := os.Rename(tmpName, spec.Path); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("rename: %w", err)
-	}
-	return nil
 }
 
 // parseCert decodes the first PEM certificate block.

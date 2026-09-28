@@ -32,10 +32,6 @@ certificates:
     ca: "le"
     dns_provider: "cf"
     subscribers: ["web-1"]
-clients:
-  - name: "web-1"
-    push_endpoint: "https://web-1.example.com/push"
-    push_token: "0123456789abcdef0123456789abcdef"
 `
 
 func parseRuntimeConfig(t *testing.T, raw string) *config.ServerConfig {
@@ -64,7 +60,6 @@ func TestServerConfigRuntimeReloadPublishesMutableGeneration(t *testing.T) {
 		"ops@example.com", "security@example.com",
 		"api.example.com", "api-v2.example.com",
 		"subscribers: [\"web-1\"]", "subscribers: [\"web-1\", \"web-2\"]",
-		"web-1.example.com/push", "push.example.com/notify",
 	).Replace(initialRuntimeConfig)
 	writeRuntimeConfig(t, path, nextRaw)
 
@@ -80,9 +75,6 @@ func TestServerConfigRuntimeReloadPublishesMutableGeneration(t *testing.T) {
 	}
 	if got.Certificates[0].Domains[0] != "api-v2.example.com" || len(got.Certificates[0].Subscribers) != 2 {
 		t.Fatalf("certificate config was not reloaded: %+v", got.Certificates[0])
-	}
-	if got.Clients[0].PushEndpoint != "https://push.example.com/notify" {
-		t.Fatalf("push route = %q", got.Clients[0].PushEndpoint)
 	}
 	if notified != 1 {
 		t.Fatalf("reload notified %d times, want once", notified)

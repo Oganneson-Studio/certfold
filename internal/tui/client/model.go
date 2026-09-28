@@ -36,7 +36,6 @@ type Model struct {
 	clientName   string
 	serverURL    string
 	online       bool
-	nextPull     time.Duration
 	certs        []CertStatus
 	events       []Event
 	showLogs     bool
@@ -57,7 +56,7 @@ type stateMsg struct {
 }
 
 // FetchProvider is a function the model calls when 'f' is pressed.
-// In production this triggers client.pullOnce; in tests it can be a stub.
+// In production this triggers Client.Fetch over IPC; in tests it can be a stub.
 type FetchProvider func(ctx context.Context) error
 
 // New creates a new Model.
@@ -85,12 +84,6 @@ func (m Model) WithEvents(events []Event) Model {
 // WithOnline sets the server online status.
 func (m Model) WithOnline(online bool) Model {
 	m.online = online
-	return m
-}
-
-// WithNextPull sets the next pull countdown.
-func (m Model) WithNextPull(d time.Duration) Model {
-	m.nextPull = d
 	return m
 }
 
@@ -217,12 +210,7 @@ func (m Model) renderHeader() string {
 	if !m.online {
 		onlineDot = shared.ErrorDot.String()
 	}
-	pull := "—"
-	if m.nextPull > 0 {
-		pull = fmt.Sprintf("%dm", int(m.nextPull.Minutes()))
-	}
-	line := fmt.Sprintf(" Name: %-12s  Server: %s  Next pull: %s",
-		m.clientName, onlineDot, pull)
+	line := fmt.Sprintf(" Name: %-12s  Server: %s", m.clientName, onlineDot)
 	return shared.TitleStyle.Width(m.width).Render(line)
 }
 

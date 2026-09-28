@@ -13,7 +13,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 4
+const currentSchemaVersion = 5
 
 // DB wraps *sql.DB and exposes typed repositories.
 type DB struct {
@@ -225,6 +225,12 @@ CREATE TABLE issuance_status (
     last_attempt_at DATETIME,
     next_attempt_at DATETIME
 );
+`)
+		return err
+	case 5:
+		_, err := db.Exec(`
+ALTER TABLE clients DROP COLUMN push_endpoint;
+ALTER TABLE clients DROP COLUMN push_token;
 `)
 		return err
 	default:

@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 	"unicode"
 
 	"gopkg.in/yaml.v3"
@@ -22,7 +21,6 @@ type ServerConfig struct {
 	ACME         ACMESection            `yaml:"acme"`
 	DNSProviders map[string]DNSProvider `yaml:"dns_providers"`
 	Certificates []CertificateSpec      `yaml:"certificates"`
-	Clients      []ClientRegistration   `yaml:"clients,omitempty"`
 }
 
 type ServerSection struct {
@@ -78,14 +76,6 @@ type CertificateSpec struct {
 	KeyType         string   `yaml:"key_type,omitempty"`
 	RenewDaysBefore int      `yaml:"renew_days_before,omitempty"`
 	Subscribers     []string `yaml:"subscribers,omitempty"`
-}
-
-type ClientRegistration struct {
-	Name         string    `yaml:"name"`
-	Fingerprint  string    `yaml:"fingerprint"`
-	EnrolledAt   time.Time `yaml:"enrolled_at"`
-	PushEndpoint string    `yaml:"push_endpoint,omitempty"`
-	PushToken    string    `yaml:"push_token,omitempty"`
 }
 
 const (
@@ -290,32 +280,6 @@ func (c *ServerConfig) Validate() error {
 		}
 		if cert.RenewDaysBefore < 1 || cert.RenewDaysBefore > 89 {
 			v.Add(base+".renew_days_before", "must be between 1 and 89 (got %d)", cert.RenewDaysBefore)
-		}
-	}
-
-	clientNames := make(map[string]bool, len(c.Clients))
-	for i, cl := range c.Clients {
-		base := fmt.Sprintf("clients[%d]", i)
-		if cl.Name == "" {
-			v.Add(base+".name", "must be set")
-		} else if err := ValidateClientName(cl.Name); err != nil {
-			v.Add(base+".name", "%v", err)
-		} else if clientNames[cl.Name] {
-			v.Add(base+".name", "duplicate client name %q", cl.Name)
-		} else {
-			clientNames[cl.Name] = true
-		}
-		if cl.PushEndpoint != "" {
-			u, err := url.ParseRequestURI(cl.PushEndpoint)
-			if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-				v.Add(base+".push_endpoint", "must be an https URL without credentials, query, or fragment")
-			}
-		}
-		if cl.PushEndpoint == "" && cl.PushToken != "" {
-			v.Add(base+".push_token", "requires push_endpoint")
-		}
-		if cl.PushEndpoint != "" && len(cl.PushToken) < 32 {
-			v.Add(base+".push_token", "must be at least 32 characters when push_endpoint is set")
 		}
 	}
 

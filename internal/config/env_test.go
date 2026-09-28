@@ -249,16 +249,15 @@ func TestEnvValuesInPlainScalarsResolveTheirType(t *testing.T) {
 		t.Errorf("eab_hmac = %q, want h$1", got)
 	}
 
-	t.Setenv("SIGIL_TEST_PULL", "90s")
 	t.Setenv("SIGIL_TEST_RENEW", "48h")
-	clientSrc := strings.Replace(validClientYAML, `pull_interval: "1h"`, `pull_interval: ${SIGIL_TEST_PULL}
+	clientSrc := strings.Replace(validClientYAML, `server_url: "https://sigil.example.com:8443"`, `server_url: "https://sigil.example.com:8443"
   identity_renew_before: ${SIGIL_TEST_RENEW}`, 1)
 	clientCfg, err := ParseClient([]byte(clientSrc))
 	if err != nil {
 		t.Fatalf("ParseClient: %v", err)
 	}
-	if clientCfg.Client.PullInterval != 90*time.Second || clientCfg.Client.IdentityRenewBefore != 48*time.Hour {
-		t.Errorf("pull_interval = %v, identity_renew_before = %v", clientCfg.Client.PullInterval, clientCfg.Client.IdentityRenewBefore)
+	if clientCfg.Client.IdentityRenewBefore != 48*time.Hour {
+		t.Errorf("identity_renew_before = %v, want 48h", clientCfg.Client.IdentityRenewBefore)
 	}
 }
 

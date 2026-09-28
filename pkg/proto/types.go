@@ -32,8 +32,7 @@ type RenewIdentityResponse struct {
 	ClientCert string `json:"client_cert"` // PEM
 }
 
-// CertSummary is one entry in the GET /v1/sync and GET /v1/certificates
-// responses.
+// CertSummary is one entry in the GET /v1/sync response.
 type CertSummary struct {
 	Name        string    `json:"name"`
 	Fingerprint string    `json:"fingerprint"`
@@ -49,15 +48,4 @@ type CertBundle struct {
 	Fingerprint  string `json:"fingerprint"`
 	FullchainPEM string `json:"fullchain_pem"`
 	KeyPEM       string `json:"key_pem"`
-}
-
-// HeartbeatRequest is the JSON body for POST /v1/heartbeat.
-type HeartbeatRequest struct {
-	Version     string `json:"version,omitempty"`
-	Fingerprint string `json:"fingerprint,omitempty"` // current cert fingerprint the client holds
-}
-
-// PushNotify is the body for POST /v1/push/notify (client side).
-type PushNotify struct {
-	CertName string `json:"cert_name"`
 }

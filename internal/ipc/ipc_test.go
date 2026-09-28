@@ -483,8 +483,6 @@ func TestReadEndpointsDoNotExposeStoredSecrets(t *testing.T) {
 		Name:               "web-1",
 		Fingerprint:        "sha256:AA",
 		EnrolledAt:         time.Now(),
-		PushEndpoint:       "https://push.example.com/notify",
-		PushToken:          "sentinel-push-token",
 		PendingFingerprint: "sentinel-pending-fingerprint",
 	}, nil); err != nil {
 		t.Fatal(err)
@@ -521,8 +519,8 @@ func TestReadEndpointsDoNotExposeStoredSecrets(t *testing.T) {
 		{
 			name:            "clients",
 			path:            "/ipc/v1/clients",
-			forbiddenFields: []string{"pushtoken", "pendingfingerprint"},
-			forbiddenValues: []string{"sentinel-push-token", "sentinel-pending-fingerprint"},
+			forbiddenFields: []string{"pendingfingerprint"},
+			forbiddenValues: []string{"sentinel-pending-fingerprint"},
 		},
 		{
 			name:            "tokens",

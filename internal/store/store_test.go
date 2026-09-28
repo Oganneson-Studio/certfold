@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -123,10 +124,9 @@ func TestClientRepo_UpsertGetDelete(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 
 	rec := &ClientRecord{
-		Name:         "web-1",
-		Fingerprint:  "fp1",
-		EnrolledAt:   now,
-		PushEndpoint: "https://web1.internal:9443",
+		Name:        "web-1",
+		Fingerprint: "fp1",
+		EnrolledAt:  now,
 	}
 	if err := db.Clients.Upsert(ctx, rec, nil); err != nil {
 		t.Fatalf("Upsert: %v", err)
@@ -138,9 +138,6 @@ func TestClientRepo_UpsertGetDelete(t *testing.T) {
 	}
 	if got.Fingerprint != "fp1" {
 		t.Errorf("Fingerprint: got %q", got.Fingerprint)
-	}
-	if got.PushEndpoint != "https://web1.internal:9443" {
-		t.Errorf("PushEndpoint: got %q", got.PushEndpoint)
 	}
 
 	// update LastSeen
@@ -704,4 +701,112 @@ func TestOpen_MigratesV3IssuanceStatusSchema(t *testing.T) {
 		!got.LastAttemptAt.Equal(want.LastAttemptAt) || !got.NextAttemptAt.Equal(want.NextAttemptAt) {
 		t.Errorf("issuance status after reopen = %+v, want %+v", got, want)
 	}
+}
+
+// Migration v5 drops the push columns of clients, which nothing reads since
+// the server stopped pushing, and keeps every client with the rest of its
+// record.
+func TestOpen_MigratesV4DropsClientPushColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sigil-v4.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE schema_version (version INTEGER NOT NULL)`); err != nil {
+		_ = raw.Close()
+		t.Fatal(err)
+	}
+	for ver := 1; ver <= 4; ver++ {
+		if err := applyMigration(raw, ver); err != nil {
+			_ = raw.Close()
+			t.Fatalf("migration v%d: %v", ver, err)
+		}
+	}
+	if _, err := raw.Exec(`DELETE FROM schema_version; INSERT INTO schema_version(version) VALUES (4);
+		INSERT INTO clients(name,fingerprint,enrolled_at,last_seen,push_endpoint,push_token,pending_fingerprint,pending_not_after) VALUES
+		('web-1','sha256:web-1','2026-01-02T03:04:05Z','2026-02-03T04:05:06Z',
+		 'https://web-1.example.com/v1/push/notify','0123456789abcdef0123456789abcdef','sha256:renewed','2026-03-04T05:06:07Z'),
+		('web-2','sha256:web-2','2026-01-02T03:04:05Z',NULL,'','','',NULL)`); err != nil {
+		_ = raw.Close()
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	enrolledAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	want := []ClientRecord{
+		{
+			Name: "web-1", Fingerprint: "sha256:web-1", EnrolledAt: enrolledAt,
+			LastSeen:           time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC),
+			PendingFingerprint: "sha256:renewed",
+			PendingNotAfter:    time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC),
+		},
+		{Name: "web-2", Fingerprint: "sha256:web-2", EnrolledAt: enrolledAt},
+	}
+	check := func(db *DB) {
+		t.Helper()
+		var version int
+		if err := db.db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+			t.Fatal(err)
+		}
+		if version != currentSchemaVersion {
+			t.Fatalf("schema version = %d, want %d", version, currentSchemaVersion)
+		}
+
+		rows, err := db.db.Query(`PRAGMA table_info(clients)`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var columns []string
+		for rows.Next() {
+			var cid, notNull, pk int
+			var name, typ string
+			var dflt sql.NullString
+			if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+				_ = rows.Close()
+				t.Fatal(err)
+			}
+			columns = append(columns, name)
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if wantColumns := []string{"name", "fingerprint", "enrolled_at", "last_seen", "pending_fingerprint", "pending_not_after"}; !slices.Equal(columns, wantColumns) {
+			t.Fatalf("clients columns = %v, want %v", columns, wantColumns)
+		}
+
+		clients, err := db.Clients.List(ctx, nil)
+		if err != nil {
+			t.Fatalf("list clients: %v", err)
+		}
+		if len(clients) != len(want) {
+			t.Fatalf("clients after migration = %d, want %d", len(clients), len(want))
+		}
+		for i, got := range clients {
+			w := want[i]
+			if got.Name != w.Name || got.Fingerprint != w.Fingerprint || !got.EnrolledAt.Equal(w.EnrolledAt) ||
+				!got.LastSeen.Equal(w.LastSeen) || got.PendingFingerprint != w.PendingFingerprint ||
+				!got.PendingNotAfter.Equal(w.PendingNotAfter) {
+				t.Errorf("client after migration = %+v, want %+v", *got, w)
+			}
+		}
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open migrated database: %v", err)
+	}
+	check(db)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Opening the migrated database again applies no migration.
+	db, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen migrated database: %v", err)
+	}
+	defer db.Close()
+	check(db)
 }

@@ -178,63 +178,6 @@ func TestEncode_UnknownFormat(t *testing.T) {
 	}
 }
 
-func TestAtomicWrite_CreatesFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "key.pem")
-	data := []byte("test data")
-
-	if err := atomicWrite(config.OutputSpec{Format: "pem-key", Path: path}, data); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != string(data) {
-		t.Fatalf("file content mismatch: got %q want %q", got, data)
-	}
-	checkMode(t, path, 0o600)
-}
-
-func TestAtomicWrite_CreatesParentDir(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "subdir", "nested", "cert.pem")
-
-	if err := atomicWrite(config.OutputSpec{Format: "pem-cert", Path: path}, []byte("x")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("expected file at %s: %v", path, err)
-	}
-}
-
-func TestAtomicWrite_DefaultMode(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "cert.pem")
-
-	if err := atomicWrite(config.OutputSpec{Format: "pem-cert", Path: path}, []byte("x")); err != nil {
-		t.Fatal(err)
-	}
-	checkMode(t, path, 0o644)
-}
-
-// TestWrite_KeyOutputsArePrivate writes every format where other users may
-// read new files: formats that carry the private key must stay owner-only.
-func TestWrite_KeyOutputsArePrivate(t *testing.T) {
-	b := makeBundle(t)
-	dir := outputDir(t)
-	for _, format := range []string{"pem-cert", "pem-fullchain", "der", "pem-key", "pem-bundle", "pkcs12"} {
-		t.Run(format, func(t *testing.T) {
-			spec := config.OutputSpec{Format: format, Path: filepath.Join(dir, format), Password: "testpass"}
-			if err := Write(b, spec); err != nil {
-				t.Fatal(err)
-			}
-			checkMode(t, spec.Path, os.FileMode(outputMode(spec)))
-		})
-	}
-}
-
 func TestOutputMode_SecureDefaults(t *testing.T) {
 	tests := []struct {
 		format string
@@ -256,47 +199,6 @@ func TestOutputMode_SecureDefaults(t *testing.T) {
 	}
 	if got := outputMode(config.OutputSpec{Format: "pem-key", Mode: 0o640}); got != 0o640 {
 		t.Fatalf("explicit mode = %#o, want 0640", got)
-	}
-}
-
-func TestWrite_RoundTrip(t *testing.T) {
-	b := makeBundle(t)
-	dir := t.TempDir()
-	spec := config.OutputSpec{
-		Format: "pem-cert",
-		Path:   filepath.Join(dir, "test.crt"),
-		Mode:   0o640,
-	}
-
-	if err := Write(b, spec); err != nil {
-		t.Fatal(err)
-	}
-
-	data, err := os.ReadFile(spec.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	block, _ := pem.Decode(data)
-	if block == nil {
-		t.Fatal("written file contains no PEM block")
-	}
-}
-
-func TestWrite_FingerprintUnchanged_NoRewrite(t *testing.T) {
-	// Write once, record mtime; write again with same content; mtime must differ
-	// (because atomicWrite always renames, but content is same). This test just
-	// verifies Write succeeds twice without error.
-	b := makeBundle(t)
-	dir := t.TempDir()
-	spec := config.OutputSpec{
-		Format: "pem-cert",
-		Path:   filepath.Join(dir, "cert.pem"),
-	}
-	if err := Write(b, spec); err != nil {
-		t.Fatal(err)
-	}
-	if err := Write(b, spec); err != nil {
-		t.Fatal(err)
 	}
 }
 

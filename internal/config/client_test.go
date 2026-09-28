@@ -62,7 +62,6 @@ const validClientYAML = `
 client:
   name: web-1
   server_url: "https://sigil.example.com:8443"
-  pull_interval: "1h"
 `
 
 func withIdentity(base string) string {
@@ -97,20 +96,6 @@ func TestParseClient_Valid(t *testing.T) {
 	if cfg.Client.ServerURL != "https://sigil.example.com:8443" {
 		t.Errorf("server_url: got %q", cfg.Client.ServerURL)
 	}
-	if cfg.Client.PullInterval != time.Hour {
-		t.Errorf("pull_interval: got %v", cfg.Client.PullInterval)
-	}
-}
-
-func TestParseClient_DefaultPullInterval(t *testing.T) {
-	src := strings.Replace(validClientYAML, `pull_interval: "1h"`, "", 1)
-	cfg, err := ParseClient([]byte(src))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Client.PullInterval != DefaultPullInterval {
-		t.Errorf("default pull_interval: got %v", cfg.Client.PullInterval)
-	}
 }
 
 func TestParseClient_DefaultIdentityRenewBefore(t *testing.T) {
@@ -132,7 +117,7 @@ func TestParseClient_DataDir(t *testing.T) {
 		t.Errorf("default data_dir: got %q, want %q", cfg.Client.DataDir, DefaultClientDataDir())
 	}
 
-	src := strings.Replace(validClientYAML, `pull_interval: "1h"`, `pull_interval: "1h"
+	src := strings.Replace(validClientYAML, `server_url: "https://sigil.example.com:8443"`, `server_url: "https://sigil.example.com:8443"
   data_dir: "/srv/sigilc"`, 1)
 	cfg, err = ParseClient([]byte(src))
 	if err != nil {
@@ -436,7 +421,7 @@ func TestParseClient_OutputPathsDifferingInCase(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Validation: required fields, URL scheme, pull_interval floor
+// Validation: required fields, URL scheme, identity renewal window
 // ---------------------------------------------------------------------------
 
 func TestParseClient_ValidationErrors(t *testing.T) {
@@ -465,16 +450,9 @@ func TestParseClient_ValidationErrors(t *testing.T) {
 			want: "https",
 		},
 		{
-			name: "pull_interval below 30s",
-			mutate: func(s string) string {
-				return strings.Replace(s, `pull_interval: "1h"`, `pull_interval: "10s"`, 1)
-			},
-			want: "pull_interval",
-		},
-		{
 			name: "identity renewal window too short",
 			mutate: func(s string) string {
-				return strings.Replace(s, `pull_interval: "1h"`, `pull_interval: "1h"
+				return strings.Replace(s, `server_url: "https://sigil.example.com:8443"`, `server_url: "https://sigil.example.com:8443"
   identity_renew_before: "30m"`, 1)
 			},
 			want: "identity_renew_before",
@@ -482,7 +460,7 @@ func TestParseClient_ValidationErrors(t *testing.T) {
 		{
 			name: "identity renewal window too long",
 			mutate: func(s string) string {
-				return strings.Replace(s, `pull_interval: "1h"`, `pull_interval: "1h"
+				return strings.Replace(s, `server_url: "https://sigil.example.com:8443"`, `server_url: "https://sigil.example.com:8443"
   identity_renew_before: "2160h"`, 1)
 			},
 			want: "identity_renew_before",
@@ -514,49 +492,21 @@ func TestParseClient_UnknownFieldRejected(t *testing.T) {
 	}
 }
 
-func TestParseClient_PushRequiresStrongToken(t *testing.T) {
-	withoutToken := strings.Replace(validClientYAML, `pull_interval: "1h"`, `pull_interval: "1h"
-  push_listen: "127.0.0.1:9443"`, 1)
-	if _, err := ParseClient([]byte(withoutToken)); err == nil || !strings.Contains(err.Error(), "push_token") {
-		t.Fatalf("expected missing push token error, got %v", err)
-	}
-
-	withToken := strings.Replace(withoutToken, `push_listen: "127.0.0.1:9443"`, `push_listen: "127.0.0.1:9443"
-  push_token: "0123456789abcdef0123456789abcdef"`, 1)
-	if _, err := ParseClient([]byte(withToken)); err != nil {
-		t.Fatalf("valid push config: %v", err)
-	}
-}
-
-func TestParseClient_PushListenRequiresLoopback(t *testing.T) {
-	tests := []struct {
-		name    string
-		listen  string
-		wantErr bool
-	}{
-		{name: "IPv4 loopback", listen: "127.0.0.1:9443"},
-		{name: "IPv4 loopback range", listen: "127.1.2.3:9443"},
-		{name: "IPv6 loopback", listen: "[::1]:9443"},
-		{name: "empty host wildcard", listen: ":9443", wantErr: true},
-		{name: "IPv4 wildcard", listen: "0.0.0.0:9443", wantErr: true},
-		{name: "IPv6 wildcard", listen: "[::]:9443", wantErr: true},
-		{name: "network interface", listen: "192.0.2.10:9443", wantErr: true},
-		{name: "hostname", listen: "localhost:9443", wantErr: true},
-		{name: "missing port", listen: "127.0.0.1", wantErr: true},
-		{name: "zero port", listen: "127.0.0.1:0", wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			src := strings.Replace(validClientYAML, `pull_interval: "1h"`, `pull_interval: "1h"
-  push_listen: "`+tt.listen+`"
-  push_token: "0123456789abcdef0123456789abcdef"`, 1)
+// Releases before GET /v1/sync had pull_interval, push_listen and push_token
+// under client; they are rejected as unknown fields, not read.
+func TestParseClient_RemovedKeysRejected(t *testing.T) {
+	for _, line := range []string{
+		`pull_interval: "1h"`,
+		`push_listen: "127.0.0.1:9443"`,
+		`push_token: "0123456789abcdef0123456789abcdef"`,
+	} {
+		key, _, _ := strings.Cut(line, ":")
+		t.Run(key, func(t *testing.T) {
+			src := strings.Replace(validClientYAML, `server_url: "https://sigil.example.com:8443"`, `server_url: "https://sigil.example.com:8443"
+  `+line, 1)
 			_, err := ParseClient([]byte(src))
-			if tt.wantErr && (err == nil || !strings.Contains(err.Error(), "client.push_listen")) {
-				t.Fatalf("expected push_listen error, got %v", err)
-			}
-			if !tt.wantErr && err != nil {
-				t.Fatalf("expected valid loopback listener, got %v", err)
+			if err == nil || !strings.Contains(err.Error(), "field "+key+" not found") {
+				t.Fatalf("expected %s to be rejected as an unknown field, got %v", key, err)
 			}
 		})
 	}

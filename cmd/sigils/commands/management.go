@@ -44,12 +44,10 @@ type certificateDetails struct {
 }
 
 type clientDetails struct {
-	Name           string     `json:"name"`
-	Fingerprint    string     `json:"fingerprint"`
-	EnrolledAt     time.Time  `json:"enrolled_at"`
-	LastSeen       *time.Time `json:"last_seen,omitempty"`
-	PushEndpoint   string     `json:"push_endpoint,omitempty"`
-	PushConfigured bool       `json:"push_configured"`
+	Name        string     `json:"name"`
+	Fingerprint string     `json:"fingerprint"`
+	EnrolledAt  time.Time  `json:"enrolled_at"`
+	LastSeen    *time.Time `json:"last_seen,omitempty"`
 }
 
 func runCertAdd(cmd *cobra.Command, args []string) error {
@@ -188,16 +186,10 @@ func runClientShow(cmd *cobra.Command, args []string) error {
 		if details.LastSeen != nil {
 			lastSeen = details.LastSeen.Format("2006-01-02 15:04:05 MST")
 		}
-		pushEndpoint := details.PushEndpoint
-		if pushEndpoint == "" {
-			pushEndpoint = "none"
-		}
 		fmt.Printf("Name:            %s\n", details.Name)
 		fmt.Printf("Fingerprint:     %s\n", details.Fingerprint)
 		fmt.Printf("Enrolled At:     %s\n", details.EnrolledAt.Format("2006-01-02 15:04:05 MST"))
 		fmt.Printf("Last Seen:       %s\n", lastSeen)
-		fmt.Printf("Push Endpoint:   %s\n", pushEndpoint)
-		fmt.Printf("Push Configured: %t\n", details.PushConfigured)
 		return nil
 	}
 	return fmt.Errorf("client %q not found", args[0])
@@ -210,12 +202,10 @@ func newClientDetails(rec *ipc.ClientInfo) clientDetails {
 		lastSeen = &value
 	}
 	return clientDetails{
-		Name:           rec.Name,
-		Fingerprint:    rec.Fingerprint,
-		EnrolledAt:     rec.EnrolledAt,
-		LastSeen:       lastSeen,
-		PushEndpoint:   rec.PushEndpoint,
-		PushConfigured: rec.PushConfigured,
+		Name:        rec.Name,
+		Fingerprint: rec.Fingerprint,
+		EnrolledAt:  rec.EnrolledAt,
+		LastSeen:    lastSeen,
 	}
 }
 

@@ -77,16 +77,6 @@ func TestManagementJSONViewsDoNotExposePrivateMaterial(t *testing.T) {
 	if strings.Contains(strings.ToLower(string(certJSON)), "key_pem") || strings.Contains(strings.ToLower(string(certJSON)), "fullchain_pem") {
 		t.Fatalf("certificate JSON leaked private material: %s", certJSON)
 	}
-
-	clientJSON, err := json.Marshal(newClientDetails(&ipc.ClientInfo{
-		Name: "web-1", PushConfigured: true,
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(strings.ToLower(string(clientJSON)), "push_token") || !strings.Contains(string(clientJSON), `"push_configured":true`) {
-		t.Fatalf("client JSON leaked push token: %s", clientJSON)
-	}
 }
 
 func TestServerIPCSocketResolution(t *testing.T) {

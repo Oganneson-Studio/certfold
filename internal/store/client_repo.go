@@ -12,8 +12,6 @@ type ClientRecord struct {
 	Fingerprint        string
 	EnrolledAt         time.Time
 	LastSeen           time.Time
-	PushEndpoint       string
-	PushToken          string
 	PendingFingerprint string
 	PendingNotAfter    time.Time
 }
@@ -42,7 +40,7 @@ func (r *ClientRepo) queryer(tx *sql.Tx) interface {
 
 // Get returns the ClientRecord for name, or sql.ErrNoRows if not found.
 func (r *ClientRepo) Get(ctx context.Context, name string, tx *sql.Tx) (*ClientRecord, error) {
-	const q = `SELECT name,fingerprint,enrolled_at,last_seen,push_endpoint,push_token,
+	const q = `SELECT name,fingerprint,enrolled_at,last_seen,
 	                  pending_fingerprint,pending_not_after
 	           FROM clients WHERE name=?`
 	row := r.queryer(tx).QueryRowContext(ctx, q, name)
@@ -51,7 +49,7 @@ func (r *ClientRepo) Get(ctx context.Context, name string, tx *sql.Tx) (*ClientR
 
 // List returns all client records.
 func (r *ClientRepo) List(ctx context.Context, tx *sql.Tx) ([]*ClientRecord, error) {
-	const q = `SELECT name,fingerprint,enrolled_at,last_seen,push_endpoint,push_token,
+	const q = `SELECT name,fingerprint,enrolled_at,last_seen,
 	                  pending_fingerprint,pending_not_after
 	           FROM clients ORDER BY name`
 	rows, err := r.queryer(tx).QueryContext(ctx, q)
@@ -72,20 +70,18 @@ func (r *ClientRepo) List(ctx context.Context, tx *sql.Tx) ([]*ClientRecord, err
 
 // Upsert inserts or replaces a client record.
 func (r *ClientRepo) Upsert(ctx context.Context, rec *ClientRecord, tx *sql.Tx) error {
-	const q = `INSERT INTO clients(name,fingerprint,enrolled_at,last_seen,push_endpoint,push_token,
+	const q = `INSERT INTO clients(name,fingerprint,enrolled_at,last_seen,
 	                              pending_fingerprint,pending_not_after)
-	           VALUES(?,?,?,?,?,?,?,?)
+	           VALUES(?,?,?,?,?,?)
 	           ON CONFLICT(name) DO UPDATE SET
 	             fingerprint=excluded.fingerprint, enrolled_at=excluded.enrolled_at,
-	             last_seen=excluded.last_seen, push_endpoint=excluded.push_endpoint,
-	             push_token=excluded.push_token,
+	             last_seen=excluded.last_seen,
 	             pending_fingerprint=excluded.pending_fingerprint,
 	             pending_not_after=excluded.pending_not_after`
 	_, err := r.execer(tx).ExecContext(ctx, q,
 		rec.Name, rec.Fingerprint,
 		rec.EnrolledAt.UTC().Format(time.RFC3339),
 		nullTime(rec.LastSeen),
-		rec.PushEndpoint, rec.PushToken,
 		rec.PendingFingerprint, nullTime(rec.PendingNotAfter),
 	)
 	return err
@@ -167,7 +163,7 @@ func scanClient(row *sql.Row) (*ClientRecord, error) {
 	var rec ClientRecord
 	var enrolledAt, lastSeen, pendingNotAfter sql.NullString
 	if err := row.Scan(&rec.Name, &rec.Fingerprint, &enrolledAt, &lastSeen,
-		&rec.PushEndpoint, &rec.PushToken, &rec.PendingFingerprint, &pendingNotAfter); err != nil {
+		&rec.PendingFingerprint, &pendingNotAfter); err != nil {
 		return nil, err
 	}
 	parseClientTimes(&rec, enrolledAt, lastSeen, pendingNotAfter)
@@ -178,7 +174,7 @@ func scanClientRow(rows *sql.Rows) (*ClientRecord, error) {
 	var rec ClientRecord
 	var enrolledAt, lastSeen, pendingNotAfter sql.NullString
 	if err := rows.Scan(&rec.Name, &rec.Fingerprint, &enrolledAt, &lastSeen,
-		&rec.PushEndpoint, &rec.PushToken, &rec.PendingFingerprint, &pendingNotAfter); err != nil {
+		&rec.PendingFingerprint, &pendingNotAfter); err != nil {
 		return nil, err
 	}
 	parseClientTimes(&rec, enrolledAt, lastSeen, pendingNotAfter)
