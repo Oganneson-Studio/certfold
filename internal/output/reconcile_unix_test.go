@@ -7,6 +7,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -15,13 +16,15 @@ import (
 
 // TestReconcileRestoresMode covers outputs whose permission bits were changed
 // after they were written: a key made readable by others, and a certificate
-// made private.
+// made private. Their content matches, so the bits are restored in place, and
+// no change is reported.
 func TestReconcileRestoresMode(t *testing.T) {
 	b := makeBundle(t)
 	dir := t.TempDir()
 	key := config.OutputSpec{Format: "pem-key", Path: filepath.Join(dir, "key.pem")}
 	cert := config.OutputSpec{Format: "pem-cert", Path: filepath.Join(dir, "cert.pem")}
 	mustReconcile(t, b, key, cert)
+	keyBefore, certBefore := fileState(t, key.Path), fileState(t, cert.Path)
 	if err := os.Chmod(key.Path, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -29,15 +32,41 @@ func TestReconcileRestoresMode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !mustReconcile(t, b, key, cert) {
-		t.Fatal("changed modes reported no change")
+	if mustReconcile(t, b, key, cert) {
+		t.Fatal("changed modes reported a change")
 	}
 	checkMode(t, key.Path, 0o600)
 	checkMode(t, cert.Path, 0o644)
+	checkUntouched(t, key.Path, keyBefore)
+	checkUntouched(t, cert.Path, certBefore)
+	checkContent(t, b, key)
+	checkContent(t, b, cert)
+}
+
+// TestReconcileReportsFailedRepair covers an output whose content matches but
+// whose owner cannot be set in place: only root may give a file to another
+// user. The chown error must be returned with the output's path, and no
+// change reported.
+func TestReconcileReportsFailedRepair(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root may chown")
+	}
+	b := makeBundle(t)
+	spec := config.OutputSpec{Format: "pem-cert", Path: filepath.Join(t.TempDir(), "cert.pem")}
+	mustReconcile(t, b, spec)
+	before := fileState(t, spec.Path)
+
+	spec.Owner = "root"
+	changed, err := Reconcile(b, []config.OutputSpec{spec})
+	if err == nil || changed || !strings.Contains(err.Error(), spec.Path) {
+		t.Fatalf("Reconcile = %v, %v; want an error with %s and no change", changed, err, spec.Path)
+	}
+	checkUntouched(t, spec.Path, before)
 }
 
 // TestReconcileRestoresOwnership covers an output whose owner, then group,
-// was changed after it was written. Changing either needs root.
+// was changed after it was written. Its content matches, so each is restored
+// in place, and no change is reported. Changing either needs root.
 func TestReconcileRestoresOwnership(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("chown needs root")
@@ -87,10 +116,11 @@ func TestReconcileRestoresOwnership(t *testing.T) {
 		if err := os.Lchown(spec.Path, change.uid, change.gid); err != nil {
 			t.Fatal(err)
 		}
-		if !mustReconcile(t, b, spec) {
-			t.Fatalf("an output with another %s reported no change", change.what)
+		if mustReconcile(t, b, spec) {
+			t.Fatalf("an output with another %s reported a change", change.what)
 		}
 		checkOwnership(t, spec.Path, uid, gid)
+		checkUntouched(t, spec.Path, before)
 	}
 }
 

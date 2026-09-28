@@ -48,10 +48,12 @@ func TestReconcileReplacesOutputWithReadOnlyMode(t *testing.T) {
 }
 
 // TestReconcileRestoresOwner covers an output whose owner was changed after
-// it was written, for a format that createTemp gives a private DACL and one
-// that inherits the directory's. The owner is the current user, then
-// Administrators; one of them differs from the token's default owner, so
-// applyOwnership has to set it.
+// it was written, then an owner changed in its spec, for a format that
+// createTemp gives a private DACL and one that inherits the directory's. The
+// content matches, so no change is reported, but the output must get the DACL
+// of a new one: a key output's grants read access to the owner configured.
+// The owner is the current user, then Administrators; one of them differs
+// from the token's default owner, so applyOwnership has to set it.
 func TestReconcileRestoresOwner(t *testing.T) {
 	if !windows.GetCurrentProcessToken().IsElevated() {
 		t.Skip("making Administrators the owner needs an elevated token")
@@ -86,12 +88,32 @@ func TestReconcileRestoresOwner(t *testing.T) {
 					windows.OWNER_SECURITY_INFORMATION, other, nil, nil, nil); err != nil {
 					t.Fatal(err)
 				}
-				if !mustReconcile(t, b, spec) {
-					t.Fatal("an output with another owner reported no change")
+				if mustReconcile(t, b, spec) {
+					t.Fatal("an output with another owner reported a change")
 				}
 				checkOwner(t, spec.Path, owner)
+				checkNewDACL(t, b, spec)
+
+				spec.Owner = other.String()
+				if mustReconcile(t, b, spec) {
+					t.Fatal("an output with another configured owner reported a change")
+				}
+				checkOwner(t, spec.Path, other)
+				checkNewDACL(t, b, spec)
 			})
 		}
+	}
+}
+
+// checkNewDACL fails unless the output spec describes has the DACL that a new
+// output of spec gets in a directory from outputDir.
+func checkNewDACL(t *testing.T, b *CertBundle, spec config.OutputSpec) {
+	t.Helper()
+	fresh := spec
+	fresh.Path = filepath.Join(outputDir(t), "new")
+	mustReconcile(t, b, fresh)
+	if got, want := fileSecurity(t, spec.Path).String(), fileSecurity(t, fresh.Path).String(); got != want {
+		t.Errorf("DACL of %s = %s, want %s, as a new output gets", spec.Path, got, want)
 	}
 }
 

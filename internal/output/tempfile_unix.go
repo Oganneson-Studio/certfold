@@ -25,3 +25,20 @@ func applyMode(tmp *os.File, spec config.OutputSpec) error {
 func modeMatches(info os.FileInfo, spec config.OutputSpec) bool {
 	return info.Mode().Perm() == os.FileMode(outputMode(spec))
 }
+
+// repairMetadata gives the output at spec.Path, whose content matches and
+// which os.Lstat described as info, the permission bits and ownership that
+// stage gives a temporary file. It sets them in place, in the order stage
+// does: chmod when modeMatches fails, then chown when ownershipMatches fails.
+// It does not stat the file again, and never has the output staged again.
+func repairMetadata(info os.FileInfo, spec config.OutputSpec) (restage bool, err error) {
+	if !modeMatches(info, spec) {
+		if err := os.Chmod(spec.Path, os.FileMode(outputMode(spec))); err != nil {
+			return false, err
+		}
+	}
+	if !ownershipMatches(spec.Path, info, spec.Owner, spec.Group) {
+		return false, applyOwnership(spec.Path, spec.Owner, spec.Group)
+	}
+	return false, nil
+}
