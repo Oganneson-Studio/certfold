@@ -45,3 +45,17 @@ func TestIssuanceErrorWithholdsURLQueries(t *testing.T) {
 		}
 	}
 }
+
+// lastError withholds URL queries before it cuts the text: "?REDACTED" is
+// longer than a short query, so cutting first could leave more than
+// maxLastErrorBytes.
+func TestLastErrorRedactsBeforeCutting(t *testing.T) {
+	msg := strings.Repeat("x", maxLastErrorBytes-14) + " https://h/p?a" // maxLastErrorBytes long
+	got := lastError(errors.New(msg))
+	if len(got) > maxLastErrorBytes {
+		t.Fatalf("lastError is %d bytes, want at most %d", len(got), maxLastErrorBytes)
+	}
+	if strings.Contains(got, "?a") {
+		t.Fatalf("lastError keeps the query: ...%s", got[len(got)-20:])
+	}
+}
