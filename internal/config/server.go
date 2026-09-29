@@ -196,7 +196,7 @@ func (c *ServerConfig) Validate() error {
 		v.Add("server.data_dir", "must be set")
 	}
 	if !isValidListen(c.Server.Listen) {
-		v.Add("server.listen", "invalid listen address %q", c.Server.Listen)
+		v.Add("server.listen", "invalid listen address %q (want host:port with a port from 1 to 65535; the host may be empty)", c.Server.Listen)
 	}
 	if (c.Server.TLSCertFile == "") != (c.Server.TLSKeyFile == "") {
 		v.Add("server.tls", "tls_cert_file and tls_key_file must be set together")
@@ -424,16 +424,22 @@ func isValidDNSResolver(s string) bool {
 	}) {
 		return false
 	}
-	n, err := strconv.ParseUint(port, 10, 16)
-	return err == nil && n > 0
+	return isValidPort(port)
 }
 
+// isValidListen reports whether addr is host:port with a port isValidPort
+// accepts, such as ":8443", "0.0.0.0:8443", "[::]:8443" or "host:8443". A
+// service name is refused as a port: PublicBaseURL puts the port in a URL.
 func isValidListen(addr string) bool {
-	if addr == "" {
-		return false
-	}
-	// Accept ":8443", "0.0.0.0:8443", "[::]:8443", "host:port".
-	return strings.Contains(addr, ":")
+	_, port, err := net.SplitHostPort(addr)
+	return err == nil && isValidPort(port)
+}
+
+// isValidPort reports whether port is a decimal TCP or UDP port from 1 to
+// 65535.
+func isValidPort(port string) bool {
+	n, err := strconv.ParseUint(port, 10, 16)
+	return err == nil && n > 0
 }
 
 func isValidDomain(d string) bool {
