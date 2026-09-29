@@ -87,7 +87,7 @@ SIGIL_CONTAINER_CLI=docker SIGIL_E2E_REQUIRED=1 go test -v -tags e2e -count=1 -t
 go test -race ./...
 ```
 
-如果当前 Go 环境 `CGO_ENABLED=0`，应明确报告无法运行，不能把它写成已通过。Windows 上全量验证要在提权 shell 里跑；提权 PowerShell 下 skip 2 个（POSIX 权限位测试，Linux 上会运行），提权 Git Bash 下 skip 3 个（多出 output 属主测试：Git Bash 开了 `SeRestorePrivilege`）。IPC 相关的 skip 必须为 0，出现就说明 shell 没提权。
+如果当前 Go 环境 `CGO_ENABLED=0`，应明确报告无法运行，不能把它写成已通过。Windows 上全量验证要在提权 shell 里跑；提权 PowerShell 下 skip 2 个（POSIX 权限位测试，Linux 上会运行），提权 Git Bash 下 skip 3 个（多出 output 属主测试：Git Bash 开了 `SeRestorePrivilege`）。IPC 相关的 skip 必须为 0，出现就说明 shell 没提权。属主测试只在 PowerShell 和 Linux 上真正运行，所以 Windows 上的全量验证以提权 PowerShell 为准，Git Bash 的结果不能替代。
 
 ## 安全约束
 
