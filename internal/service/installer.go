@@ -9,6 +9,8 @@ import (
 	"runtime"
 
 	ksvc "github.com/kardianos/service"
+
+	"github.com/Oganneson-Studio/sigil/internal/ipc"
 )
 
 // Daemon is the application logic that the system service runs.
@@ -190,23 +192,50 @@ func Restart(d Daemon, cfg Config) error {
 	return nil
 }
 
-// StatusText returns a human-readable service status string.
-func StatusText(d Daemon, cfg Config) (string, error) {
+// StatusText returns a human-readable service status string. The service
+// manager reports a daemon that it keeps restarting as running: kardianos
+// maps systemd's activating to running, and the SCM's start pending as well.
+// So a running service is running only if its daemon answers on socket, its
+// IPC endpoint.
+func StatusText(d Daemon, cfg Config, socket string) (string, error) {
 	svc, err := New(d, cfg)
 	if err != nil {
 		return "", err
 	}
+	// kardianos reports a service that is not installed, or in systemd's
+	// failed state, as an error.
 	st, err := svc.Status()
 	if err != nil {
 		return "", fmt.Errorf("query status: %w", err)
 	}
-	switch st {
-	case ksvc.StatusRunning:
-		return "Running", nil
-	case ksvc.StatusStopped:
+	if st != ksvc.StatusRunning {
 		return "Stopped", nil
+	}
+	return runningStatus(cfg.Role, socket), nil
+}
+
+// runningStatus reports a service the manager reports as running: "Running"
+// when its daemon answers on socket, and why not otherwise.
+func runningStatus(role Role, socket string) string {
+	conn, err := ipc.Dial(socket)
+	if err != nil {
+		name, _, _, _ := roleAttrs(role)
+		return fmt.Sprintf("Running (not answering on %s: %v; see %s)", socket, err, serviceLog(name))
+	}
+	_ = conn.Close()
+	return "Running"
+}
+
+// serviceLog says where the log of the service name is: the log of a daemon
+// that fails at start says why.
+func serviceLog(name string) string {
+	switch runtime.GOOS {
+	case "windows":
+		return "the Application event log, source " + name
+	case "darwin":
+		return "/var/log/" + name + ".err.log"
 	default:
-		return "NotInstalled", nil
+		return "journalctl -u " + name
 	}
 }
 

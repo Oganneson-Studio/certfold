@@ -60,7 +60,7 @@ func runClientServiceControl(action string) func(*cobra.Command, []string) error
 
 func runClientServiceStatus(cmd *cobra.Command, _ []string) error {
 	cfg := clientSvcConfig(cmd)
-	status, err := internalsvc.StatusText(internalsvc.NoopDaemon(), cfg)
+	status, err := internalsvc.StatusText(internalsvc.NoopDaemon(), cfg, clientIPCSocket(cmd))
 	if err != nil {
 		return err
 	}
