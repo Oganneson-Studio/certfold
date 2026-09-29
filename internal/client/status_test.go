@@ -129,7 +129,7 @@ func TestStatusFollowsReloadAtOnce(t *testing.T) {
 	updated := *cfg
 	updated.Certificates = map[string]config.CertificateOutputs{}
 	fullchainOutput(&updated, t.TempDir(), "api-prod", "/usr/sbin/reload")
-	if err := c.Reload(&updated); err != nil {
+	if err := c.Reload(loaded(&updated)); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 	got := c.Status().Certs

@@ -245,6 +245,12 @@ func newTestClient(t *testing.T, cfg *config.ClientConfig) *Client {
 	return c
 }
 
+// loaded returns a load function for Reload that gives cfg, as reading
+// client.yaml would.
+func loaded(cfg *config.ClientConfig) func() (*config.ClientConfig, error) {
+	return func() (*config.ClientConfig, error) { return cfg, nil }
+}
+
 // seedStore writes a store that holds bundles, as an earlier run left it.
 func seedStore(t *testing.T, dataDir string, bundles ...*proto.CertBundle) {
 	t.Helper()
@@ -1223,7 +1229,7 @@ func TestHooksAfterRunEndsAreCancelled(t *testing.T) {
 	updated := *cfg
 	updated.Certificates = map[string]config.CertificateOutputs{}
 	fullchainOutput(&updated, t.TempDir(), "api-prod", "/usr/sbin/reload")
-	if err := c.Reload(&updated); err != nil {
+	if err := c.Reload(loaded(&updated)); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 	if !ran {
@@ -1478,7 +1484,7 @@ func TestReloadReconcilesAndRestartsSync(t *testing.T) {
 		}}}
 		n := len(fs.syncRequests())
 		reloadedAt := time.Now()
-		if err := c.Reload(&updated); err != nil {
+		if err := c.Reload(loaded(&updated)); err != nil {
 			t.Fatalf("Reload: %v", err)
 		}
 		if got := fileContent(addedPath); got != bundle.FullchainPEM {
@@ -1510,7 +1516,7 @@ func TestReloadReconcilesAndRestartsSync(t *testing.T) {
 		n := len(fs.syncRequests())
 		reloadedAt := time.Now()
 		updated := *cfg
-		if err := c.Reload(&updated); err != nil {
+		if err := c.Reload(loaded(&updated)); err != nil {
 			t.Fatalf("Reload: %v", err)
 		}
 		next := fs.syncAt(t, n)
@@ -1563,7 +1569,7 @@ func TestReloadDiscardsAnswerThatArrivedDuringReload(t *testing.T) {
 		OnChange: []string{"/usr/sbin/reload"},
 	}}
 	reloaded := make(chan error, 1)
-	go func() { reloaded <- c.Reload(&updated) }()
+	go func() { reloaded <- c.Reload(loaded(&updated)) }()
 	select {
 	case <-entered:
 	case <-time.After(10 * time.Second):
@@ -1881,7 +1887,7 @@ func TestReloadAppliesRuntimeConfig(t *testing.T) {
 	updated := buildTestCfg(t, "https://new.example.com")
 	updated.Client.Name = "web-2"
 	updated.Client.DataDir = cfg.Client.DataDir
-	if err := c.Reload(updated); err != nil {
+	if err := c.Reload(loaded(updated)); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 	status := c.Status()
@@ -1909,7 +1915,7 @@ func TestReloadKeepsReconcileErrorsInStatus(t *testing.T) {
 		Outputs: []config.OutputSpec{{Format: "pem-key", Path: filepath.Join(blocker, "api.key")}},
 	}}
 
-	if err := c.Reload(&updated); err != nil {
+	if err := c.Reload(loaded(&updated)); err != nil {
 		t.Fatalf("Reload returned %v, want the reconcile error in the status only", err)
 	}
 	status := c.Status()
@@ -1935,13 +1941,104 @@ func TestReloadRejectsRestartOnlyChanges(t *testing.T) {
 			updated := *cfg
 			updated.Client.ServerURL = "https://new.example.com"
 			tc.change(&updated.Client)
-			if err := c.Reload(&updated); err == nil || !strings.Contains(err.Error(), tc.field) {
+			if err := c.Reload(loaded(&updated)); err == nil || !strings.Contains(err.Error(), tc.field) {
 				t.Fatalf("Reload error = %v, want %s to require a restart", err, tc.field)
 			}
 			if got := c.Status().ServerURL; got != cfg.Client.ServerURL {
 				t.Fatalf("failed reload changed live config to %q", got)
 			}
 		})
+	}
+}
+
+// TestReloadDuringRenewalKeepsTheRenewedIdentity covers sigilc reload while
+// an identity renewal waits for the server. The renewal writes the renewed
+// identity to client.yaml, then switches to it; a reload that read
+// client.yaml before would apply the identity the renewal replaced, which
+// sigils refuses once the renewed one was presented, until sigilc restarts.
+func TestReloadDuringRenewalKeepsTheRenewedIdentity(t *testing.T) {
+	now := time.Now()
+	authority := newTestIdentityCA(t, now)
+	fs := newFakeServer()
+	renewing := make(chan struct{})
+	proceed := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.Handle("/", fs.handler())
+	mux.HandleFunc("/v1/identity/renew", func(w http.ResponseWriter, r *http.Request) {
+		var req proto.RenewIdentityRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		block, _ := pem.Decode([]byte(req.CSR))
+		if block == nil {
+			http.Error(w, "no CSR", http.StatusBadRequest)
+			return
+		}
+		csr, err := x509.ParseCertificateRequest(block.Bytes)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		close(renewing)
+		<-proceed
+		certPEM, err := authority.sign("web-1", csr.PublicKey, now, now.Add(90*24*time.Hour), 3)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, proto.RenewIdentityResponse{ClientCert: certPEM})
+	})
+	ts := newMTLSServer(t, authority, now, mux)
+
+	cfg := buildTestCfg(t, ts.URL)
+	cfg.Client.IdentityRenewBefore = 30 * 24 * time.Hour
+	// Due for renewal: it expires within identity_renew_before.
+	withIdentity(t, cfg, authority, now, now.Add(24*time.Hour))
+	// onDisk stands in for client.yaml: the identity saver writes it, and the
+	// reload reads it, as agent.Run wires them.
+	var diskMu sync.Mutex
+	onDisk := *cfg
+	c, err := New(cfg, WithIdentitySaver(func(caCert, clientCert, clientKey string) error {
+		diskMu.Lock()
+		defer diskMu.Unlock()
+		onDisk.Identity = config.IdentitySection{CACert: caCert, ClientCert: clientCert, ClientKey: clientKey}
+		return nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The fetch renews the identity under pullMu; the server holds the POST.
+	fetched := make(chan error, 1)
+	go func() { fetched <- c.Fetch(context.Background(), "") }()
+	<-renewing
+	reloaded := make(chan error, 1)
+	go func() {
+		reloaded <- c.Reload(func() (*config.ClientConfig, error) {
+			diskMu.Lock()
+			defer diskMu.Unlock()
+			read := onDisk
+			return &read, nil
+		})
+	}()
+	time.Sleep(100 * time.Millisecond) // let the reload wait for pullMu
+	close(proceed)
+
+	if err := <-fetched; err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if err := <-reloaded; err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	diskMu.Lock()
+	saved := onDisk.Identity.ClientCert
+	diskMu.Unlock()
+	c.cfgMu.RLock()
+	running := c.cfg.Identity.ClientCert
+	c.cfgMu.RUnlock()
+	if running != saved {
+		t.Fatal("after a reload during a renewal, sigilc runs with the identity the renewal replaced")
 	}
 }
 

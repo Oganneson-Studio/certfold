@@ -249,7 +249,7 @@ func TestRejectedReloadIsNotLogged(t *testing.T) {
 
 	updated := *cfg
 	updated.Client.IPCSocket = filepath.Join(t.TempDir(), "other.sock")
-	if err := c.Reload(&updated); err == nil || !strings.Contains(err.Error(), "client.ipc_socket") {
+	if err := c.Reload(loaded(&updated)); err == nil || !strings.Contains(err.Error(), "client.ipc_socket") {
 		t.Fatalf("Reload error = %v, want client.ipc_socket to require a restart", err)
 	}
 	if got := eventLines(ring); len(got) != 0 {
@@ -334,7 +334,7 @@ func TestLastErrorIsLoggedWhenItChanges(t *testing.T) {
 	updated.Certificates = map[string]config.CertificateOutputs{"api-prod": {
 		Outputs: []config.OutputSpec{{Format: "pem-key", Path: filepath.Join(blocker, "api.key")}},
 	}}
-	if err := c.Reload(&updated); err != nil {
+	if err := c.Reload(loaded(&updated)); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 	failure := c.Status().LastError
@@ -401,7 +401,7 @@ func TestReloadDuringOutageKeepsLastError(t *testing.T) {
 		t.Fatalf("Fetch error = %v, want %q", err, failure)
 	}
 	updated := *cfg
-	if err := c.Reload(&updated); err != nil {
+	if err := c.Reload(loaded(&updated)); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 	if got := c.Status().LastError; got != failure {
@@ -438,7 +438,7 @@ func TestReloadIsLogged(t *testing.T) {
 	updated := *cfg
 	updated.Certificates = map[string]config.CertificateOutputs{}
 	fullchainOutput(&updated, t.TempDir(), "api-prod", "/usr/sbin/reload")
-	if err := c.Reload(&updated); err != nil {
+	if err := c.Reload(loaded(&updated)); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 	want := []string{

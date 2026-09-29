@@ -465,9 +465,15 @@ func (c *Client) Status() RuntimeStatus {
 	return status
 }
 
-// Reload applies a newly parsed client configuration. Changing the IPC socket
-// or the data directory requires a service restart: the command process owns
-// the IPC listener, and New read the store from the data directory.
+// Reload applies the client configuration that load reads, as
+// config.LoadClient reads client.yaml. Changing the IPC socket or the data
+// directory requires a service restart: the command process owns the IPC
+// listener, and New read the store from the data directory.
+//
+// load runs under pullMu. An identity renewal writes client.yaml and switches
+// to the renewed identity under pullMu, so a configuration read before could
+// hold the identity that a renewal replaced in the meantime, which sigils
+// refuses once the renewed one was presented.
 //
 // Once the new configuration is applied, Reload logs the event "configuration
 // reloaded". Before it returns, it reconciles the outputs with the store under
@@ -476,14 +482,18 @@ func (c *Client) Status() RuntimeStatus {
 // applied by then. Reload then clears the etag, cancels the loop's request in
 // flight, which was made with the old configuration, and wakes the loop from
 // a backoff, so the loop pulls the whole view at once.
-func (c *Client) Reload(cfg *config.ClientConfig) error {
+func (c *Client) Reload(load func() (*config.ClientConfig, error)) error {
+	c.pullMu.Lock()
+	defer c.pullMu.Unlock()
+	cfg, err := load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
 	httpClient, err := buildHTTPClient(cfg)
 	if err != nil {
 		return printableError{err}
 	}
 
-	c.pullMu.Lock()
-	defer c.pullMu.Unlock()
 	c.cfgMu.Lock()
 	if cfg.Client.IPCSocket != c.cfg.Client.IPCSocket {
 		c.cfgMu.Unlock()
