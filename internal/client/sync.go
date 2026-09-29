@@ -267,9 +267,10 @@ var fingerprintPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // checkBundle rejects a bundle that is not the named certificate's, whose
 // fingerprint is not of the form sigils sends, or whose private key does not
-// belong to its certificate. The store keeps the fingerprint, which sigilc
-// status --json prints: encoding/json escapes C0 there, but not DEL and C1.
-// The digest is not computed again: what sigils digests is its own concern.
+// belong to the leaf that splitBundle gives its outputs. The store keeps the
+// fingerprint, which sigilc status --json prints: encoding/json escapes C0
+// there, but not DEL and C1. The digest is not computed again: what sigils
+// digests is its own concern.
 func checkBundle(name string, bundle *proto.CertBundle) error {
 	if bundle.Name != name {
 		return fmt.Errorf("server sent certificate %q", bundle.Name)
@@ -277,8 +278,10 @@ func checkBundle(name string, bundle *proto.CertBundle) error {
 	if !fingerprintPattern.MatchString(bundle.Fingerprint) {
 		return fmt.Errorf("server sent fingerprint %q", bundle.Fingerprint)
 	}
-	if _, err := tls.X509KeyPair([]byte(bundle.FullchainPEM), []byte(bundle.KeyPEM)); err != nil {
+	material, err := splitBundle(storedCert{FullchainPEM: bundle.FullchainPEM, KeyPEM: bundle.KeyPEM})
+	if err != nil {
 		return err
 	}
-	return nil
+	_, err = tls.X509KeyPair(material.CertPEM, material.KeyPEM)
+	return err
 }

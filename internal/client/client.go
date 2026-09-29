@@ -441,7 +441,11 @@ func (c *Client) reconcileLocked() error {
 			continue
 		}
 		cert := c.store[name]
-		changed, err := output.Reconcile(splitBundle(cert), outputs)
+		material, err := splitBundle(cert)
+		changed := false
+		if err == nil {
+			changed, err = output.Reconcile(material, outputs)
+		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("outputs of certificate %s: %w", name, err))
 			failed[name] = true
@@ -704,20 +708,44 @@ func leafNotAfter(fullchainPEM string) time.Time {
 	return leaf.NotAfter
 }
 
-// splitBundle splits the stored fullchain (cert + intermediates) into CertPEM
-// and ChainPEM. It treats the first PEM block as the leaf cert and the rest as
-// the chain.
-func splitBundle(cert storedCert) *output.CertBundle {
-	full := []byte(cert.FullchainPEM)
-	block, rest := pem.Decode(full)
-	certPEM := full
-	if block != nil {
-		certPEM = pem.EncodeToMemory(block)
+// splitBundle returns what the outputs of cert hold: the CERTIFICATE blocks
+// of its fullchain, the first as the leaf and the others as the chain, and the
+// first private key block of its key, the blocks tls.X509KeyPair takes. Each
+// is encoded again without PEM headers, so nothing else that sigils sent
+// reaches an output: neither text around the blocks nor another block, such
+// as a private key in the fullchain, which would make a pem-cert output,
+// readable by everyone, hold the key. checkBundle has refused the material
+// unless the key belongs to this leaf.
+func splitBundle(cert storedCert) (*output.CertBundle, error) {
+	var certs [][]byte
+	rest := []byte(cert.FullchainPEM)
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type == "CERTIFICATE" {
+			certs = append(certs, pem.EncodeToMemory(&pem.Block{Type: block.Type, Bytes: block.Bytes}))
+		}
 	}
-	return &output.CertBundle{
-		CertPEM:  certPEM,
-		ChainPEM: rest,
-		KeyPEM:   []byte(cert.KeyPEM),
+	if len(certs) == 0 {
+		return nil, errors.New("no certificate in the fullchain")
+	}
+	rest = []byte(cert.KeyPEM)
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			return nil, errors.New("no private key")
+		}
+		if block.Type == "PRIVATE KEY" || strings.HasSuffix(block.Type, " PRIVATE KEY") {
+			return &output.CertBundle{
+				CertPEM:  certs[0],
+				ChainPEM: bytes.Join(certs[1:], nil),
+				KeyPEM:   pem.EncodeToMemory(&pem.Block{Type: block.Type, Bytes: block.Bytes}),
+			}, nil
+		}
 	}
 }
 

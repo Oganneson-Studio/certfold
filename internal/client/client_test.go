@@ -952,6 +952,11 @@ func TestFetchRejectsBadBundle(t *testing.T) {
 			renewed.KeyPEM = newTestBundle(t, "api-prod").KeyPEM
 			return renewed
 		}},
+		// The outputs take the first certificate as the leaf.
+		{name: "key of a later certificate", bad: func(t *testing.T, renewed proto.CertBundle) proto.CertBundle {
+			renewed.FullchainPEM = newTestBundle(t, "api-prod").FullchainPEM + renewed.FullchainPEM
+			return renewed
+		}},
 		{name: "another certificate's name", bad: func(_ *testing.T, renewed proto.CertBundle) proto.CertBundle {
 			renewed.Name = "api-stage"
 			return renewed
@@ -996,6 +1001,44 @@ func TestFetchRejectsBadBundle(t *testing.T) {
 				t.Fatalf("status = %+v", status)
 			}
 		})
+	}
+}
+
+// TestOutputsHoldOnlyCertificatesAndKey covers a bundle whose fullchain starts
+// with the private key and carries text, and whose key carries a
+// certificate: tls.X509KeyPair accepts it, since it skips what is not a
+// certificate or a key. Outputs readable by everyone must not get the key,
+// and no output may get anything but the blocks it is for.
+func TestOutputsHoldOnlyCertificatesAndKey(t *testing.T) {
+	bundle := newTestBundle(t, "api-prod")
+	inter := newTestBundle(t, "inter")
+	sent := *bundle
+	sent.FullchainPEM = bundle.KeyPEM + bundle.FullchainPEM + "subject=CN = inter\n" + inter.FullchainPEM + "\x1b[2J"
+	sent.KeyPEM = inter.FullchainPEM + bundle.KeyPEM
+	ts := httptest.NewServer(newFakeServer(&sent).handler())
+	t.Cleanup(ts.Close)
+	cfg := buildTestCfg(t, ts.URL)
+	dir := t.TempDir()
+	outputs := map[string]string{
+		"pem-cert":      bundle.FullchainPEM,
+		"pem-fullchain": bundle.FullchainPEM + inter.FullchainPEM,
+		"pem-key":       bundle.KeyPEM,
+		"pem-bundle":    bundle.FullchainPEM + inter.FullchainPEM + bundle.KeyPEM,
+	}
+	var specs []config.OutputSpec
+	for format := range outputs {
+		specs = append(specs, config.OutputSpec{Format: format, Path: filepath.Join(dir, format)})
+	}
+	cfg.Certificates["api-prod"] = config.CertificateOutputs{Outputs: specs}
+	c := newTestClient(t, cfg)
+
+	if err := c.Fetch(context.Background(), ""); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	for format, want := range outputs {
+		if got := fileContent(filepath.Join(dir, format)); got != want {
+			t.Errorf("%s output = %q, want %q", format, got, want)
+		}
 	}
 }
 
@@ -2271,19 +2314,40 @@ func TestReloadDuringRenewalKeepsTheRenewedIdentity(t *testing.T) {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// TestSplitBundle covers what the outputs get of stored material: the
+// CERTIFICATE blocks of the fullchain, the first as the leaf, and the first
+// private key block of the key, each encoded again. Text around them, PEM
+// headers and other blocks, such as a private key in the fullchain, reach no
+// output, and material without a certificate or a key is refused.
 func TestSplitBundle(t *testing.T) {
-	full := "-----BEGIN CERTIFICATE-----\nleaf\n-----END CERTIFICATE-----\n" +
-		"-----BEGIN CERTIFICATE-----\ninter\n-----END CERTIFICATE-----\n"
-	cb := splitBundle(storedCert{FullchainPEM: full, KeyPEM: "key"})
+	leaf, inter := newTestBundle(t, "leaf"), newTestBundle(t, "inter")
+	withHeader, _ := pem.Decode([]byte(leaf.FullchainPEM))
+	withHeader.Headers = map[string]string{"Comment": "leaf"}
+	full := "junk\n" + leaf.KeyPEM + string(pem.EncodeToMemory(withHeader)) +
+		"subject=CN = inter\n" + inter.FullchainPEM + "trailing text"
+	key := "junk\n" + inter.FullchainPEM + leaf.KeyPEM + inter.KeyPEM + "trailing text"
 
-	if string(cb.CertPEM) != "-----BEGIN CERTIFICATE-----\nleaf\n-----END CERTIFICATE-----\n" {
-		t.Errorf("CertPEM: %q", cb.CertPEM)
+	got, err := splitBundle(storedCert{FullchainPEM: full, KeyPEM: key})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if string(cb.ChainPEM) != "-----BEGIN CERTIFICATE-----\ninter\n-----END CERTIFICATE-----\n" {
-		t.Errorf("ChainPEM: %q", cb.ChainPEM)
+	if string(got.CertPEM) != leaf.FullchainPEM {
+		t.Errorf("CertPEM: %q", got.CertPEM)
 	}
-	if string(cb.KeyPEM) != "key" {
-		t.Errorf("KeyPEM: %q", cb.KeyPEM)
+	if string(got.ChainPEM) != inter.FullchainPEM {
+		t.Errorf("ChainPEM: %q", got.ChainPEM)
+	}
+	if string(got.KeyPEM) != leaf.KeyPEM {
+		t.Errorf("KeyPEM: %q", got.KeyPEM)
+	}
+
+	for _, bad := range []storedCert{
+		{FullchainPEM: leaf.KeyPEM, KeyPEM: leaf.KeyPEM},
+		{FullchainPEM: leaf.FullchainPEM, KeyPEM: leaf.FullchainPEM},
+	} {
+		if _, err := splitBundle(bad); err == nil {
+			t.Errorf("splitBundle(%+v) succeeded, want an error", bad)
+		}
 	}
 }
 
