@@ -326,19 +326,18 @@ func TestEnvValuesAreNotTrimmed(t *testing.T) {
 	}
 }
 
-// The names of DNS providers admit no '$', but the keys of their settings do.
+// No key admits '$', but validation reports the keys of the settings of a DNS
+// provider as they are written: an expanded key would fail on the unset
+// variable instead.
 func TestEnvExpansionLeavesKeysAlone(t *testing.T) {
 	src := strings.Replace(validServerYAML, "dns_providers:\n", `dns_providers:
   p:
     type: route53
     "k${SIGIL_TEST_UNSET_KEY}": v
 `, 1)
-	cfg, err := ParseServer([]byte(src))
-	if err != nil {
-		t.Fatalf("a mapping key was expanded: %v", err)
-	}
-	if _, ok := cfg.DNSProviders["p"].Config["k${SIGIL_TEST_UNSET_KEY}"]; !ok {
-		t.Fatalf("settings of dns provider p = %v", cfg.DNSProviders["p"].Config)
+	_, err := ParseServer([]byte(src))
+	if want := `dns_providers.p.k${SIGIL_TEST_UNSET_KEY}: unknown field`; err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %v, want %s: a mapping key was expanded", err, want)
 	}
 }
 
