@@ -127,7 +127,9 @@ func (r *Renewer) RunDynamic(ctx context.Context, current func() *config.ServerC
 
 	for {
 		wakeAt, err := r.tick(ctx, current)
-		if err != nil {
+		// A tick that shutdown interrupts fails on the store reads it
+		// cancels, which is no fault to report.
+		if err != nil && ctx.Err() == nil {
 			slog.Error("renewal tick failed", "error", err)
 		}
 
