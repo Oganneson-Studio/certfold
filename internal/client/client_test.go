@@ -804,6 +804,104 @@ func TestRenewIdentityPersistsBeforeRuntimeSwitch(t *testing.T) {
 	}
 }
 
+// TestRenewalKeepsCurrentIdentityWhenRenewedOneIsRefused covers renewed
+// identities that sigils would not accept, and one that did not reach
+// client.yaml: the running identity must stay as it was, and only a renewed
+// identity that passes the checks may be saved.
+func TestRenewalKeepsCurrentIdentityWhenRenewedOneIsRefused(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	authority := newTestIdentityCA(t, now)
+	other := newTestIdentityCA(t, now)
+	serverAuthOnly := func(publicKey any) (string, error) {
+		template := &x509.Certificate{
+			SerialNumber: big.NewInt(3),
+			Subject:      pkix.Name{CommonName: "web-1"},
+			NotBefore:    now.Add(-time.Minute),
+			NotAfter:     now.Add(90 * 24 * time.Hour),
+			KeyUsage:     x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		}
+		der, err := x509.CreateCertificate(rand.Reader, template, authority.cert, publicKey, authority.key)
+		if err != nil {
+			return "", err
+		}
+		return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), nil
+	}
+	for _, tc := range []struct {
+		name     string
+		issue    func(publicKey any) (string, error)
+		saveErr  error
+		wantSave bool
+	}{
+		{name: "another client's name", issue: func(k any) (string, error) {
+			return authority.sign("web-2", k, now, now.Add(90*24*time.Hour), 3)
+		}},
+		{name: "another CA", issue: func(k any) (string, error) {
+			return other.sign("web-1", k, now, now.Add(90*24*time.Hour), 3)
+		}},
+		{name: "not for client authentication", issue: serverAuthOnly},
+		{name: "not saved", issue: func(k any) (string, error) {
+			return authority.sign("web-1", k, now, now.Add(90*24*time.Hour), 3)
+		}, saveErr: errors.New("disk full"), wantSave: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := buildTestCfg(t, "https://sigil.example.test")
+			cfg.Client.IdentityRenewBefore = 30 * 24 * time.Hour
+			withIdentity(t, cfg, authority, now, now.Add(24*time.Hour))
+			current := cfg.Identity
+			saved := false
+			c, err := New(cfg, WithIdentitySaver(func(string, string, string) error {
+				saved = true
+				return tc.saveErr
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.now = func() time.Time { return now }
+			c.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				var body proto.RenewIdentityRequest
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+					return nil, err
+				}
+				block, _ := pem.Decode([]byte(body.CSR))
+				if block == nil {
+					return nil, errors.New("no CSR")
+				}
+				csr, err := x509.ParseCertificateRequest(block.Bytes)
+				if err != nil {
+					return nil, err
+				}
+				certPEM, err := tc.issue(csr.PublicKey)
+				if err != nil {
+					return nil, err
+				}
+				data, err := json.Marshal(proto.RenewIdentityResponse{ClientCert: certPEM})
+				if err != nil {
+					return nil, err
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header),
+					Body: io.NopCloser(bytes.NewReader(data)), Request: req}, nil
+			})}
+
+			c.pullMu.Lock()
+			err = c.renewIdentityLocked(context.Background())
+			c.pullMu.Unlock()
+			if err == nil {
+				t.Fatal("renewal succeeded, want it refused")
+			}
+			if saved != tc.wantSave {
+				t.Fatalf("identity saver called = %v, want %v", saved, tc.wantSave)
+			}
+			c.cfgMu.RLock()
+			running := c.cfg.Identity
+			c.cfgMu.RUnlock()
+			if running != current {
+				t.Fatal("the running identity changed after a refused renewal")
+			}
+		})
+	}
+}
+
 // TestFetchNamedCertificateForcesOnlyThatBundle covers sigilc fetch --cert:
 // it downloads the named certificate again, and only it, but unchanged
 // material neither rewrites outputs nor runs on_change.
