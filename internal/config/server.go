@@ -405,16 +405,29 @@ func (c *ServerConfig) PublicBaseURL() string {
 }
 
 // ValidatePublicURL reports whether s can be server.public_url: an https URL
-// without the characters unquotable reports. Enrollment tokens carry the
-// public URL to sigilc, which checks the URL of a token under the same rule
-// before it writes the URL to client.yaml and prints it.
+// with a host, without the characters unquotable reports. sigils appends the
+// paths of its endpoints to it, so it takes no user information, query or
+// fragment, and a port it has must be one from 1 to 65535. Enrollment tokens
+// carry the public URL to sigilc, which checks the URL of a token under the
+// same rule before it writes the URL to client.yaml and prints it.
 func ValidatePublicURL(s string) error {
-	if u, err := url.ParseRequestURI(s); err != nil || u.Scheme != "https" {
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
 		return fmt.Errorf("must be an https URL, got %q", s)
 	}
 	if i := strings.IndexFunc(s, unquotable); i >= 0 {
 		r, _ := utf8.DecodeRuneInString(s[i:])
 		return fmt.Errorf("must not contain %q: install commands quote the URL for sh and PowerShell", r)
+	}
+	switch {
+	case u.User != nil:
+		return fmt.Errorf("must not contain user information, got %q", s)
+	case strings.ContainsAny(s, "?#"):
+		return fmt.Errorf("must not have a query or a fragment, got %q", s)
+	case u.Hostname() == "":
+		return fmt.Errorf("must name a host, got %q", s)
+	case strings.HasSuffix(u.Host, ":") || u.Port() != "" && !isValidPort(u.Port()):
+		return fmt.Errorf("must have a port from 1 to 65535 if any, got %q", s)
 	}
 	return nil
 }
