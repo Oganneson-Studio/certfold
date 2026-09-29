@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -71,6 +72,81 @@ func TestListenKeepsPathThatIsNotSocket(t *testing.T) {
 				t.Fatal("the existing path was replaced by a socket")
 			}
 		})
+	}
+}
+
+// Other local users must not reach the admin API.
+func TestListenSocketModeIs0660(t *testing.T) {
+	path := testSocketPath(t)
+	l, err := Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o660 {
+		t.Fatalf("socket mode = %#o, want 0660", got)
+	}
+}
+
+// Dial trusts a socket that root or the caller owns: a daemon runs as root,
+// or as the user who runs the CLI.
+func TestCheckSocketOwner(t *testing.T) {
+	path := testSocketPath(t)
+	l, err := Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := int(info.Sys().(*syscall.Stat_t).Uid)
+	if err := checkSocketOwner(info, owner); err != nil {
+		t.Fatalf("socket of the caller refused: %v", err)
+	}
+	if owner == 0 {
+		if err := checkSocketOwner(info, 1000); err != nil {
+			t.Fatalf("socket of root refused: %v", err)
+		}
+		return
+	}
+	if err := checkSocketOwner(info, owner+1); err == nil || !strings.Contains(err.Error(), "rather than root") {
+		t.Fatalf("socket of uid %d accepted for uid %d: %v", owner, owner+1, err)
+	}
+}
+
+// Only root can give a socket to another user, so this test runs as root
+// only: on the Linux verification server with sudo.
+func TestDialRefusesSocketOfAnotherUser(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("only root can create a socket another user owns")
+	}
+	path := testSocketPath(t)
+	l, err := Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	// nobody on most systems; any uid but root's will do.
+	if err := os.Lchown(path, 65534, 65534); err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err := Dial(path)
+	if err == nil {
+		conn.Close()
+		t.Fatal("Dial accepted a socket owned by another user")
+	}
+	if !strings.Contains(err.Error(), path+": socket is owned by uid 65534 rather than root") {
+		t.Fatalf("Dial error = %v, want an owner error naming the socket", err)
+	}
+	if _, err := NewClient(path); err == nil || strings.Count(err.Error(), "ipc dial") != 1 {
+		t.Fatalf("NewClient error = %v, want the owner error with one ipc dial prefix", err)
 	}
 }
 
