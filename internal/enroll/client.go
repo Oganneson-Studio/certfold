@@ -72,7 +72,7 @@ func ServerRoots(caCertPEM string) (*x509.CertPool, error) {
 // The token carries the expected server CA certificate. TLS is verified against
 // that pinned CA and the system roots before the bearer token or CSR is sent.
 func PostEnroll(serverURL, tokenStr string, csrDER []byte) (*proto.EnrollResponse, error) {
-	payload, err := decodeToken(tokenStr)
+	payload, err := DecodeToken(tokenStr)
 	if err != nil {
 		return nil, fmt.Errorf("decode token: %w", err)
 	}

@@ -77,7 +77,7 @@ func TestVerify_TamperedSecret(t *testing.T) {
 	tokenStr, _ := srv.Create(ctx, "https://sigil.example.com", "web-1", time.Hour)
 
 	// Decode, tamper secret, re-encode.
-	payload, _ := decodeToken(tokenStr)
+	payload, _ := DecodeToken(tokenStr)
 	payload.Secret = strings.Repeat("a", 64)
 	tampered, _ := json.Marshal(payload)
 	tamperedStr := base64.RawURLEncoding.EncodeToString(tampered)
@@ -99,14 +99,14 @@ func TestVerify_TamperedTrustData(t *testing.T) {
 
 	for _, mutate := range []struct {
 		name string
-		fn   func(*tokenPayload)
+		fn   func(*Token)
 	}{
-		{name: "server URL", fn: func(p *tokenPayload) { p.ServerURL = "https://attacker.example" }},
-		{name: "client name", fn: func(p *tokenPayload) { p.Name = "attacker" }},
-		{name: "CA certificate", fn: func(p *tokenPayload) { p.CACert = "attacker-ca" }},
+		{name: "server URL", fn: func(p *Token) { p.ServerURL = "https://attacker.example" }},
+		{name: "client name", fn: func(p *Token) { p.Name = "attacker" }},
+		{name: "CA certificate", fn: func(p *Token) { p.CACert = "attacker-ca" }},
 	} {
 		t.Run(mutate.name, func(t *testing.T) {
-			payload, err := decodeToken(tokenStr)
+			payload, err := DecodeToken(tokenStr)
 			if err != nil {
 				t.Fatalf("decode: %v", err)
 			}
@@ -141,7 +141,7 @@ func TestVerify_UnknownToken(t *testing.T) {
 	miniCA := mustBootstrapCA(t)
 	srv := NewServer(db.Tokens, db.Clients, miniCA)
 
-	payload := tokenPayload{
+	payload := Token{
 		ServerURL: "https://sigil.example.com",
 		Name:      "web-1",
 		TokenID:   "deadbeefdeadbeefdeadbeefdeadbeef",
@@ -331,7 +331,7 @@ func TestPostEnroll(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	token := encodeTestToken(t, tokenPayload{ServerURL: ts.URL, Name: "web-1", CACert: testServerCertPEM(t, ts)})
+	token := encodeTestToken(t, Token{ServerURL: ts.URL, Name: "web-1", CACert: testServerCertPEM(t, ts)})
 	kc, _ := GenerateKeyAndCSR("web-1")
 	got, err := PostEnroll(ts.URL, token, kc.CSRDER)
 	if err != nil {
@@ -342,7 +342,7 @@ func TestPostEnroll(t *testing.T) {
 	}
 }
 
-func encodeTestToken(t *testing.T, payload tokenPayload) string {
+func encodeTestToken(t *testing.T, payload Token) string {
 	t.Helper()
 	raw, err := json.Marshal(payload)
 	if err != nil {

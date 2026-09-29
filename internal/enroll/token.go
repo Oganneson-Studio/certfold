@@ -1,5 +1,3 @@
-// Package enroll implements the one-time-token bootstrap protocol that
-// exchanges a token for an mTLS client certificate.
 package enroll
 
 import (
@@ -19,8 +17,9 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
-// tokenPayload is the JSON structure embedded inside the opaque token string.
-type tokenPayload struct {
+// Token is what an enrollment token carries: its string is this structure
+// in JSON, base64url-encoded.
+type Token struct {
 	ServerURL string    `json:"server_url"`
 	Name      string    `json:"name"`
 	TokenID   string    `json:"token_id"`
@@ -62,7 +61,7 @@ func (s *Server) Create(ctx context.Context, serverURL, name string, ttl time.Du
 	secret := hex.EncodeToString(secretBytes)
 	expiresAt := time.Now().UTC().Add(ttl)
 
-	payload := tokenPayload{
+	payload := Token{
 		ServerURL: serverURL,
 		Name:      name,
 		TokenID:   tokenID,
@@ -90,7 +89,7 @@ func (s *Server) Create(ctx context.Context, serverURL, name string, ttl time.Du
 // Verify decodes and validates a token string. Returns the client name on success.
 // Does NOT mark the token as used — the caller should call MarkUsed after signing.
 func (s *Server) Verify(ctx context.Context, tokenStr string) (name string, tokenID string, err error) {
-	payload, err := decodeToken(tokenStr)
+	payload, err := DecodeToken(tokenStr)
 	if err != nil {
 		return "", "", fmt.Errorf("decode: %w", err)
 	}
@@ -139,24 +138,17 @@ func (s *Server) SignClientCert(ctx context.Context, csrDER []byte, name, tokenI
 	return certDER, nil
 }
 
-// DecodeToken decodes and checks an enrollment token as decodeToken does, and
-// returns the payload. The client uses ServerURL to know which server to POST
-// the CSR to.
-func DecodeToken(tokenStr string) (*tokenPayload, error) {
-	return decodeToken(tokenStr)
-}
-
-// decodeToken base64url-decodes and JSON-unmarshals a token string, and checks
+// DecodeToken base64url-decodes and JSON-unmarshals a token string, and checks
 // the client name and the server URL it carries under the rules Create and
 // server.public_url follow. sigilc writes both to client.yaml and prints
 // them, so a token that another program made must not bring it control
 // characters.
-func decodeToken(tokenStr string) (*tokenPayload, error) {
+func DecodeToken(tokenStr string) (*Token, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(tokenStr)
 	if err != nil {
 		return nil, fmt.Errorf("base64: %w", err)
 	}
-	var p tokenPayload
+	var p Token
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, fmt.Errorf("json: %w", err)
 	}
@@ -174,6 +166,6 @@ func sha256hex(s string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func tokenPayloadHash(p *tokenPayload) string {
+func tokenPayloadHash(p *Token) string {
 	return sha256hex(p.Secret + "\x00" + p.ServerURL + "\x00" + p.Name + "\x00" + p.CACert)
 }

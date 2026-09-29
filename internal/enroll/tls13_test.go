@@ -21,7 +21,7 @@ func TestPostEnrollRequiresTLS13(t *testing.T) {
 	ts.StartTLS()
 	defer ts.Close()
 
-	token := encodeTestToken(t, tokenPayload{ServerURL: ts.URL, Name: "web-1", CACert: testServerCertPEM(t, ts)})
+	token := encodeTestToken(t, Token{ServerURL: ts.URL, Name: "web-1", CACert: testServerCertPEM(t, ts)})
 	kc, err := GenerateKeyAndCSR("web-1")
 	if err != nil {
 		t.Fatal(err)
