@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -56,7 +57,7 @@ func (h *handlers) syncCertificates(w http.ResponseWriter, r *http.Request) {
 		changed := h.deps.Changes.wait()
 		view, err := h.certificateView(r.Context(), clientName)
 		if err != nil {
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			serverError(w, "read certificate view failed", "client", clientName, "error", err)
 			return
 		}
 		// The ETag hashes the body this client gets, so it changes only with
@@ -64,7 +65,7 @@ func (h *handlers) syncCertificates(w http.ResponseWriter, r *http.Request) {
 		// changes to certificates it does not subscribe to.
 		body, err := json.Marshal(view)
 		if err != nil {
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			serverError(w, "encode certificate view failed", "client", clientName, "error", err)
 			return
 		}
 		sum := sha256.Sum256(body)
@@ -76,6 +77,10 @@ func (h *handlers) syncCertificates(w http.ResponseWriter, r *http.Request) {
 				// waited, the client may have been removed or its identity
 				// replaced.
 				rec, err := h.deps.DB.Clients.Get(r.Context(), clientName, nil)
+				if err != nil && err != sql.ErrNoRows {
+					serverError(w, "look up client failed", "client", clientName, "error", err)
+					return
+				}
 				if err != nil || rec.Fingerprint != ca.Fingerprint(cert.Raw) {
 					http.Error(w, "unauthorized", http.StatusUnauthorized)
 					return

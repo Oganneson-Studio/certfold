@@ -60,6 +60,14 @@ func readJSON(r *http.Request, v any) error {
 	return json.NewDecoder(r.Body).Decode(v)
 }
 
+// serverError answers 500 and logs msg with the slog attributes args: the
+// client learns only that the server failed, so the log is the one place
+// that says why.
+func serverError(w http.ResponseWriter, msg string, args ...any) {
+	slog.Error(msg, args...)
+	http.Error(w, "internal error", http.StatusInternalServerError)
+}
+
 // ---------------------------------------------------------------------------
 // GET /install.sh
 // ---------------------------------------------------------------------------
@@ -111,18 +119,18 @@ func (h *handlers) downloadSigilc(w http.ResponseWriter, r *http.Request) {
 	}
 
 	f, err := os.Open(path)
+	if os.IsNotExist(err) {
+		http.Error(w, "binary not found for requested platform", http.StatusNotFound)
+		return
+	}
 	if err != nil {
-		if os.IsNotExist(err) {
-			http.Error(w, "binary not found for requested platform", http.StatusNotFound)
-		} else {
-			http.Error(w, "internal error", http.StatusInternalServerError)
-		}
+		serverError(w, "open sigilc binary failed", "error", err)
 		return
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		serverError(w, "open sigilc binary failed", "error", err)
 		return
 	}
 
@@ -190,7 +198,7 @@ func (h *handlers) enroll(w http.ResponseWriter, r *http.Request) {
 	// Sign the client cert, mark token used, record client — all via enroll.Server.
 	certDER, err := h.deps.EnrollServer.SignClientCert(ctx, csrDER, name, tokenID)
 	if err != nil {
-		http.Error(w, "sign error", http.StatusInternalServerError)
+		serverError(w, "enrollment failed", "client", name, "token", tokenID, "error", err)
 		return
 	}
 	slog.Info("client enrolled", "client", name, "token", tokenID)
@@ -229,7 +237,7 @@ func (h *handlers) getCertBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		serverError(w, "read certificate failed", "client", clientName, "cert", certName, "error", err)
 		return
 	}
 	if !certRecordMatchesSpec(rec, cfg, spec) {
@@ -274,18 +282,18 @@ func (h *handlers) renewIdentity(w http.ResponseWriter, r *http.Request) {
 	clientName := cert.Subject.CommonName
 	certDER, err := h.deps.MiniCA.Sign(csr, clientName)
 	if err != nil {
-		http.Error(w, "sign error", http.StatusInternalServerError)
+		serverError(w, "client identity renewal failed", "client", clientName, "error", err)
 		return
 	}
 	issued, err := x509.ParseCertificate(certDER)
 	if err != nil {
-		http.Error(w, "sign error", http.StatusInternalServerError)
+		serverError(w, "client identity renewal failed", "client", clientName, "error", err)
 		return
 	}
 	if err := h.deps.DB.Clients.StagePendingIdentity(
 		r.Context(), clientName, ca.Fingerprint(certDER), issued.NotAfter,
 	); err != nil {
-		http.Error(w, "store error", http.StatusInternalServerError)
+		serverError(w, "client identity renewal failed", "client", clientName, "error", err)
 		return
 	}
 	slog.Info("client identity renewal issued", "client", clientName, "not_after", issued.NotAfter)
@@ -327,8 +335,12 @@ func (h *handlers) requireActiveClient(next http.Handler) http.Handler {
 		fingerprint := ca.Fingerprint(cert.Raw)
 		now := time.Now()
 		rec, err := h.deps.DB.Clients.Get(r.Context(), clientName, nil)
-		if err != nil {
+		if err == sql.ErrNoRows {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if err != nil {
+			serverError(w, "look up client failed", "client", clientName, "error", err)
 			return
 		}
 		if rec.Fingerprint != fingerprint {
@@ -336,18 +348,25 @@ func (h *handlers) requireActiveClient(next http.Handler) http.Handler {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-			if err := h.deps.DB.Clients.PromotePendingIdentity(
-				r.Context(), clientName, fingerprint, now,
-			); err != nil {
+			err := h.deps.DB.Clients.PromotePendingIdentity(r.Context(), clientName, fingerprint, now)
+			switch {
+			case err == nil:
+				slog.Info("client identity switched", "client", clientName)
+			case err == sql.ErrNoRows:
 				// A concurrent first use of the same identity may have
 				// promoted it since the lookup above.
 				current, err := h.deps.DB.Clients.Get(r.Context(), clientName, nil)
+				if err != nil && err != sql.ErrNoRows {
+					serverError(w, "look up client failed", "client", clientName, "error", err)
+					return
+				}
 				if err != nil || current.Fingerprint != fingerprint {
 					http.Error(w, "unauthorized", http.StatusUnauthorized)
 					return
 				}
-			} else {
-				slog.Info("client identity switched", "client", clientName)
+			default:
+				serverError(w, "promote client identity failed", "client", clientName, "error", err)
+				return
 			}
 		}
 

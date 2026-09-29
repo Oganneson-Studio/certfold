@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"database/sql"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -15,12 +16,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/sigil/internal/store"
 	"github.com/Oganneson-Studio/sigil/pkg/proto"
 )
 
@@ -148,5 +151,58 @@ func TestLastSeenWriteFailureIsAnErrorEvent(t *testing.T) {
 	}
 	if got := eventLines(logs); len(got) != 1 || !strings.HasPrefix(got[0], "ERROR record last_seen failed client=web-1 error=") {
 		t.Fatalf("events = %q, want one ERROR record last_seen failed", got)
+	}
+}
+
+// A client whose lookup fails is not known to be unauthorized: the server
+// answers 500 and logs why, where it once answered 401 and logged nothing.
+func TestClientLookupFailureIsAServerError(t *testing.T) {
+	logs := setupLogs(t)
+	deps := buildDeps(t)
+	identity := makeEnrolledClientCert(t, deps, "web-1")
+	if err := deps.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	newHandler(deps).ServeHTTP(rec, syncRequest(identity, ""))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, body = %s; want 500", rec.Code, rec.Body.String())
+	}
+	if got := eventLines(logs); len(got) != 1 || !strings.HasPrefix(got[0], "ERROR look up client failed client=web-1 error=") {
+		t.Fatalf("events = %q, want one ERROR look up client failed", got)
+	}
+}
+
+// A handler past authentication that fails on the store logs why as well.
+func TestBundleReadFailureIsAServerError(t *testing.T) {
+	logs := setupLogs(t)
+	deps := buildDeps(t)
+	path := filepath.Join(t.TempDir(), "sigils.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	deps.DB = db
+	identity := makeEnrolledClientCert(t, deps, "web-1")
+	seedCert(t, deps, deps.CurrentServer(), deps.CurrentServer().Certificates[0], "sha256:API")
+	// A row that the store cannot read back.
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`UPDATE certificates SET domains_json='{' WHERE name='api-prod'`); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	newHandler(deps).ServeHTTP(rec, simulateMTLS(httptest.NewRequest(http.MethodGet, "/v1/certificates/api-prod/bundle", nil), identity))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, body = %s; want 500", rec.Code, rec.Body.String())
+	}
+	if got := eventLines(logs); len(got) != 1 || !strings.HasPrefix(got[0], "ERROR read certificate failed client=web-1 cert=api-prod error=") {
+		t.Fatalf("events = %q, want one ERROR read certificate failed", got)
 	}
 }
