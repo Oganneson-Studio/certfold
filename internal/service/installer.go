@@ -87,8 +87,10 @@ func buildServiceConfig(cfg Config) *ksvc.Config {
 // failed daemon only after 120 seconds. A daemon that keeps failing, such as
 // one whose configuration does not load, is restarted every 5 seconds without
 // end: without StartLimit settings, systemd's default limit of 5 starts in 10
-// seconds is never reached. Installing the service again replaces the unit of
-// an earlier install. The template syntax is that of kardianos v1.3.0.
+// seconds is never reached. An earlier install keeps its unit: kardianos
+// refuses to install over an existing service, so the service has to be
+// uninstalled and installed again. The template syntax is that of kardianos
+// v1.3.0.
 const systemdUnit = `[Unit]
 Description={{Description}}
 ConditionFileIsExecutable={{Path | cmdEscape}}
