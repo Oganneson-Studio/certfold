@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -138,7 +139,17 @@ func Install(d Daemon, cfg Config) error {
 	if err != nil {
 		return err
 	}
+	return install(svc, cfg.Role)
+}
+
+// install registers svc, the service of role. kardianos refuses to install
+// over an existing service, and then the error says how to go on.
+func install(svc ksvc.Service, role Role) error {
 	if err := svc.Install(); err != nil {
+		if _, statusErr := svc.Status(); !errors.Is(statusErr, ksvc.ErrNotInstalled) {
+			name, _, _, _ := roleAttrs(role)
+			return fmt.Errorf("install service: %w; to install it anew, run `%s service uninstall` first", err, name)
+		}
 		return fmt.Errorf("install service: %w", err)
 	}
 	return nil
