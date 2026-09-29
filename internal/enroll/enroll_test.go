@@ -39,6 +39,21 @@ func mustBootstrapCA(t *testing.T) *ca.MiniCA {
 	return m
 }
 
+// newCSR returns the CSR that GenerateKeyAndCSR makes for name, parsed as
+// the API parses it before SignClientCert.
+func newCSR(t *testing.T, name string) *x509.CertificateRequest {
+	t.Helper()
+	kc, err := GenerateKeyAndCSR(name)
+	if err != nil {
+		t.Fatalf("GenerateKeyAndCSR: %v", err)
+	}
+	csr, err := x509.ParseCertificateRequest(kc.CSRDER)
+	if err != nil {
+		t.Fatalf("parse CSR: %v", err)
+	}
+	return csr
+}
+
 // ---------------------------------------------------------------------------
 // Server-side
 // ---------------------------------------------------------------------------
@@ -172,12 +187,7 @@ func TestSignClientCert_E2E(t *testing.T) {
 		t.Fatalf("Verify: %v", err)
 	}
 
-	kc, err := GenerateKeyAndCSR(name)
-	if err != nil {
-		t.Fatalf("GenerateKeyAndCSR: %v", err)
-	}
-
-	certDER, err := srv.SignClientCert(ctx, kc.CSRDER, name, tokenID)
+	certDER, err := srv.SignClientCert(ctx, newCSR(t, name), name, tokenID)
 	if err != nil {
 		t.Fatalf("SignClientCert: %v", err)
 	}
@@ -222,8 +232,7 @@ func TestTokenReplay(t *testing.T) {
 	tokenStr, _ := srv.Create(ctx, "https://sigil.example.com", "web-1", time.Hour)
 	name, tokenID, _ := srv.Verify(ctx, tokenStr)
 
-	kc, _ := GenerateKeyAndCSR(name)
-	_, err := srv.SignClientCert(ctx, kc.CSRDER, name, tokenID)
+	_, err := srv.SignClientCert(ctx, newCSR(t, name), name, tokenID)
 	if err != nil {
 		t.Fatalf("first sign: %v", err)
 	}
@@ -253,23 +262,20 @@ func TestTokenConcurrentConsumption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Verify: %v", err)
 	}
-	kc1, _ := GenerateKeyAndCSR(name1)
-	kc2, _ := GenerateKeyAndCSR(name2)
-
 	start := make(chan struct{})
 	results := make(chan error, 2)
 	var wg sync.WaitGroup
 	for _, call := range []struct {
-		csr     []byte
+		csr     *x509.CertificateRequest
 		name    string
 		tokenID string
 	}{
-		{kc1.CSRDER, name1, tokenID1},
-		{kc2.CSRDER, name2, tokenID2},
+		{newCSR(t, name1), name1, tokenID1},
+		{newCSR(t, name2), name2, tokenID2},
 	} {
 		wg.Add(1)
 		go func(call struct {
-			csr     []byte
+			csr     *x509.CertificateRequest
 			name    string
 			tokenID string
 		}) {

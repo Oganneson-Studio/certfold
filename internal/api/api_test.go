@@ -509,6 +509,51 @@ func TestEnroll_RejectWithClientCert(t *testing.T) {
 	}
 }
 
+// A CSR that is not one CERTIFICATE REQUEST signed by its own key is the
+// client's mistake: 400, where the server once failed with 500 or signed it,
+// and the token stays unused for a request that gets it right.
+func TestEnrollRejectsInvalidCSR(t *testing.T) {
+	deps := buildDeps(t)
+	tokenStr, err := deps.EnrollServer.Create(context.Background(), "https://sigil.example.com:8443", "web-1", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "web-1"}}, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER}))
+	unsigned := append([]byte(nil), csrDER...)
+	unsigned[len(unsigned)-1] ^= 0xff
+	enrollWith := func(csr string) *httptest.ResponseRecorder {
+		body, err := json.Marshal(proto.EnrollRequest{Token: tokenStr, CSR: csr})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		newHandler(deps).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/enroll", bytes.NewReader(body)))
+		return rec
+	}
+
+	for _, tt := range []struct{ name, csr string }{
+		{"trailing data", valid + "more"},
+		{"another PEM type", string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: csrDER}))},
+		{"not a CSR", string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: []byte("not DER")}))},
+		{"bad signature", string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: unsigned}))},
+	} {
+		if rec := enrollWith(tt.csr); rec.Code != http.StatusBadRequest {
+			t.Errorf("CSR with %s: status = %d, body = %s; want 400", tt.name, rec.Code, rec.Body.String())
+		}
+	}
+	if rec := enrollWith(valid); rec.Code != http.StatusOK {
+		t.Fatalf("valid CSR after the rejected ones: status = %d, body = %s; want 200", rec.Code, rec.Body.String())
+	}
+}
+
 func TestRenewIdentityStagesThenPromotesOnFirstUse(t *testing.T) {
 	deps := buildDeps(t)
 	oldIdentity := makeEnrolledClientCert(t, deps, "web-1")

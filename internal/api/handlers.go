@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -77,6 +78,21 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func readJSON(r *http.Request, v any) error {
 	return json.NewDecoder(r.Body).Decode(v)
+}
+
+// parseCSR reads the CSR of an enrollment or identity renewal: one PEM
+// CERTIFICATE REQUEST block and nothing else, signed by its own key. The
+// error is the answer to the client.
+func parseCSR(csrPEM string) (*x509.CertificateRequest, error) {
+	block, rest := pem.Decode([]byte(csrPEM))
+	if block == nil || block.Type != "CERTIFICATE REQUEST" || len(strings.TrimSpace(string(rest))) != 0 {
+		return nil, errors.New("invalid CSR PEM")
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil || csr.CheckSignature() != nil {
+		return nil, errors.New("invalid CSR")
+	}
+	return csr, nil
 }
 
 // serverError answers 500 and logs msg with the slog attributes args: the
@@ -196,6 +212,11 @@ func (h *handlers) enroll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "token and csr are required", http.StatusBadRequest)
 		return
 	}
+	csr, err := parseCSR(req.CSR)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	ctx := r.Context()
 
@@ -206,16 +227,8 @@ func (h *handlers) enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse CSR.
-	block, _ := pem.Decode([]byte(req.CSR))
-	if block == nil {
-		http.Error(w, "invalid CSR PEM", http.StatusBadRequest)
-		return
-	}
-	csrDER := block.Bytes
-
 	// Sign the client cert, mark token used, record client — all via enroll.Server.
-	certDER, err := h.deps.EnrollServer.SignClientCert(ctx, csrDER, name, tokenID)
+	certDER, err := h.deps.EnrollServer.SignClientCert(ctx, csr, name, tokenID)
 	if err != nil {
 		serverError(w, "enrollment failed", "client", name, "token", tokenID, "error", err)
 		return
@@ -306,14 +319,9 @@ func (h *handlers) renewIdentity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	block, rest := pem.Decode([]byte(req.CSR))
-	if block == nil || block.Type != "CERTIFICATE REQUEST" || len(strings.TrimSpace(string(rest))) != 0 {
-		http.Error(w, "invalid CSR PEM", http.StatusBadRequest)
-		return
-	}
-	csr, err := x509.ParseCertificateRequest(block.Bytes)
-	if err != nil || csr.CheckSignature() != nil {
-		http.Error(w, "invalid CSR", http.StatusBadRequest)
+	csr, err := parseCSR(req.CSR)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 

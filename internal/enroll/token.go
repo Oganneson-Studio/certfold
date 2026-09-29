@@ -113,13 +113,9 @@ func (s *Server) Verify(ctx context.Context, tokenStr string) (name string, toke
 	return rec.Name, rec.TokenID, nil
 }
 
-// SignClientCert signs a DER-encoded CSR for the given client name and records
-// the client in the clients table. Returns the signed certificate DER bytes.
-func (s *Server) SignClientCert(ctx context.Context, csrDER []byte, name, tokenID string) ([]byte, error) {
-	csr, err := x509.ParseCertificateRequest(csrDER)
-	if err != nil {
-		return nil, fmt.Errorf("parse CSR: %w", err)
-	}
+// SignClientCert signs csr for the given client name and records the client
+// in the clients table. Returns the signed certificate DER bytes.
+func (s *Server) SignClientCert(ctx context.Context, csr *x509.CertificateRequest, name, tokenID string) ([]byte, error) {
 	certDER, err := s.miniCA.Sign(csr, name)
 	if err != nil {
 		return nil, fmt.Errorf("sign: %w", err)
