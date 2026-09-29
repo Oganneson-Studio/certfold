@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -161,7 +162,7 @@ func requestSync(ctx context.Context, httpClient *http.Client, serverURL, etag s
 		return &syncResult{}, nil
 	case http.StatusOK:
 		result := &syncResult{modified: true, etag: resp.Header.Get("ETag")}
-		if err := json.NewDecoder(resp.Body).Decode(&result.view); err != nil {
+		if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&result.view); err != nil {
 			return nil, fmt.Errorf("decode: %w", err)
 		}
 		return result, nil

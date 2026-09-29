@@ -37,6 +37,12 @@ const jitterPct = 0.1 // ±10 % of the backoff after a failed round
 // it. A variable only so tests can shorten it.
 var httpTimeout = 30 * time.Second
 
+// maxResponseBytes bounds how much of the body of an answer from sigils
+// sigilc reads: a renewed identity, a bundle, or a view, which lists some
+// 5000 certificates in 1 MiB. A server that sends more cannot make sigilc
+// hold it all in memory.
+const maxResponseBytes = 1 << 20
+
 // Client is the sigilc runtime.
 type Client struct {
 	// cfg and http change only while pullMu is held as well, so the holder of
@@ -322,7 +328,7 @@ func (c *Client) renewIdentityLocked(ctx context.Context) error {
 		return fmt.Errorf("renewal server returned %d", resp.StatusCode)
 	}
 	var renewal proto.RenewIdentityResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&renewal); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&renewal); err != nil {
 		return fmt.Errorf("decode renewal response: %w", err)
 	}
 	updated := cfgSnapshot
@@ -398,7 +404,7 @@ func (c *Client) getBundle(ctx context.Context, name string) (*proto.CertBundle,
 		return nil, fmt.Errorf("server returned %d", resp.StatusCode)
 	}
 	var b proto.CertBundle
-	if err := json.NewDecoder(resp.Body).Decode(&b); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&b); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
 	}
 	return &b, nil

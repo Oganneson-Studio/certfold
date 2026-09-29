@@ -999,6 +999,55 @@ func TestFetchRejectsBadBundle(t *testing.T) {
 	}
 }
 
+// TestAnswersAreBounded covers a server that sends a view or a bundle longer
+// than maxResponseBytes: sigilc stops reading it and reports the answer,
+// rather than reading on for as long as the server sends. The documents are
+// valid JSON, padded with whitespace between their tokens.
+func TestAnswersAreBounded(t *testing.T) {
+	padding := strings.Repeat(" ", maxResponseBytes)
+	for _, tc := range []struct {
+		name    string
+		serve   func(w http.ResponseWriter, r *http.Request, bundle *proto.CertBundle) bool
+		wantErr string
+	}{
+		{name: "view", wantErr: "sync: decode", serve: func(w http.ResponseWriter, r *http.Request, _ *proto.CertBundle) bool {
+			if r.URL.Path != "/v1/sync" {
+				return false
+			}
+			w.Header().Set("ETag", `"v1"`)
+			_, _ = io.WriteString(w, "["+padding+"]")
+			return true
+		}},
+		{name: "bundle", wantErr: `bundle "api-prod": decode`, serve: func(w http.ResponseWriter, r *http.Request, bundle *proto.CertBundle) bool {
+			if r.URL.Path != "/v1/certificates/api-prod/bundle" {
+				return false
+			}
+			data, err := json.Marshal(bundle)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return true
+			}
+			_, _ = io.WriteString(w, "{"+padding+string(data[1:]))
+			return true
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bundle := newTestBundle(t, "api-prod")
+			api := newFakeServer(bundle).handler()
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !tc.serve(w, r, bundle) {
+					api.ServeHTTP(w, r)
+				}
+			}))
+			t.Cleanup(ts.Close)
+			c := newTestClient(t, buildTestCfg(t, ts.URL))
+			if err := c.Fetch(context.Background(), ""); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Fetch error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // TestReconcileFailureSkipsHook covers a certificate whose outputs cannot all
 // be written: its on_change program waits, with hook_pending on disk, until
 // they are complete.
