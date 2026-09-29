@@ -198,6 +198,15 @@ func runClientRemove(cmd *cobra.Command, args []string) error {
 // token create / list / revoke
 // ---------------------------------------------------------------------------
 
+// tokenCreateResult is what token create prints with --json.
+type tokenCreateResult struct {
+	Token          string    `json:"token"`
+	TokenID        string    `json:"token_id"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	InstallSh      string    `json:"install_sh"`
+	InstallWindows string    `json:"install_ps1"`
+}
+
 func runTokenCreate(cmd *cobra.Command, _ []string) error {
 	name, _ := cmd.Flags().GetString("name")
 	ttl, _ := cmd.Flags().GetDuration("expires")
@@ -217,8 +226,9 @@ func runTokenCreate(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("create token: %w", err)
 	}
 	// A daemon started before this binary was installed answers the same
-	// route with a bare token ID that can never be redeemed.
-	if created.Token == "" || created.ServerURL == "" {
+	// route without the token ID, or with a bare token ID that can never be
+	// redeemed. It did not refuse the name of an enrolled client either.
+	if created.Token == "" || created.TokenID == "" || created.ServerURL == "" {
 		return fmt.Errorf("create token: the running sigils daemon returned no usable token; it is older than this command, so restart the sigils service and try again")
 	}
 	// Without public_url the URL is derived from server.listen and may not be
@@ -229,6 +239,19 @@ func runTokenCreate(cmd *cobra.Command, _ []string) error {
 
 	sh, ps1 := api.InstallCommands(created.ServerURL, created.Token)
 	out := cmd.OutOrStdout()
+	if asJSON, _ := cmd.Root().PersistentFlags().GetBool("json"); asJSON {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(tokenCreateResult{
+			Token:          created.Token,
+			TokenID:        created.TokenID,
+			ExpiresAt:      created.ExpiresAt,
+			InstallSh:      sh,
+			InstallWindows: ps1,
+		})
+	}
+	fmt.Fprintf(out, "Token ID: %s\n", created.TokenID)
+	fmt.Fprintf(out, "Expires:  %s\n", created.ExpiresAt.Local().Format("2006-01-02 15:04:05 -07:00"))
 	fmt.Fprintf(out, "Token: %s\n\n", created.Token)
 	fmt.Fprintln(out, "Install (Linux/macOS):")
 	fmt.Fprintf(out, "  %s\n\n", sh)

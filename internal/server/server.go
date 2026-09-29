@@ -29,6 +29,10 @@ import (
 // daemon shutdown.
 const shutdownTimeout = 10 * time.Second
 
+// maxTokenLifetime bounds the lifetime of an enrollment token: anyone who
+// reads one before it is used can enroll with it.
+const maxTokenLifetime = 7 * 24 * time.Hour
+
 // Run loads server.yaml from configPath and runs the sigils daemon until ctx
 // is cancelled or the HTTPS or IPC server fails. Shutdown stops the HTTPS and
 // IPC servers, waits for the renewal scheduler, and closes the store last.
@@ -188,6 +192,9 @@ func createToken(ctx context.Context, enrollSrv *enroll.Server, clients *store.C
 	if ttl <= 0 {
 		return ipc.CreateTokenResponse{}, fmt.Errorf("token lifetime must be positive, got %s", ttl)
 	}
+	if ttl > maxTokenLifetime {
+		return ipc.CreateTokenResponse{}, fmt.Errorf("token lifetime must be at most %s, got %s", maxTokenLifetime, ttl)
+	}
 	serverURL := cfg.PublicBaseURL()
 	if cfg.Server.PublicURL == "" {
 		// Without public_url the base URL is derived from server.listen, which
@@ -224,6 +231,8 @@ func createToken(ctx context.Context, enrollSrv *enroll.Server, clients *store.C
 	slog.Info("enrollment token created", "token", payload.TokenID, "client", payload.Name, "expires_at", payload.ExpiresAt)
 	return ipc.CreateTokenResponse{
 		Token:               token,
+		TokenID:             payload.TokenID,
+		ExpiresAt:           payload.ExpiresAt,
 		ServerURL:           serverURL,
 		PublicURLConfigured: cfg.Server.PublicURL != "",
 	}, nil

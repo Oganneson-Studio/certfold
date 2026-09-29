@@ -73,13 +73,16 @@ type CreateTokenRequest struct {
 	Replace bool          `json:"replace,omitempty"`
 }
 
-// CreateTokenResponse is returned by POST /ipc/v1/tokens. ServerURL is the
-// base URL the token is bound to. PublicURLConfigured reports whether it
-// comes from server.public_url rather than being derived from server.listen.
+// CreateTokenResponse is returned by POST /ipc/v1/tokens. TokenID names the
+// token in token list and token revoke. ServerURL is the base URL the token
+// is bound to. PublicURLConfigured reports whether it comes from
+// server.public_url rather than being derived from server.listen.
 type CreateTokenResponse struct {
-	Token               string `json:"token"`
-	ServerURL           string `json:"server_url"`
-	PublicURLConfigured bool   `json:"public_url_configured"`
+	Token               string    `json:"token"`
+	TokenID             string    `json:"token_id"`
+	ExpiresAt           time.Time `json:"expires_at"`
+	ServerURL           string    `json:"server_url"`
+	PublicURLConfigured bool      `json:"public_url_configured"`
 }
 
 // ClientState is the runtime status returned by a sigilc daemon. Certs lists
