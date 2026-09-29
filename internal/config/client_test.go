@@ -201,10 +201,10 @@ certificates:
     outputs:
       - format: pem-fullchain
         path: /etc/nginx/certs/api.crt
-        mode: 420
+        mode: 0644
       - format: pem-key
         path: /etc/nginx/certs/api.key
-        mode: 384
+        mode: 600
       - format: pkcs12
         path: /etc/app/keystore.p12
         password: "secret"

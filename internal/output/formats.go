@@ -231,7 +231,7 @@ func withoutTempName(err error) error {
 
 func outputMode(spec config.OutputSpec) int {
 	if spec.Mode != 0 {
-		return spec.Mode
+		return int(spec.Mode)
 	}
 	if carriesKey(spec.Format) {
 		return 0o600

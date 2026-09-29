@@ -10,8 +10,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // ClientConfig is the in-memory representation of client.yaml.
@@ -48,12 +51,30 @@ type CertificateOutputs struct {
 }
 
 type OutputSpec struct {
-	Format   string `yaml:"format"`
-	Path     string `yaml:"path"`
-	Mode     int    `yaml:"mode,omitempty"`
-	Owner    string `yaml:"owner,omitempty"`
-	Group    string `yaml:"group,omitempty"`
-	Password string `yaml:"password,omitempty"` // for pkcs12
+	Format   string   `yaml:"format"`
+	Path     string   `yaml:"path"`
+	Mode     FileMode `yaml:"mode,omitempty"`
+	Owner    string   `yaml:"owner,omitempty"`
+	Group    string   `yaml:"group,omitempty"`
+	Password string   `yaml:"password,omitempty"` // for pkcs12
+}
+
+// FileMode is the permission bits of an output file. client.yaml gives them
+// in octal as chmod takes them, with or without a leading 0 or 0o: 640, 0640
+// and 0o640 are all 0o640. YAML alone would read 440 as decimal, which is
+// 0o670: a valid mode that lets the group write the file.
+type FileMode int
+
+// UnmarshalYAML reads the text of the scalar as octal, whatever type YAML
+// resolves it to; after ${VAR} expansion the text is the variable's value.
+// The Value of a mapping or a sequence is empty, which is not octal.
+func (m *FileMode) UnmarshalYAML(n *yaml.Node) error {
+	mode, err := strconv.ParseUint(strings.TrimPrefix(n.Value, "0o"), 8, 32)
+	if err != nil {
+		return &yaml.TypeError{Errors: []string{fmt.Sprintf("line %d: mode %q is not an octal file mode such as 0640", n.Line, n.Value)}}
+	}
+	*m = FileMode(mode)
+	return nil
 }
 
 const (
@@ -162,7 +183,7 @@ func (c *ClientConfig) Validate() error {
 					outputPaths[key] = base
 				}
 			}
-			if o.Mode != 0 && (o.Mode < 0 || o.Mode > 0o777) {
+			if o.Mode > 0o777 {
 				v.Add(base+".mode", "must be a valid octal file mode (got %#o)", o.Mode)
 			}
 			if o.Format == "pkcs12" && o.Password == "" {
