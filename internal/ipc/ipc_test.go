@@ -260,7 +260,7 @@ func TestCertificatesCannotBeWrittenOverIPC(t *testing.T) {
 func TestRequestBodyIsLimited(t *testing.T) {
 	created := false
 	router := buildIPCRouter(&ipcHandlers{deps: ServerDeps{Tokens: &TokenControlDeps{
-		Create: func(context.Context, string, time.Duration) (CreateTokenResponse, error) {
+		Create: func(context.Context, CreateTokenRequest) (CreateTokenResponse, error) {
 			created = true
 			return CreateTokenResponse{}, nil
 		},
@@ -392,31 +392,28 @@ func TestListClients(t *testing.T) {
 }
 
 func TestCreateToken(t *testing.T) {
-	var gotName string
-	var gotTTL time.Duration
+	var got CreateTokenRequest
 	want := CreateTokenResponse{
 		Token:               "opaque-token",
 		ServerURL:           "https://sigil.example.com",
 		PublicURLConfigured: true,
 	}
 	h := &ipcHandlers{deps: ServerDeps{Tokens: &TokenControlDeps{
-		Create: func(_ context.Context, name string, ttl time.Duration) (CreateTokenResponse, error) {
-			gotName, gotTTL = name, ttl
+		Create: func(_ context.Context, req CreateTokenRequest) (CreateTokenResponse, error) {
+			got = req
 			return want, nil
 		},
 	}}}
 	ts := httptest.NewServer(buildIPCRouter(h))
 	defer ts.Close()
 
-	created, err := newTestClient(ts).CreateToken(context.Background(), CreateTokenRequest{
-		Name: "web-1",
-		TTL:  10 * time.Minute,
-	})
+	sent := CreateTokenRequest{Name: "web-1", TTL: 10 * time.Minute, Replace: true}
+	created, err := newTestClient(ts).CreateToken(context.Background(), sent)
 	if err != nil {
 		t.Fatalf("CreateToken: %v", err)
 	}
-	if gotName != "web-1" || gotTTL != 10*time.Minute {
-		t.Fatalf("daemon received name %q and ttl %s", gotName, gotTTL)
+	if got != sent {
+		t.Fatalf("daemon received %+v, want %+v", got, sent)
 	}
 	if *created != want {
 		t.Fatalf("response = %+v, want %+v", *created, want)
@@ -425,7 +422,7 @@ func TestCreateToken(t *testing.T) {
 
 func TestCreateTokenReportsDaemonRejection(t *testing.T) {
 	h := &ipcHandlers{deps: ServerDeps{Tokens: &TokenControlDeps{
-		Create: func(context.Context, string, time.Duration) (CreateTokenResponse, error) {
+		Create: func(context.Context, CreateTokenRequest) (CreateTokenResponse, error) {
 			return CreateTokenResponse{}, errors.New(`invalid client name "Web 1"`)
 		},
 	}}}

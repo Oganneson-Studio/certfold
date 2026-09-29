@@ -201,9 +201,14 @@ func (f *fakeBackend) DeleteToken(_ context.Context, id string) error {
 	return f.change("DeleteToken " + id)
 }
 
-// CreateToken lists the new token first, as the daemon does.
+// CreateToken lists the new token first, as the daemon does. The call it
+// records ends in " replace" when the request says to replace.
 func (f *fakeBackend) CreateToken(_ context.Context, req ipc.CreateTokenRequest) (*ipc.CreateTokenResponse, error) {
-	if err := f.change(fmt.Sprintf("CreateToken %s %s", req.Name, req.TTL)); err != nil {
+	call := fmt.Sprintf("CreateToken %s %s", req.Name, req.TTL)
+	if req.Replace {
+		call += " replace"
+	}
+	if err := f.change(call); err != nil {
 		return nil, err
 	}
 	f.mu.Lock()

@@ -12,6 +12,7 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/ca"
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/enroll"
+	"github.com/Oganneson-Studio/sigil/internal/ipc"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
@@ -31,7 +32,7 @@ func TestCreateTokenRejectsNonPositiveLifetime(t *testing.T) {
 
 	// Zero can only arrive over IPC directly; the CLI maps it to its default.
 	for _, ttl := range []time.Duration{0, -5 * time.Minute} {
-		if _, err := createToken(ctx, enrollSrv, cfg, "web-1", ttl); err == nil || !strings.Contains(err.Error(), "must be positive") {
+		if _, err := createToken(ctx, enrollSrv, db.Clients, cfg, ipc.CreateTokenRequest{Name: "web-1", TTL: ttl}); err == nil || !strings.Contains(err.Error(), "must be positive") {
 			t.Errorf("createToken with lifetime %s: error = %v, want a positive lifetime error", ttl, err)
 		}
 	}

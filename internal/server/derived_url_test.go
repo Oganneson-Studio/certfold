@@ -10,6 +10,7 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/ca"
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/enroll"
+	"github.com/Oganneson-Studio/sigil/internal/ipc"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
@@ -35,7 +36,7 @@ func TestCreateTokenRefusesADerivedURLSigilcWouldRefuse(t *testing.T) {
 		{"bücher.internal:8443", `must not contain 'ü'`},
 	} {
 		cfg := &config.ServerConfig{Server: config.ServerSection{Listen: tc.listen}}
-		_, err := createToken(ctx, enrollSrv, cfg, fmt.Sprintf("web-%d", i), time.Hour)
+		_, err := createToken(ctx, enrollSrv, db.Clients, cfg, ipc.CreateTokenRequest{Name: fmt.Sprintf("web-%d", i), TTL: time.Hour})
 		want := "server.public_url must be set: the URL derived from server.listen " + tc.reason
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("listen %q: error = %v, want %s", tc.listen, err, want)

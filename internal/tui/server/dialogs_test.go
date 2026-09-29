@@ -89,6 +89,36 @@ func TestTokenFormTakesTheKeysOfOtherCommands(t *testing.T) {
 	}
 }
 
+// TestTokenForEnrolledNameAsksFirst covers a new token for the name of an
+// enrolled client: the host that redeems it replaces the client, so the TUI
+// asks before it creates the token, and then asks the daemon to replace.
+func TestTokenForEnrolledNameAsksFirst(t *testing.T) {
+	fake := newFake(3)
+	m, _ := press(t, onTab(t, fake, tabTokens), "n", "web-2", "enter")
+	if m.confirm == nil || !shows(m, `Client "web-2" is enrolled.`) || len(fake.changes()) != 0 {
+		t.Fatalf("token for enrolled web-2: confirmation %v, calls %q; want a confirmation and no call", m.confirm, fake.changes())
+	}
+	m, _ = press(t, m, "n")
+	if m.confirm != nil || len(fake.changes()) != 0 {
+		t.Fatalf("n: confirmation %v, calls %q; want it closed and no call", m.confirm, fake.changes())
+	}
+
+	m, _ = press(t, m, "n", "web-2", "enter", "y")
+	if calls := fake.changes(); !slices.Equal(calls, []string{"CreateToken web-2 1h0m0s replace"}) {
+		t.Errorf("y: backend calls %q, want the token created to replace web-2", calls)
+	}
+	if m.confirm != nil || m.created == nil {
+		t.Error("confirming did not show the new token")
+	}
+
+	// A name no client has needs no confirmation.
+	fake = newFake(3)
+	m, _ = press(t, onTab(t, fake, tabTokens), "n", "web-9", "enter")
+	if calls := fake.changes(); m.confirm != nil || !slices.Equal(calls, []string{"CreateToken web-9 1h0m0s"}) {
+		t.Errorf("token for web-9: confirmation %v, calls %q; want the token created at once", m.confirm, calls)
+	}
+}
+
 func TestNewTokenShownOnlyInItsBox(t *testing.T) {
 	fake := newFake(3)
 	m, _ := press(t, onTab(t, fake, tabTokens), "n", "web-9", "enter")

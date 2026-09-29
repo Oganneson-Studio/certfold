@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -23,18 +24,21 @@ var dialogStyle = lipgloss.NewStyle().
 	BorderForeground(shared.Purple).
 	Padding(0, 1)
 
-// confirmation asks before a renewal, a client removal or a token
-// revocation. run holds the target from when the dialog opened, so a refresh
-// that moves the selection cannot change what y acts on.
+// confirmation asks before a renewal, a client removal, a token revocation
+// or a token for the name of an enrolled client. run holds the target from
+// when the dialog opened, so a refresh that moves the selection cannot change
+// what y acts on.
 type confirmation struct {
 	verb   string // what y does, for the help
 	prompt string
-	run    func(context.Context) error
+	run    tea.Cmd
 }
 
 // ask opens a confirmation of run.
 func (m *Model) ask(verb, prompt string, run func(context.Context) error) {
-	m.confirm = &confirmation{verb: verb, prompt: prompt, run: run}
+	m.confirm = &confirmation{verb: verb, prompt: prompt, run: func() tea.Msg {
+		return actionMsg{err: run(context.Background())}
+	}}
 }
 
 func (m *Model) updateConfirm(msg tea.KeyMsg) tea.Cmd {
@@ -43,7 +47,7 @@ func (m *Model) updateConfirm(msg tea.KeyMsg) tea.Cmd {
 		run := m.confirm.run
 		m.confirm = nil
 		m.actionErr = nil
-		return func() tea.Msg { return actionMsg{err: run(context.Background())} }
+		return run
 	case key.Matches(msg, m.keys.Cancel):
 		m.confirm = nil
 	}
@@ -84,10 +88,25 @@ func (m *Model) updateForm(msg tea.KeyMsg) tea.Cmd {
 		name, b := f.name, m.backend
 		m.form = nil
 		m.actionErr = nil
-		return func() tea.Msg {
-			token, err := b.CreateToken(context.Background(), ipc.CreateTokenRequest{Name: name, TTL: ttl})
-			return createdMsg{name: name, token: token, err: err}
+		create := func(replace bool) tea.Cmd {
+			return func() tea.Msg {
+				token, err := b.CreateToken(context.Background(), ipc.CreateTokenRequest{Name: name, TTL: ttl, Replace: replace})
+				return createdMsg{name: name, token: token, err: err}
+			}
 		}
+		// The daemon refuses the name of an enrolled client unless asked to
+		// replace it. The clients are those of the last refresh; one enrolled
+		// since then gets the daemon's refusal.
+		if slices.ContainsFunc(m.clients, func(c *ipc.ClientInfo) bool { return c.Name == name }) {
+			m.confirm = &confirmation{
+				verb: "replace",
+				prompt: "Client " + strconv.Quote(name) + " is enrolled. The host that enrolls with a token for this name " +
+					"replaces it, takes over its certificates and locks the enrolled host out. Create the token?",
+				run: create(true),
+			}
+			return nil
+		}
+		return create(false)
 	default:
 		value := &f.name
 		if f.onTTL {

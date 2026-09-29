@@ -201,6 +201,7 @@ func runClientRemove(cmd *cobra.Command, args []string) error {
 func runTokenCreate(cmd *cobra.Command, _ []string) error {
 	name, _ := cmd.Flags().GetString("name")
 	ttl, _ := cmd.Flags().GetDuration("expires")
+	replace, _ := cmd.Flags().GetBool("replace")
 	if ttl == 0 {
 		ttl = time.Hour
 	}
@@ -211,7 +212,7 @@ func runTokenCreate(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
-	created, err := c.CreateToken(commandContext(cmd), ipc.CreateTokenRequest{Name: name, TTL: ttl})
+	created, err := c.CreateToken(commandContext(cmd), ipc.CreateTokenRequest{Name: name, TTL: ttl, Replace: replace})
 	if err != nil {
 		return fmt.Errorf("create token: %w", err)
 	}

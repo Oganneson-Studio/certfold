@@ -231,6 +231,47 @@ func TestTokenCreateIssuesTokenThroughDaemon(t *testing.T) {
 	}
 }
 
+// serveTokens serves the token creation of the IPC API with create until the
+// test ends, and returns its endpoint.
+func serveTokens(t *testing.T, create func(context.Context, ipc.CreateTokenRequest) (ipc.CreateTokenResponse, error)) string {
+	t.Helper()
+	socket := testIPCSocket(t)
+	l, err := ipc.Listen(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := ipc.NewServer(ipc.ServerDeps{Tokens: &ipc.TokenControlDeps{Create: create}})
+	t.Cleanup(func() { _ = srv.Close() })
+	go func() { _ = srv.Serve(l) }()
+	if _, err := ipc.NewClient(socket); err != nil {
+		skipWithoutPipeAccess(t, err)
+		t.Fatal(err)
+	}
+	return socket
+}
+
+// TestTokenCreatePassesReplace covers --replace, which the daemon requires to
+// create a token for the name of an enrolled client.
+func TestTokenCreatePassesReplace(t *testing.T) {
+	requests := make(chan ipc.CreateTokenRequest, 2)
+	socket := serveTokens(t, func(_ context.Context, req ipc.CreateTokenRequest) (ipc.CreateTokenResponse, error) {
+		requests <- req
+		return ipc.CreateTokenResponse{Token: "token", ServerURL: "https://sigil.example.com", PublicURLConfigured: true}, nil
+	})
+	for _, replace := range []bool{false, true} {
+		args := []string{"--name", "web-1"}
+		if replace {
+			args = append(args, "--replace")
+		}
+		if _, _, err := tokenCreate(socket, args...); err != nil {
+			t.Fatalf("token create %v: %v", args, err)
+		}
+		if req := <-requests; req.Name != "web-1" || req.Replace != replace {
+			t.Errorf("token create %v sent %+v, want replace %t", args, req, replace)
+		}
+	}
+}
+
 func TestTokenCreateRefusesAnswerOfOutdatedDaemon(t *testing.T) {
 	socket := testIPCSocket(t)
 	l, err := ipc.Listen(socket)

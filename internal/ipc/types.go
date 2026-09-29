@@ -63,10 +63,14 @@ type TokenInfo struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// CreateTokenRequest is the body of POST /ipc/v1/tokens.
+// CreateTokenRequest is the body of POST /ipc/v1/tokens. The daemon refuses
+// a Name that an enrolled client has, unless Replace is set: the host that
+// redeems the token replaces that client, takes over the certificates it
+// subscribes to and locks the enrolled host out.
 type CreateTokenRequest struct {
-	Name string        `json:"name"`
-	TTL  time.Duration `json:"ttl"`
+	Name    string        `json:"name"`
+	TTL     time.Duration `json:"ttl"`
+	Replace bool          `json:"replace,omitempty"`
 }
 
 // CreateTokenResponse is returned by POST /ipc/v1/tokens. ServerURL is the

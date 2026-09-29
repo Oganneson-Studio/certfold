@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -121,8 +123,8 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 			RenewalPlan: r.RenewalPlan,
 		},
 		Tokens: &ipc.TokenControlDeps{
-			Create: func(ctx context.Context, name string, ttl time.Duration) (ipc.CreateTokenResponse, error) {
-				return createToken(ctx, enrollSrv, runtimeConfig.Current(), name, ttl)
+			Create: func(ctx context.Context, req ipc.CreateTokenRequest) (ipc.CreateTokenResponse, error) {
+				return createToken(ctx, enrollSrv, db.Clients, runtimeConfig.Current(), req)
 			},
 		},
 		Events: logs.Events,
@@ -177,8 +179,12 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 }
 
 // createToken issues an enrollment token bound to the public base URL of the
-// running configuration, the URL clients use to reach this server.
-func createToken(ctx context.Context, enrollSrv *enroll.Server, cfg *config.ServerConfig, name string, ttl time.Duration) (ipc.CreateTokenResponse, error) {
+// running configuration, the URL clients use to reach this server. It refuses
+// the name of an enrolled client unless req.Replace is set: enrollment
+// replaces the client of the name, so a mistyped name would hand another
+// host's certificates and keys to the new one without a word.
+func createToken(ctx context.Context, enrollSrv *enroll.Server, clients *store.ClientRepo, cfg *config.ServerConfig, req ipc.CreateTokenRequest) (ipc.CreateTokenResponse, error) {
+	name, ttl := req.Name, req.TTL
 	if ttl <= 0 {
 		return ipc.CreateTokenResponse{}, fmt.Errorf("token lifetime must be positive, got %s", ttl)
 	}
@@ -194,6 +200,16 @@ func createToken(ctx context.Context, enrollSrv *enroll.Server, cfg *config.Serv
 		// not be server.public_url: check it before the token is stored.
 		if err := config.ValidatePublicURL(serverURL); err != nil {
 			return ipc.CreateTokenResponse{}, fmt.Errorf("server.public_url must be set: the URL derived from server.listen %w", err)
+		}
+	}
+	if !req.Replace {
+		_, err := clients.Get(ctx, name, nil)
+		if err == nil {
+			return ipc.CreateTokenResponse{}, fmt.Errorf("client %q is already enrolled: the host that enrolls with a token for this name replaces it, "+
+				"takes over its certificates and locks the enrolled host out; create the token with --replace if that is intended", name)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return ipc.CreateTokenResponse{}, fmt.Errorf("look up client %q: %w", name, err)
 		}
 	}
 	token, err := enrollSrv.Create(ctx, serverURL, name, ttl)

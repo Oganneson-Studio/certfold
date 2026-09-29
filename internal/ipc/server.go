@@ -50,7 +50,7 @@ type CertificateControlDeps struct {
 // TokenControlDeps exposes enrollment-token operations implemented by the
 // sigils daemon.
 type TokenControlDeps struct {
-	Create func(ctx context.Context, name string, ttl time.Duration) (CreateTokenResponse, error)
+	Create func(ctx context.Context, req CreateTokenRequest) (CreateTokenResponse, error)
 }
 
 // ClientControlDeps exposes the operations supported by a sigilc daemon.

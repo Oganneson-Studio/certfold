@@ -121,7 +121,7 @@ func (h *ipcHandlers) createToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	resp, err := h.deps.Tokens.Create(r.Context(), req.Name, req.TTL)
+	resp, err := h.deps.Tokens.Create(r.Context(), req)
 	if err != nil {
 		// The daemon's reason (for example an invalid client name) is what
 		// the operator needs to see.
