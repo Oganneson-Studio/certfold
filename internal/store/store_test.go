@@ -115,6 +115,41 @@ func TestCertRepo_List(t *testing.T) {
 	}
 }
 
+func TestCertRepo_ListSummariesLeavesOutTheMaterial(t *testing.T) {
+	db := openTestDB(t)
+	notAfter := time.Now().UTC().Truncate(time.Second).Add(90 * 24 * time.Hour)
+	for _, name := range []string{"beta", "alpha"} {
+		if err := db.Certs.Upsert(ctx, &CertRecord{
+			Name:            name,
+			CA:              "letsencrypt",
+			Domains:         []string{name + ".example.com"},
+			SpecFingerprint: "sha256:SPEC-" + name,
+			FullchainPEM:    "chain-" + name,
+			KeyPEM:          "key-" + name,
+			NotAfter:        notAfter,
+			Fingerprint:     "sha256:" + name,
+		}, nil); err != nil {
+			t.Fatalf("Upsert %s: %v", name, err)
+		}
+	}
+
+	list, err := db.Certs.ListSummaries(ctx)
+	if err != nil {
+		t.Fatalf("ListSummaries: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("ListSummaries returned %d records, want 2", len(list))
+	}
+	for i, name := range []string{"alpha", "beta"} {
+		want := CertRecord{Name: name, SpecFingerprint: "sha256:SPEC-" + name, Fingerprint: "sha256:" + name, NotAfter: notAfter}
+		if got := *list[i]; got.Name != want.Name || got.SpecFingerprint != want.SpecFingerprint ||
+			got.Fingerprint != want.Fingerprint || !got.NotAfter.Equal(want.NotAfter) ||
+			got.FullchainPEM != "" || got.KeyPEM != "" {
+			t.Errorf("ListSummaries[%d] = %+v, want %+v without the PEM material", i, got, want)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ClientRepo
 // ---------------------------------------------------------------------------

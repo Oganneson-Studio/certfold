@@ -1112,6 +1112,61 @@ func TestSyncAnswersAtShutdown(t *testing.T) {
 	}
 }
 
+// Every waiting sync is read again at each change, so one client may have
+// only maxSyncsPerClient of them; the next is refused at once, other clients
+// are not, and the client may sync again once one of its requests is done.
+func TestSyncLimitsTheRequestsOfOneClient(t *testing.T) {
+	setSyncMaxWait(t, time.Minute)
+	deps := buildDeps(t)
+	shutdown := make(chan struct{})
+	deps.Done = shutdown
+	identity := makeEnrolledClientCert(t, deps, "web-1")
+	other := makeEnrolledClientCert(t, deps, "web-2")
+	h := newHandlers(deps)
+	handler := buildRouter(h)
+	_, etag := syncView(t, handler, identity)
+
+	var waiting []<-chan *httptest.ResponseRecorder
+	for range maxSyncsPerClient {
+		waiting = append(waiting, startSync(handler, syncRequest(identity, etag)))
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		h.syncMu.Lock()
+		n := h.syncing["web-1"]
+		h.syncMu.Unlock()
+		if n == maxSyncsPerClient {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of %d syncs in progress after 5s", n, maxSyncsPerClient)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, syncRequest(identity, etag))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("sync %d of web-1: status = %d, want 429", maxSyncsPerClient+1, rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, syncRequest(other, ""))
+	if rec.Code != http.StatusOK {
+		t.Errorf("sync of web-2 while web-1 has %d: status = %d, want 200", maxSyncsPerClient, rec.Code)
+	}
+
+	close(shutdown)
+	for _, answered := range waiting {
+		if rec := awaitSync(t, answered); rec.Code != http.StatusNotModified {
+			t.Errorf("waiting sync: status = %d, want 304", rec.Code)
+		}
+	}
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, syncRequest(identity, ""))
+	if rec.Code != http.StatusOK {
+		t.Errorf("sync of web-1 after its requests were done: status = %d, want 200", rec.Code)
+	}
+}
+
 // TestSyncOutlivesServerTimeouts waits out a sync over real connections to a
 // server whose read and write timeouts, like the 15s and 30s of production,
 // end before the wait does.

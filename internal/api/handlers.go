@@ -40,10 +40,19 @@ type handlers struct {
 	// last_seen was last written, or is being written.
 	seenMu   sync.Mutex
 	lastSeen map[string]time.Time
+
+	// syncMu guards syncing, which counts for each client its GET /v1/sync
+	// requests in progress.
+	syncMu  sync.Mutex
+	syncing map[string]int
 }
 
 func newHandlers(deps Deps) *handlers {
-	return &handlers{deps: deps, lastSeen: make(map[string]time.Time)}
+	return &handlers{
+		deps:     deps,
+		lastSeen: make(map[string]time.Time),
+		syncing:  make(map[string]int),
+	}
 }
 
 // ---------------------------------------------------------------------------

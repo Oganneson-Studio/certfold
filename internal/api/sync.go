@@ -17,6 +17,11 @@ import (
 // changed. A variable so that tests can shorten it.
 var syncMaxWait = proto.SyncMaxWait
 
+// maxSyncsPerClient is how many GET /v1/sync requests one client may have in
+// progress. sigilc has one; one it cancelled may linger until the server sees
+// the cancellation.
+const maxSyncsPerClient = 4
+
 // ---------------------------------------------------------------------------
 // GET /v1/sync
 // ---------------------------------------------------------------------------
@@ -37,6 +42,26 @@ func (h *handlers) syncCertificates(w http.ResponseWriter, r *http.Request) {
 	if values := r.Header.Values("If-None-Match"); len(values) == 1 {
 		ifNoneMatch = values[0]
 	}
+
+	// Every waiting request reads the store again at each change, and each
+	// read holds up the other readers and writers, so a client may not pile
+	// them up. sigilc backs off on the 429.
+	h.syncMu.Lock()
+	if h.syncing[clientName] >= maxSyncsPerClient {
+		h.syncMu.Unlock()
+		http.Error(w, "too many sync requests in progress", http.StatusTooManyRequests)
+		return
+	}
+	h.syncing[clientName]++
+	h.syncMu.Unlock()
+	defer func() {
+		h.syncMu.Lock()
+		h.syncing[clientName]--
+		if h.syncing[clientName] == 0 {
+			delete(h.syncing, clientName)
+		}
+		h.syncMu.Unlock()
+	}()
 
 	// The wait outlasts the server's WriteTimeout, past which HTTP/1.1 cuts
 	// the response off and HTTP/2 resets the stream. Only this request's write
@@ -113,7 +138,7 @@ func (h *handlers) syncCertificates(w http.ResponseWriter, r *http.Request) {
 // fetch: those it subscribes to in the running configuration whose stored
 // material matches their current specification.
 func (h *handlers) certificateView(ctx context.Context, clientName string) ([]proto.CertSummary, error) {
-	all, err := h.deps.DB.Certs.List(ctx, nil)
+	all, err := h.deps.DB.Certs.ListSummaries(ctx)
 	if err != nil {
 		return nil, err
 	}
