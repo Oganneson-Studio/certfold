@@ -120,8 +120,13 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 	// for the scheduler's issuances, up to issuanceStopTimeout, but not for
 	// manual renewals.
 	ipcSrv := ipc.NewServer(ipc.ServerDeps{
-		DB:     db,
-		Server: &ipc.ServerControlDeps{Reload: runtimeConfig.Reload},
+		DB: db,
+		Server: &ipc.ServerControlDeps{
+			Reload:            runtimeConfig.Reload,
+			ConfigPath:        configPath,
+			AddCertificate:    runtimeConfig.AddCertificate,
+			RemoveCertificate: runtimeConfig.RemoveCertificate,
+		},
 		Certificates: &ipc.CertificateControlDeps{
 			Renew: func(ctx context.Context, name string) error {
 				slog.Info("manual renewal requested", "cert", name)
