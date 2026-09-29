@@ -49,10 +49,29 @@ func Listen(path string) (net.Listener, error) {
 		sddl = "O:BA" + pipeSddl
 	}
 	l, err := winio.ListenPipe(path, &winio.PipeConfig{SecurityDescriptor: sddl})
+	if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		err = pipeTaken(path)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("ipc listen pipe %s: %w", path, err)
 	}
 	return l, nil
+}
+
+// pipeTaken explains why creating the pipe at path was denied: a pipe of that
+// name exists. Its owner tells another daemon from a program that took the
+// name first, which keeps the daemon from starting. The owner can be read
+// only while the pipe waits for a client and its DACL lets this process read
+// it.
+func pipeTaken(path string) error {
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return fmt.Errorf("another process holds the pipe name, and its owner cannot be read: %w", err)
+	}
+	if err := checkPipeOwner(sd); err != nil {
+		return err
+	}
+	return errors.New("another daemon is already running on this pipe")
 }
 
 // Dial connects to the named pipe at path and refuses a pipe that LocalSystem
