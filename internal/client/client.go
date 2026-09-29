@@ -411,8 +411,11 @@ func (c *Client) getBundle(ctx context.Context, name string) (*proto.CertBundle,
 // When Reconcile rewrites the content of an output of a certificate that has
 // an on_change program, the certificate gets hook_pending; repairing only the
 // mode or owner of an output does not set it. The new bits are written to the
-// store before any program runs. A program does not run while its
-// certificate's outputs failed to reconcile, since they may be incomplete. A
+// store before any program runs, and no program runs while that write fails:
+// a program runs only once the store records that it must, so that a sigilc
+// stopped while the program runs runs it again after a restart. A program
+// does not run while its certificate's outputs failed to reconcile, since
+// they may be incomplete. A
 // program that exits 0 clears the bit, and so does the lack of a program; a
 // failure keeps it, so the program runs again after the next reconcile. The
 // cleared bits are written once all programs have run.
@@ -448,7 +451,7 @@ func (c *Client) reconcileLocked() error {
 	}
 	if pending || c.storeUnsaved {
 		if err := c.writeStoreLocked(); err != nil {
-			errs = append(errs, err)
+			return errors.Join(append(errs, err)...)
 		}
 	}
 
