@@ -12,6 +12,7 @@ import (
 	ksvc "github.com/kardianos/service"
 
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
+	"github.com/Oganneson-Studio/sigil/internal/securefile"
 )
 
 // Daemon is the application logic that the system service runs.
@@ -272,6 +273,13 @@ func NoopDaemon() Daemon { return &noopDaemon{} }
 // Returns (n, nil) where n is the number of binaries written.
 // If fsys contains no matching files the function prints a warning and returns (0, nil).
 func UnpackClients(fsys fs.FS, dataDir string, w io.Writer) (int, error) {
+	// The service is installed before it first runs, so data_dir may not
+	// exist yet. Created with the default permissions, it would let a local
+	// user put a binary of their own there for the install scripts to hand
+	// out to every new client.
+	if err := securefile.EnsurePrivateDirectory(dataDir); err != nil {
+		return 0, fmt.Errorf("private directory %s: %w", dataDir, err)
+	}
 	destDir := filepath.Join(dataDir, "binaries")
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return 0, fmt.Errorf("mkdir %s: %w", destDir, err)
@@ -306,8 +314,8 @@ func UnpackClients(fsys fs.FS, dataDir string, w io.Writer) (int, error) {
 	}
 
 	if count == 0 {
-		fmt.Fprintf(w, "warning: no bundled sigilc binaries found; "+
-			"drop binaries into %s manually or set binary_source in server.yaml\n", destDir)
+		fmt.Fprintf(w, "warning: this sigils bundles no sigilc binaries; for the install scripts to download them, "+
+			"put them into %s as sigilc-<os>-<arch>, with .exe for windows\n", destDir)
 	}
 	return count, nil
 }

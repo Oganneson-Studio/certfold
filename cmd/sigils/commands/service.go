@@ -46,14 +46,23 @@ func serverSvcConfig(cmd *cobra.Command) internalsvc.Config {
 
 func runServerServiceInstall(cmd *cobra.Command, _ []string) error {
 	cfg := serverSvcConfig(cmd)
-	withClients, _ := cmd.Flags().GetBool("with-clients")
-	// Resolve data_dir before registering the service so a configuration
-	// problem does not leave a half-finished installation.
-	var dataDir string
-	if withClients {
-		var err error
-		if dataDir, err = serviceDataDir(cfg); err != nil {
+	// The binaries are unpacked before the service is registered, so a
+	// problem with either does not leave a half-finished installation.
+	if withClients, _ := cmd.Flags().GetBool("with-clients"); withClients {
+		dataDir, err := serviceDataDir(cfg)
+		if err != nil {
 			return err
+		}
+		sub, err := fs.Sub(internalsvc.ClientBinariesFS(), "dist")
+		if err != nil {
+			return fmt.Errorf("client binaries embed: %w", err)
+		}
+		n, err := internalsvc.UnpackClients(sub, dataDir, os.Stdout)
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			fmt.Printf("%d sigilc binary/ies unpacked to %s/binaries/\n", n, dataDir)
 		}
 	}
 
@@ -61,22 +70,6 @@ func runServerServiceInstall(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	fmt.Println("sigils service installed successfully.")
-	if !withClients {
-		return nil
-	}
-
-	fsys := internalsvc.ClientBinariesFS()
-	sub, err := subFS(fsys, "dist")
-	if err != nil {
-		return fmt.Errorf("client binaries embed: %w", err)
-	}
-	n, err := internalsvc.UnpackClients(sub, dataDir, os.Stdout)
-	if err != nil {
-		return err
-	}
-	if n > 0 {
-		fmt.Printf("%d sigilc binary/ies unpacked to %s/binaries/\n", n, dataDir)
-	}
 	return nil
 }
 
@@ -120,9 +113,4 @@ func serviceDataDir(cfg internalsvc.Config) (string, error) {
 		return "", fmt.Errorf("server.data_dir is not set in %s; it is needed to unpack sigilc binaries", cfg.ConfigPath)
 	}
 	return dataDir, nil
-}
-
-// subFS returns an fs.FS rooted at dir inside fsys.
-func subFS(fsys fs.FS, dir string) (fs.FS, error) {
-	return fs.Sub(fsys, dir)
 }

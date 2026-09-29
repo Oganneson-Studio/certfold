@@ -150,8 +150,10 @@ func TestUnpackClients_EmptyFS(t *testing.T) {
 	if n != 0 {
 		t.Errorf("expected 0 binaries, got %d", n)
 	}
-	if !strings.Contains(buf.String(), "warning") {
-		t.Errorf("expected warning in output, got: %q", buf.String())
+	// The warning says where to put the binaries, and names no setting
+	// that server.yaml does not have.
+	if got := buf.String(); !strings.Contains(got, "warning") || !strings.Contains(got, filepath.Join(dir, "binaries")) || strings.Contains(got, "binary_source") {
+		t.Errorf("output = %q, want a warning that names %s", got, filepath.Join(dir, "binaries"))
 	}
 }
 
