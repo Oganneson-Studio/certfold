@@ -26,10 +26,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func runServe(cmd *cobra.Command, _ []string) error {
-	cfgPath, _ := cmd.Root().PersistentFlags().GetString("config")
-	if cfgPath == "" {
-		cfgPath = defaultClientCfgPath()
-	}
+	cfgPath := clientConfigPath(cmd)
 	return internalsvc.Run(clientSvcConfig(cmd), func(ctx context.Context, logs logging.Logs) error {
 		return agent.Run(ctx, cfgPath, logs)
 	})
@@ -191,17 +188,25 @@ func defaultClientCfgPath() string {
 	return internalsvc.DefaultClientConfigPath()
 }
 
+// clientConfigPath returns the path of client.yaml: --config, else
+// $SIGILC_CONFIG, else the platform default.
+func clientConfigPath(cmd *cobra.Command) string {
+	path, _ := cmd.Root().PersistentFlags().GetString("config")
+	if path == "" {
+		path = defaultClientCfgPath()
+	}
+	return path
+}
+
+// clientIPCSocket returns the IPC endpoint of the daemon: --ipc, else
+// client.ipc_socket, else the platform default.
 func clientIPCSocket(cmd *cobra.Command) string {
 	if path, _ := cmd.Root().PersistentFlags().GetString("ipc"); path != "" {
 		return path
 	}
-	cfgPath, _ := cmd.Root().PersistentFlags().GetString("config")
-	if cfgPath == "" {
-		cfgPath = defaultClientCfgPath()
-	}
 	// Locating the daemon must not require the variables client.yaml takes
 	// from the service's environment.
-	if socket, err := config.ReadClientIPCSocket(cfgPath); err == nil && socket != "" {
+	if socket, err := config.ReadClientIPCSocket(clientConfigPath(cmd)); err == nil && socket != "" {
 		return socket
 	}
 	return ipc.DefaultClientSocket()

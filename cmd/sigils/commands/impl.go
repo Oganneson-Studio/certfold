@@ -75,11 +75,7 @@ func dialReloadServer(cmd *cobra.Command) (serverReloader, error) {
 // ---------------------------------------------------------------------------
 
 func runConfigValidate(cmd *cobra.Command, _ []string) error {
-	cfgPath, _ := cmd.Root().PersistentFlags().GetString("config")
-	if cfgPath == "" {
-		cfgPath = defaultServerCfgPath()
-	}
-	_, err := config.LoadServer(cfgPath)
+	_, err := config.LoadServer(serverConfigPath(cmd))
 	if err != nil {
 		return err
 	}

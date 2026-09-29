@@ -17,7 +17,7 @@ Use subcommands to manage certificates, clients, and enrollment tokens.`,
 		RunE:          runDefaultTUI,
 	}
 
-	cmd.PersistentFlags().String("config", "", "path to server.yaml (default: platform-specific)")
+	cmd.PersistentFlags().String("config", "", "path to server.yaml (default: $SIGILS_CONFIG, else platform-specific)")
 	cmd.PersistentFlags().String("ipc", "", "IPC socket path (default: platform-specific)")
 	cmd.PersistentFlags().Bool("json", false, "emit machine-readable JSON output")
 

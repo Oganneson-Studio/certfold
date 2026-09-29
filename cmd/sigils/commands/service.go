@@ -35,11 +35,12 @@ func newServiceCmd() *cobra.Command {
 	return cmd
 }
 
+// serverSvcConfig returns the service of sigils started with the
+// configuration file the other commands read.
 func serverSvcConfig(cmd *cobra.Command) internalsvc.Config {
-	cfgPath, _ := cmd.Root().PersistentFlags().GetString("config")
 	return internalsvc.Config{
 		Role:       internalsvc.RoleServer,
-		ConfigPath: cfgPath,
+		ConfigPath: serverConfigPath(cmd),
 	}
 }
 
@@ -111,16 +112,12 @@ func runServerServiceStatus(cmd *cobra.Command, _ []string) error {
 // serviceDataDir returns server.data_dir from the configuration file the
 // installed service is started with.
 func serviceDataDir(cfg internalsvc.Config) (string, error) {
-	path := cfg.ConfigPath
-	if path == "" {
-		path = internalsvc.DefaultServerConfigPath()
-	}
-	dataDir, _, err := config.ReadServerPaths(path)
+	dataDir, _, err := config.ReadServerPaths(cfg.ConfigPath)
 	if err != nil {
 		return "", fmt.Errorf("read server.data_dir to unpack sigilc binaries: %w", err)
 	}
 	if dataDir == "" {
-		return "", fmt.Errorf("server.data_dir is not set in %s; it is needed to unpack sigilc binaries", path)
+		return "", fmt.Errorf("server.data_dir is not set in %s; it is needed to unpack sigilc binaries", cfg.ConfigPath)
 	}
 	return dataDir, nil
 }

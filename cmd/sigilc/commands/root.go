@@ -17,7 +17,7 @@ Use 'enroll' to bootstrap a new client against a sigils instance.`,
 		RunE:          runDefaultTUI,
 	}
 
-	cmd.PersistentFlags().String("config", "", "path to client.yaml (default: platform-specific)")
+	cmd.PersistentFlags().String("config", "", "path to client.yaml (default: $SIGILC_CONFIG, else platform-specific)")
 	cmd.PersistentFlags().String("ipc", "", "IPC socket path (default: platform-specific)")
 
 	cmd.AddCommand(

@@ -37,16 +37,26 @@ type Config struct {
 // The returned Service can be Run() to start the daemon loop, or used for
 // install / uninstall / start / stop / restart / status operations.
 func New(d Daemon, cfg Config) (ksvc.Service, error) {
-	sc := buildServiceConfig(cfg)
+	sc, err := buildServiceConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
 	return ksvc.New(d, sc)
 }
 
-func buildServiceConfig(cfg Config) *ksvc.Config {
+func buildServiceConfig(cfg Config) (*ksvc.Config, error) {
 	name, displayName, desc, cfgDefault := roleAttrs(cfg.Role)
 
 	configPath := cfg.ConfigPath
 	if configPath == "" {
 		configPath = cfgDefault
+	}
+	// The service manager starts the daemon in a working directory of its
+	// own, / under systemd and System32 under the SCM, where a relative path
+	// names no file: the daemon would fail at every start.
+	configPath, err := filepath.Abs(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve config path: %w", err)
 	}
 
 	args := []string{"serve", "--config", configPath}
@@ -80,7 +90,7 @@ func buildServiceConfig(cfg Config) *ksvc.Config {
 		}
 	}
 
-	return sc
+	return sc, nil
 }
 
 // systemdUnit replaces the unit kardianos writes by default, which restarts a
