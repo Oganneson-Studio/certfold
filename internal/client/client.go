@@ -421,10 +421,10 @@ func (c *Client) getBundle(ctx context.Context, name string) (*proto.CertBundle,
 // a program runs only once the store records that it must, so that a sigilc
 // stopped while the program runs runs it again after a restart. A program
 // does not run while its certificate's outputs failed to reconcile, since
-// they may be incomplete. A
-// program that exits 0 clears the bit, and so does the lack of a program; a
-// failure keeps it, so the program runs again after the next reconcile. The
-// cleared bits are written once all programs have run.
+// they may be incomplete. A program that exits 0 clears the bit, and so does
+// the lack of a program; a failure keeps it, so the program runs again after
+// the next reconcile. The cleared bits are written once all programs have
+// run.
 //
 // It logs the event "outputs rewritten" for each certificate whose outputs it
 // rewrote, when Reconcile reports a change, and "on_change succeeded" for each
