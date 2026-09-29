@@ -29,13 +29,11 @@ type serverConfigRuntime struct {
 	renewer configPublisher
 }
 
-func newServerConfigRuntime(path string, initial *config.ServerConfig, changed func(), publishers ...configPublisher) *serverConfigRuntime {
+func newServerConfigRuntime(path string, initial *config.ServerConfig, changed func(), renewer configPublisher) *serverConfigRuntime {
 	runtime := &serverConfigRuntime{
 		path:    path,
 		changed: changed,
-	}
-	if len(publishers) > 0 {
-		runtime.renewer = publishers[0]
+		renewer: renewer,
 	}
 	runtime.current.Store(initial)
 	return runtime
@@ -74,13 +72,8 @@ func (r *serverConfigRuntime) Reload(ctx context.Context) (err error) {
 
 	// Every runtime consumer loads this same immutable snapshot, so one store
 	// publishes the new generation without a mixed old/new configuration window.
-	publish := func() { r.current.Store(next) }
-	if r.renewer != nil {
-		if err := r.renewer.PublishConfig(ctx, publish); err != nil {
-			return err
-		}
-	} else {
-		publish()
+	if err := r.renewer.PublishConfig(ctx, func() { r.current.Store(next) }); err != nil {
+		return err
 	}
 	// After PublishConfig rather than in publish: its callback may only
 	// perform the atomic publication.

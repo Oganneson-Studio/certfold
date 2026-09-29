@@ -54,7 +54,7 @@ func TestServerConfigRuntimeReloadPublishesMutableGeneration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "server.yaml")
 	initial := parseRuntimeConfig(t, initialRuntimeConfig)
 	notified := 0
-	runtime := newServerConfigRuntime(path, initial, func() { notified++ })
+	runtime := newServerConfigRuntime(path, initial, func() { notified++ }, publishNow)
 
 	nextRaw := strings.NewReplacer(
 		"ops@example.com", "security@example.com",
@@ -87,6 +87,13 @@ type publisherFunc func(context.Context, func()) error
 func (f publisherFunc) PublishConfig(ctx context.Context, publish func()) error {
 	return f(ctx, publish)
 }
+
+// publishNow publishes at once, as the scheduler does when no issuance
+// stores its outcome meanwhile.
+var publishNow = publisherFunc(func(_ context.Context, publish func()) error {
+	publish()
+	return nil
+})
 
 func TestServerConfigRuntimeNotifiesAfterPublishing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "server.yaml")
@@ -159,7 +166,7 @@ func TestServerConfigRuntimeRejectsImmutableChangesWithoutPublishing(t *testing.
 			path := filepath.Join(t.TempDir(), "server.yaml")
 			initial := parseRuntimeConfig(t, initialRuntimeConfig)
 			notified := 0
-			runtime := newServerConfigRuntime(path, initial, func() { notified++ })
+			runtime := newServerConfigRuntime(path, initial, func() { notified++ }, publishNow)
 			writeRuntimeConfig(t, path, strings.Replace(initialRuntimeConfig, tt.old, tt.new, 1))
 
 			err := runtime.Reload(context.Background())
@@ -176,12 +183,33 @@ func TestServerConfigRuntimeRejectsImmutableChangesWithoutPublishing(t *testing.
 	}
 }
 
+// A reload that changes tls_key_file alone is refused like one that changes
+// tls_cert_file: the TLS files are fixed at startup. The "TLS files" case
+// above adds both and checks for tls_cert_file only.
+func TestServerConfigRuntimeRejectsTLSKeyFileChangeAlone(t *testing.T) {
+	withFiles := strings.Replace(initialRuntimeConfig, `  ipc_socket: "/var/run/sigil/sigils.sock"`,
+		"  ipc_socket: \"/var/run/sigil/sigils.sock\"\n  tls_cert_file: \"/etc/sigil/cert.pem\"\n  tls_key_file: \"/etc/sigil/key.pem\"", 1)
+	path := filepath.Join(t.TempDir(), "server.yaml")
+	initial := parseRuntimeConfig(t, withFiles)
+	notified := 0
+	runtime := newServerConfigRuntime(path, initial, func() { notified++ }, publishNow)
+	writeRuntimeConfig(t, path, strings.Replace(withFiles, "/etc/sigil/key.pem", "/etc/sigil/new-key.pem", 1))
+
+	err := runtime.Reload(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "server.tls_key_file") || strings.Contains(err.Error(), "server.tls_cert_file") {
+		t.Fatalf("Reload error = %v, want one naming server.tls_key_file only", err)
+	}
+	if runtime.Current() != initial || notified != 0 {
+		t.Fatal("a reload that changes tls_key_file was published")
+	}
+}
+
 func TestServerConfigRuntimeReloadWithUnchangedDNSResolversPublishes(t *testing.T) {
 	withResolvers := strings.Replace(initialRuntimeConfig, `  default_ca: "le"`,
 		"  default_ca: \"le\"\n  dns_resolvers: [\"1.1.1.1\", \"8.8.8.8:53\"]", 1)
 	path := filepath.Join(t.TempDir(), "server.yaml")
 	initial := parseRuntimeConfig(t, withResolvers)
-	runtime := newServerConfigRuntime(path, initial, func() {})
+	runtime := newServerConfigRuntime(path, initial, func() {}, publishNow)
 	writeRuntimeConfig(t, path, strings.Replace(withResolvers, "ops@example.com", "security@example.com", 1))
 
 	if err := runtime.Reload(context.Background()); err != nil {
@@ -196,7 +224,7 @@ func TestServerConfigRuntimeInvalidReloadKeepsPreviousGeneration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "server.yaml")
 	initial := parseRuntimeConfig(t, initialRuntimeConfig)
 	notified := 0
-	runtime := newServerConfigRuntime(path, initial, func() { notified++ })
+	runtime := newServerConfigRuntime(path, initial, func() { notified++ }, publishNow)
 	writeRuntimeConfig(t, path, "server: [invalid")
 
 	if err := runtime.Reload(context.Background()); err == nil {
