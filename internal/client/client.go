@@ -70,8 +70,11 @@ type Client struct {
 	// set after Run returns, so a fetch or reload that takes pullMu after
 	// that cancels its programs at once instead of leaving them to outlive
 	// the daemon. Guarded by pullMu.
-	runCtx   context.Context
-	reloadCh chan struct{}
+	runCtx context.Context
+	// wake ends the loop's sleep after a round with an error. Reload and an
+	// IPC fetch without an error send to it: the loop pulls again at once
+	// rather than when its backoff ends.
+	wake chan struct{}
 
 	statusMu sync.RWMutex
 	status   RuntimeStatus
@@ -140,10 +143,10 @@ func New(cfg *config.ClientConfig, options ...Option) (*Client, error) {
 		return nil, fmt.Errorf("load certificate store: %w", err)
 	}
 	c := &Client{
-		cfg:      cfg,
-		http:     httpClient,
-		store:    certs,
-		reloadCh: make(chan struct{}, 1),
+		cfg:   cfg,
+		http:  httpClient,
+		store: certs,
+		wake:  make(chan struct{}, 1),
 		status: RuntimeStatus{
 			Name:      cfg.Client.Name,
 			ServerURL: cfg.Client.ServerURL,
@@ -181,7 +184,8 @@ func (c *Client) Run(ctx context.Context) error {
 // fingerprints changed, and name as well when it is not empty, then
 // reconciles every output with the store and runs the pending on_change
 // programs. A failed step does not stop the later ones; Fetch returns their
-// joined errors, which read as LastError does.
+// joined errors, which read as LastError does. A fetch without an error wakes
+// the loop from a backoff.
 func (c *Client) Fetch(ctx context.Context, name string) error {
 	c.pullMu.Lock()
 	defer c.pullMu.Unlock()
@@ -220,6 +224,12 @@ func (c *Client) Fetch(ctx context.Context, name string) error {
 	c.recordPullLocked(answeredAt, err)
 	if err != nil {
 		return printableError{err}
+	}
+	// The loop may be backing off from a round that failed, while a change
+	// could come at any moment; it waits for one again at once.
+	select {
+	case c.wake <- struct{}{}:
+	default:
 	}
 	return nil
 }
@@ -519,7 +529,7 @@ func (c *Client) Reload(load func() (*config.ClientConfig, error)) error {
 		c.syncCancel()
 	}
 	select {
-	case c.reloadCh <- struct{}{}:
+	case c.wake <- struct{}{}:
 	default:
 	}
 	return nil

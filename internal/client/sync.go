@@ -41,7 +41,8 @@ type syncResult struct {
 // syncLoop runs rounds until ctx is cancelled. A round without an error is
 // followed by the next one at once, so between two changes the loop waits in
 // GET /v1/sync. After a round with an error the loop sleeps, from baseBackoff
-// doubling up to maxBackoff, ±10 %, until a reload wakes it.
+// doubling up to maxBackoff, ±10 %, until a reload or a successful IPC fetch
+// wakes it.
 func (c *Client) syncLoop(ctx context.Context) error {
 	var backoff time.Duration
 	for {
@@ -60,14 +61,14 @@ func (c *Client) syncLoop(ctx context.Context) error {
 		default:
 			backoff = min(2*backoff, maxBackoff)
 		}
-		// A reload that came while no sleep was running left its signal in
-		// reloadCh and ends this sleep early, one round early at most.
+		// A reload or fetch that came while no sleep was running left its
+		// signal in wake and ends this sleep early, one round early at most.
 		timer := time.NewTimer(jitter(backoff, jitterPct))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return ctx.Err()
-		case <-c.reloadCh:
+		case <-c.wake:
 			timer.Stop()
 		case <-timer.C:
 		}

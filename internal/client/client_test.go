@@ -1625,6 +1625,37 @@ func TestReloadReconcilesAndRestartsSync(t *testing.T) {
 	})
 }
 
+// TestFetchWakesLoopFromBackoff covers sigilc fetch while the loop backs off
+// from a failed round: once the fetch succeeds, the loop waits for a change
+// again at once, not when its backoff ends.
+func TestFetchWakesLoopFromBackoff(t *testing.T) {
+	setBackoff(t, time.Minute, time.Minute)
+	fs := newFakeServer(newTestBundle(t, "api-prod"))
+	var failing atomic.Bool
+	failing.Store(true)
+	fs.syncStatus = func(string) int {
+		if failing.Load() {
+			return http.StatusServiceUnavailable
+		}
+		return 0
+	}
+	ts := httptest.NewServer(fs.handler())
+	t.Cleanup(ts.Close)
+	c := newTestClient(t, buildTestCfg(t, ts.URL))
+	startRun(t, c)
+	waitFor(t, "a failed round", func() bool { return len(fs.syncRequests()) >= 1 })
+
+	failing.Store(false)
+	n := len(fs.syncRequests())
+	if err := c.Fetch(context.Background(), ""); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	// Request n is the fetch's; the loop's follows it.
+	if next := fs.syncAt(t, n+1); next.ifNoneMatch == "" {
+		t.Fatal("the loop's request after the fetch carried no If-None-Match")
+	}
+}
+
 // TestReloadDiscardsAnswerThatArrivedDuringReload covers an answer to the
 // loop's request that arrives while Reload holds pullMu: the request was made
 // with the old configuration, so the loop must drop the answer rather than
