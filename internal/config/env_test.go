@@ -92,6 +92,26 @@ func TestExpandEnv(t *testing.T) {
 			lookup: env(nil),
 			want:   "x: ",
 		},
+		{
+			// The first '}' ends the reference: the result would be
+			// "${B}" unexpanded, or the value of A followed by "}".
+			name:    "nested reference in a default errors",
+			in:      "x: ${A:-${B}}",
+			lookup:  env(map[string]string{"B": "b"}),
+			wantErr: `nested ${...} in the default of "A" at offset 3 is not supported`,
+		},
+		{
+			name:    "nested reference errors when the variable is set",
+			in:      "x: ${A:-${B}}",
+			lookup:  env(map[string]string{"A": "a"}),
+			wantErr: "nested ${...}",
+		},
+		{
+			name:   "dollar in a default",
+			in:     "x: ${A:-$5 or $$}",
+			lookup: env(nil),
+			want:   "x: $5 or $$",
+		},
 	}
 
 	for _, tt := range tests {
