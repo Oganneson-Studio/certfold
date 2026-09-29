@@ -290,9 +290,16 @@ func (h *handlers) renewIdentity(w http.ResponseWriter, r *http.Request) {
 		serverError(w, "client identity renewal failed", "client", clientName, "error", err)
 		return
 	}
-	if err := h.deps.DB.Clients.StagePendingIdentity(
-		r.Context(), clientName, ca.Fingerprint(certDER), issued.NotAfter,
-	); err != nil {
+	err = h.deps.DB.Clients.StagePendingIdentity(
+		r.Context(), clientName, ca.Fingerprint(cert.Raw), ca.Fingerprint(certDER), issued.NotAfter,
+	)
+	if err == sql.ErrNoRows {
+		// The identity that asked was replaced, or its client removed,
+		// since the check of this request.
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if err != nil {
 		serverError(w, "client identity renewal failed", "client", clientName, "error", err)
 		return
 	}

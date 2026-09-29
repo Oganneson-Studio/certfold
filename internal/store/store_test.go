@@ -192,7 +192,11 @@ func TestClientRepo_PendingIdentityPromotion(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Clients.StagePendingIdentity(ctx, "web-1", "sha256:new", now.Add(time.Hour)); err != nil {
+	// Only the active identity stages its replacement.
+	if err := db.Clients.StagePendingIdentity(ctx, "web-1", "sha256:replaced", "sha256:new", now.Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("staging for a fingerprint that is not active: error = %v, want sql.ErrNoRows", err)
+	}
+	if err := db.Clients.StagePendingIdentity(ctx, "web-1", "sha256:old", "sha256:new", now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	staged, err := db.Clients.Get(ctx, "web-1", nil)
@@ -227,7 +231,7 @@ func TestClientRepo_ExpiredPendingIdentityCannotPromote(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Clients.StagePendingIdentity(ctx, "web-1", "sha256:new", now.Add(-time.Second)); err != nil {
+	if err := db.Clients.StagePendingIdentity(ctx, "web-1", "sha256:old", "sha256:new", now.Add(-time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Clients.PromotePendingIdentity(ctx, "web-1", "sha256:new", now); !errors.Is(err, sql.ErrNoRows) {
@@ -245,7 +249,7 @@ func TestClientRepo_MarkSeenTouchesOnlyMatchingIdentity(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Clients.StagePendingIdentity(ctx, "web-1", "sha256:pending", now.Add(time.Hour)); err != nil {
+	if err := db.Clients.StagePendingIdentity(ctx, "web-1", "sha256:active", "sha256:pending", now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 

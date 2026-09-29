@@ -610,6 +610,69 @@ func TestRenewIdentityRejectsInvalidCSR(t *testing.T) {
 	}
 }
 
+// A client name enrolled again, for instance to rotate the identity of a
+// compromised machine, replaces the fingerprint and clears the pending
+// identity. A renewal that the old identity sent before that must not stage
+// its certificate on the new record: its first use would promote it and lock
+// the new machine out.
+func TestRenewIdentityDoesNotStageOnReenrolledClient(t *testing.T) {
+	deps, other := buildFileDeps(t)
+	old := makeEnrolledClientCert(t, deps, "web-1")
+	handler := newHandler(deps)
+	ctx := context.Background()
+
+	// Claim this interval's last_seen write, so that the request under test
+	// skips MarkSeen: its WHERE on the fingerprint would refuse the old
+	// identity too and hide a missing check in the renewal.
+	claim := httptest.NewRecorder()
+	handler.ServeHTTP(claim, syncRequest(old, ""))
+	if claim.Code != http.StatusOK {
+		t.Fatalf("claim: status = %d", claim.Code)
+	}
+
+	replacement := makeClientCert(t, deps.MiniCA, "web-1")
+	replacementFingerprint := ca.Fingerprint(replacement.Certificate[0])
+	tx, err := other.BeginTx(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := other.Clients.Upsert(ctx, &store.ClientRecord{
+		Name:        "web-1",
+		Fingerprint: replacementFingerprint,
+		EnrolledAt:  time.Now().UTC(),
+	}, tx); err != nil {
+		t.Fatal(err)
+	}
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(proto.RenewIdentityRequest{
+		CSR: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := simulateMTLS(httptest.NewRequest(http.MethodPost, "/v1/identity/renew", bytes.NewReader(body)), old)
+	rec := requestDuringWrite(t, handler, req, tx)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("renewal by the replaced identity: status = %d, want 401", rec.Code)
+	}
+	got, err := deps.DB.Clients.Get(ctx, "web-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Fingerprint != replacementFingerprint || got.PendingFingerprint != "" {
+		t.Fatalf("re-enrolled client = %+v, want fingerprint %s and no pending identity", got, replacementFingerprint)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GET /v1/sync — requires mTLS
 // ---------------------------------------------------------------------------
@@ -1009,7 +1072,7 @@ func TestSyncRejectsIdentityReplacedWhileWaiting(t *testing.T) {
 	answered := startSync(handler, syncRequest(replaced, etag))
 	assertWaiting(t, answered)
 	renewed := makeClientCert(t, deps.MiniCA, "web-1")
-	if err := deps.DB.Clients.StagePendingIdentity(context.Background(), "web-1", ca.Fingerprint(renewed.Certificate[0]), time.Now().Add(24*time.Hour)); err != nil {
+	if err := deps.DB.Clients.StagePendingIdentity(context.Background(), "web-1", ca.Fingerprint(replaced.Certificate[0]), ca.Fingerprint(renewed.Certificate[0]), time.Now().Add(24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	firstUse := httptest.NewRecorder()
@@ -1467,11 +1530,11 @@ func TestAuthenticatedRequestKeepsIdentityStagedDuringRequest(t *testing.T) {
 // pending, and the one whose promotion comes second finds nothing to promote.
 func TestAuthenticatedRequestAcceptsIdentityPromotedDuringRequest(t *testing.T) {
 	deps, other := buildFileDeps(t)
-	makeEnrolledClientCert(t, deps, "web-1")
+	enrolled := makeEnrolledClientCert(t, deps, "web-1")
 	renewed := makeClientCert(t, deps.MiniCA, "web-1")
 	renewedFingerprint := ca.Fingerprint(renewed.Certificate[0])
 	ctx := context.Background()
-	if err := deps.DB.Clients.StagePendingIdentity(ctx, "web-1", renewedFingerprint, time.Now().Add(90*24*time.Hour)); err != nil {
+	if err := deps.DB.Clients.StagePendingIdentity(ctx, "web-1", ca.Fingerprint(enrolled.Certificate[0]), renewedFingerprint, time.Now().Add(90*24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1514,7 +1577,7 @@ func TestAuthenticatedRequestRejectsPendingIdentityReplacedDuringRequest(t *test
 	replaced := makeClientCert(t, deps.MiniCA, "web-1")
 	newer := makeClientCert(t, deps.MiniCA, "web-1")
 	ctx := context.Background()
-	if err := deps.DB.Clients.StagePendingIdentity(ctx, "web-1", ca.Fingerprint(replaced.Certificate[0]), time.Now().Add(90*24*time.Hour)); err != nil {
+	if err := deps.DB.Clients.StagePendingIdentity(ctx, "web-1", ca.Fingerprint(enrolled.Certificate[0]), ca.Fingerprint(replaced.Certificate[0]), time.Now().Add(90*24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	restaged, err := deps.DB.Clients.Get(ctx, "web-1", nil)
