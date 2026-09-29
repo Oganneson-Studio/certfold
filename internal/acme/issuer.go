@@ -12,6 +12,8 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -159,14 +161,38 @@ func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec confi
 	if err != nil {
 		return nil, fmt.Errorf("obtain certificate: %w", err)
 	}
+	return newResult(res, spec.Domains)
+}
 
-	notAfter := certNotAfter(res.Certificate)
+// newResult returns what the CA issued, once it is checked against the order
+// for domains: lego checks neither that the leaf certificate is for the
+// private key it generated nor that it names the ordered domains, and the
+// clients install the two as a pair.
+func newResult(res *certificate.Resource, domains []string) (*Result, error) {
+	leaf, err := certcrypto.ParsePEMCertificate(res.Certificate)
+	if err != nil {
+		return nil, fmt.Errorf("issued certificate: %w", err)
+	}
+	key, err := certcrypto.ParsePEMPrivateKey(res.PrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("issued private key: %w", err)
+	}
+	// The public keys of every key type lego parses have Equal.
+	signer, ok := key.(crypto.Signer)
+	if !ok || !signer.Public().(interface{ Equal(crypto.PublicKey) bool }).Equal(leaf.PublicKey) {
+		return nil, errors.New("issued certificate is not for the private key of the order")
+	}
+	for _, domain := range domains {
+		if !slices.ContainsFunc(leaf.DNSNames, func(name string) bool { return strings.EqualFold(name, domain) }) {
+			return nil, fmt.Errorf("issued certificate does not name %s", domain)
+		}
+	}
 	return &Result{
 		Domain:      res.Domain,
 		Certificate: res.Certificate,
 		PrivateKey:  res.PrivateKey,
 		IssuerCert:  res.IssuerCertificate,
-		NotAfter:    notAfter,
+		NotAfter:    leaf.NotAfter,
 	}, nil
 }
 
@@ -434,16 +460,4 @@ func parseECDSAKey(keyPEM []byte) (*ecdsa.PrivateKey, error) {
 		return nil, fmt.Errorf("key is not ECDSA")
 	}
 	return ecKey, nil
-}
-
-func certNotAfter(certPEM []byte) time.Time {
-	block, _ := pem.Decode(certPEM)
-	if block == nil {
-		return time.Time{}
-	}
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return time.Time{}
-	}
-	return cert.NotAfter
 }

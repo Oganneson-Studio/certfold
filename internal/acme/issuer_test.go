@@ -3,6 +3,7 @@ package acme
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -30,6 +31,7 @@ import (
 	"time"
 
 	"github.com/go-acme/lego/v4/certcrypto"
+	"github.com/go-acme/lego/v4/certificate"
 	"github.com/go-acme/lego/v4/challenge"
 	"github.com/go-acme/lego/v4/challenge/dns01"
 	"github.com/go-acme/lego/v4/registration"
@@ -981,33 +983,82 @@ func TestDamagedStoredRegistrationIsRepairedWithTheSameAccount(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// certNotAfter
+// newResult
 // ---------------------------------------------------------------------------
 
-func TestCertNotAfter(t *testing.T) {
-	priv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	want := time.Now().Add(90 * 24 * time.Hour).Truncate(time.Second)
-	tpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		NotBefore:    time.Now().Add(-time.Minute),
-		NotAfter:     want,
+// A certificate the CA issued is handed on only if it is for the private key
+// of the order and names every ordered domain: lego checks neither, and the
+// clients install the two as a pair.
+func TestNewResultChecksTheIssuedCertificate(t *testing.T) {
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
 	}
-	der, _ := x509.CreateCertificate(rand.Reader, tpl, tpl, &priv.PublicKey, priv)
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	otherKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notAfter := time.Now().Add(90 * 24 * time.Hour).Truncate(time.Second)
+	// Configured domains may hold capitals; a CA answers in lower case.
+	domains := []string{"api.example.com", "*.Example.com"}
+	ordered := []string{"api.example.com", "*.example.com"}
+	tests := []struct {
+		name     string
+		certKey  crypto.Signer // the key the certificate is for
+		orderKey crypto.Signer // the private key lego generated for the order
+		dnsNames []string
+		want     string // in the error; none if empty
+	}{
+		{name: "ECDSA as ordered", certKey: ecKey, orderKey: ecKey, dnsNames: ordered},
+		{name: "RSA as ordered", certKey: rsaKey, orderKey: rsaKey, dnsNames: ordered},
+		{name: "names in another order and more", certKey: ecKey, orderKey: ecKey,
+			dnsNames: []string{"www.example.com", "*.example.com", "api.example.com"}},
+		{name: "for another key", certKey: otherKey, orderKey: ecKey, dnsNames: ordered,
+			want: "issued certificate is not for the private key of the order"},
+		{name: "for a key of another type", certKey: rsaKey, orderKey: ecKey, dnsNames: ordered,
+			want: "issued certificate is not for the private key of the order"},
+		{name: "a domain missing", certKey: ecKey, orderKey: ecKey, dnsNames: []string{"api.example.com"},
+			want: "issued certificate does not name *.Example.com"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tpl := &x509.Certificate{
+				SerialNumber: big.NewInt(1),
+				NotBefore:    notAfter.Add(-90 * 24 * time.Hour),
+				NotAfter:     notAfter,
+				DNSNames:     tt.dnsNames,
+			}
+			der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, tt.certKey.Public(), tt.certKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res := &certificate.Resource{
+				Domain:      "api.example.com",
+				Certificate: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+				PrivateKey:  certcrypto.PEMEncode(tt.orderKey),
+			}
 
-	got := certNotAfter(certPEM)
-	diff := got.Sub(want)
-	if diff < 0 {
-		diff = -diff
+			got, err := newResult(res, domains)
+			if tt.want != "" {
+				if err == nil || err.Error() != tt.want {
+					t.Fatalf("newResult error = %v, want %q", err, tt.want)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("newResult: %v", err)
+			}
+			if !bytes.Equal(got.Certificate, res.Certificate) || !bytes.Equal(got.PrivateKey, res.PrivateKey) || !got.NotAfter.Equal(notAfter) {
+				t.Errorf("newResult = %+v, want the issued pair, expiring %s", got, notAfter)
+			}
+		})
 	}
-	if diff > time.Second {
-		t.Errorf("certNotAfter: got %v, want %v (diff %v)", got, want, diff)
-	}
-}
 
-func TestCertNotAfter_Invalid(t *testing.T) {
-	got := certNotAfter([]byte("garbage"))
-	if !got.IsZero() {
-		t.Errorf("expected zero time for invalid PEM, got %v", got)
+	if _, err := newResult(&certificate.Resource{Certificate: []byte("garbage")}, domains); err == nil || !strings.HasPrefix(err.Error(), "issued certificate: ") {
+		t.Errorf("newResult of a certificate that does not parse: error = %v", err)
 	}
 }
