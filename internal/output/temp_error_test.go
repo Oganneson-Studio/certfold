@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -48,33 +47,6 @@ func TestReconcileErrorOfFailedReplaceIsStable(t *testing.T) {
 		t.Fatalf("error = %s, want it to name the output it could not replace", text)
 	}
 	checkNoTemps(t, filepath.Dir(spec.Path))
-}
-
-// TestReconcileErrorOfFailedOwnershipIsStable covers an owner that the
-// temporary file of an output may not be given. On Unix, a process that is
-// not root may not give a file to root. On Windows, NETWORK SERVICE resolves,
-// but a process that does not run as it may not make it the owner of a file
-// unless SeRestorePrivilege is enabled, as it is in an elevated Git Bash. A
-// probe first tries to give a file to the owner, and the test is skipped
-// where that works.
-func TestReconcileErrorOfFailedOwnershipIsStable(t *testing.T) {
-	owner := "root"
-	if runtime.GOOS == "windows" {
-		owner = "S-1-5-20"
-	}
-	dir := t.TempDir()
-	probe := filepath.Join(dir, "probe")
-	if err := os.WriteFile(probe, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if applyOwnership(probe, owner, "") == nil {
-		t.Skip("this process may give a file to any owner")
-	}
-	spec := config.OutputSpec{Format: "pem-cert", Path: filepath.Join(dir, "cert.pem"), Owner: owner}
-	if text := reconcileErrorTwice(t, makeBundle(t), spec); !strings.HasPrefix(text, "write "+spec.Path+": ") {
-		t.Fatalf("error = %s, want it to name the output", text)
-	}
-	checkNoTemps(t, dir)
 }
 
 // TestWithoutTempName covers the errors of operations on a temporary file:

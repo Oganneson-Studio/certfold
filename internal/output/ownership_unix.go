@@ -33,7 +33,7 @@ func applyOwnership(path, owner, group string) error {
 // ownershipMatches reports whether info has the uid of owner and the gid of
 // group, each checked only when set. A name that does not resolve does not
 // match; applyOwnership then reports the error.
-func ownershipMatches(_ string, info os.FileInfo, owner, group string) bool {
+func ownershipMatches(info os.FileInfo, owner, group string) bool {
 	if owner == "" && group == "" {
 		return true
 	}

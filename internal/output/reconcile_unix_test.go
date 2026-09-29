@@ -64,6 +64,21 @@ func TestReconcileReportsFailedRepair(t *testing.T) {
 	checkUntouched(t, spec.Path, before)
 }
 
+// TestReconcileErrorOfFailedOwnershipIsStable covers an owner that the
+// temporary file of an output may not be given: a process that is not root
+// may not give a file to root.
+func TestReconcileErrorOfFailedOwnershipIsStable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root may chown")
+	}
+	dir := t.TempDir()
+	spec := config.OutputSpec{Format: "pem-cert", Path: filepath.Join(dir, "cert.pem"), Owner: "root"}
+	if text := reconcileErrorTwice(t, makeBundle(t), spec); !strings.HasPrefix(text, "write "+spec.Path+": ") {
+		t.Fatalf("error = %s, want it to name the output", text)
+	}
+	checkNoTemps(t, dir)
+}
+
 // TestReconcileRestoresOwnership covers an output whose owner, then group,
 // was changed after it was written. Its content matches, so each is restored
 // in place, and no change is reported. Changing either needs root.
