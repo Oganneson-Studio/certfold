@@ -7,7 +7,7 @@ Sigil is a central certificate issuer and distributor for server fleets.
 
 ## Project status
 
-Active development. Enrollment, certificate distribution, management commands, runtime reload, client identity renewal, and long-poll delivery are implemented. The security-critical enrollment and pull path is covered by unit tests and a WSLC-native end-to-end test; review the remaining test and TUI limitations below before production use.
+Active development. Enrollment, certificate distribution, management commands, runtime reload, client identity renewal, long-poll delivery, parallel issuance, ARI-directed renewal, HTTPS certificate hot-reload, server and client TUIs, and structured logging with events are implemented. The security-critical enrollment and pull path is covered by unit tests and a WSLC-native end-to-end test that includes real ACME issuance through Pebble and ARI. Review the limitations below before production use.
 
 ## Build and test
 
@@ -21,12 +21,36 @@ go vet ./...
 On Windows, the end-to-end suite uses WSLC directly and does not require Docker Desktop or Compose:
 
 ```powershell
-go test -v -tags e2e -timeout 10m ./test/e2e
+go test -v -tags e2e -count=1 -timeout 10m ./test/e2e
 ```
 
-The test builds temporary OCI images, creates an isolated WSLC network, and issues real certificates from a Pebble ACME server through the `exec` DNS hook and a challenge test DNS server. It verifies enrollment, certificate fetch, delivery of a renewed certificate over the long poll, restoring deleted and modified outputs, `on_change` runs, reload wake-ups, client revocation, and token expiry/revocation, then removes its containers, network, and images.
+The `-count=1` flag is required. The test builds temporary OCI images through `wslc build`, and Go's test cache cannot see those reads; without the flag a second run reports `(cached)` even when the code changed.
 
-Linux CI can run the same orchestration with Docker Engine by setting `SIGIL_CONTAINER_CLI=docker`.
+The test builds temporary OCI images, creates an isolated WSLC network, and issues real certificates from a Pebble ACME server through the `exec` DNS hook and a challenge test DNS server. It verifies enrollment, certificate fetch, delivery of a renewed certificate over the long poll, restoring deleted and modified outputs, `on_change` runs, reload wake-ups, client revocation, token expiry/revocation, ARI renewal-window tracking and ARI-directed renewal with `replaces`, HTTPS certificate hot-reload, static install.ps1, deletion of non-existent objects returning 404, and renewal events, then removes its containers, network, and images.
+
+Linux CI can run the same orchestration with Docker Engine. Set `SIGIL_CONTAINER_CLI=docker` and `SIGIL_E2E_REQUIRED=1` (without the latter, a missing container runtime silently exits 0). Run as a regular user in the `docker` group, without `sudo`; cleanup does not need `sudo` either.
+
+## One-line installation
+
+Place platform binaries in `<data_dir>/binaries/` using names such as `sigilc-linux-amd64` and `sigilc-windows-amd64.exe`. After creating an enrollment token, `sigils token create` prints the commands below.
+
+**Linux / macOS** (as a user who may sudo):
+
+```bash
+curl -fsSL 'https://sigil.example.com:8443/install.sh' | sudo sh -s -- --token '<token>'
+```
+
+**Windows** (elevated PowerShell, 5.1 or 7):
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; & ([scriptblock]::Create((irm 'https://sigil.example.com:8443/install.ps1'))) -Token '<token>'
+```
+
+The `-bor 3072` prefix adds TLS 1.2 to the protocols Windows PowerShell 5.1 offers. The Sigil server accepts TLS 1.2 and above on its public HTTPS listener, while `sigilc`'s own connections (enrollment and mTLS) require TLS 1.3.
+
+The token appears in the process command line; see [Current limitations](#current-limitations).
+
+The old command `iwr -useb '.../install.ps1?token=...' | iex` no longer works as expected: the script now takes a mandatory `-Token` parameter, so `iex` stops at an interactive prompt or fails in non-interactive sessions.
 
 ## Production TLS
 
@@ -41,11 +65,13 @@ server:
   tls_key_file: "/etc/sigil/tls/key.pem"
 ```
 
-When these fields are omitted, `sigils` uses its internal mini-CA certificate. That mode is suitable for development or a deliberately configured trusted environment, but a fresh `curl` or `Invoke-WebRequest` will not trust it automatically.
+Replace the certificate and key files in place; `sigils` reloads them on the next TLS handshake without a restart. A certificate that does not pair with its key is skipped with a warning, and the previous certificate remains in use. Keep the files on a local filesystem: a network mount where `stat` stalls will block all handshakes.
 
-Enrollment tokens carry the expected client name, server URL, and mini-CA certificate. `sigilc` validates TLS before sending the token or CSR, then stores its mTLS identity in a private, atomically replaced configuration file.
+When these fields are omitted, `sigils` uses its internal mini-CA certificate and reissues it automatically before it expires. A failed reissue retries after one minute.
 
-`sigilc` verifies the server against the operating system's roots plus the Sigil mini-CA, so either kind of server certificate works. Client certificates are always issued and verified by the mini-CA.
+`server.public_url` must be a pure-ASCII `https` URL. It may not contain quotes, backticks, `$`, `\`, whitespace or control characters: `install.sh` puts it in double quotes (`SERVER_URL="..."`), so `$`, backtick, `\` and `"` would be interpolated; `install.ps1` and the enrollment token put it in single quotes for PowerShell, where curly quotes (U+2018-U+201E) also act as quote characters.
+
+Enrollment tokens carry the expected client name, server URL, and mini-CA certificate. `sigilc` validates TLS before sending the token or CSR, then stores its mTLS identity in a private, atomically replaced configuration file. `sigilc` verifies the server against the operating system's roots plus the Sigil mini-CA, so either kind of server certificate works. Client certificates are always issued and verified by the mini-CA.
 
 ## Basic flow
 
@@ -69,11 +95,45 @@ sigilc reload
 sigils --config /etc/sigil/server.yaml reload
 ```
 
-`token create` and `reload` are served by the running daemon over local IPC and fail when it is not running. `cert add` and `cert remove` edit `server.yaml` and then tell a running daemon to reload.
+On Linux, `sigils` and `sigilc` management commands need root because the IPC sockets are owned by root.
 
-On Windows, run the daemons as services (LocalSystem) or from an elevated prompt. The CLI only talks to a named pipe owned by SYSTEM or Administrators, so a low-privilege process cannot impersonate the daemon. `service install` registers a daemon with the system service manager, which restarts it after a failure: 10 seconds later on Windows, and through `Restart=on-failure` under systemd.
+`token create` and `reload` are served by the running daemon over local IPC and fail when it is not running. `token create` also refuses to run when `server.public_url` is unset and `server.listen` names no host clients can reach. `cert add` and `cert remove` edit `server.yaml` and then tell a running daemon to reload.
 
-For one-line installation, place platform binaries in `<data_dir>/binaries/` using names such as `sigilc-linux-amd64` and `sigilc-windows-amd64.exe`.
+`sigilc enroll` writes `client.yaml` before sending the token; if enrollment fails, the file it created is removed (an existing file is not touched). A token whose name or server URL does not pass the naming rules is rejected before any network request.
+
+`client remove` and `token revoke` report an error (exit code 1) when the name or ID does not exist, instead of silently claiming success.
+
+On Linux, the install script writes:
+
+- `/usr/local/bin/sigilc`
+- `/etc/sigil/client.yaml` (file `0600`, directory `0700`)
+- `/var/lib/sigilc` (created on first certificate delivery)
+- `/var/run/sigil/sigilc.sock` (`0660`, owned by root; `sudo sigilc status` to query)
+- `/etc/systemd/system/sigilc.service` with `Restart=on-failure` and `RestartSec=5`
+
+To uninstall (do not remove `/var/run/sigil`; `sigils` uses it too):
+
+```bash
+sudo sigilc service stop
+sudo sigilc service uninstall
+sudo rm -f /usr/local/bin/sigilc /etc/sigil/client.yaml
+sudo rm -rf /var/lib/sigilc
+# on the server, to revoke access:
+sudo sigils client remove <name>
+```
+
+On Windows, run the daemons as services (LocalSystem) or from an elevated prompt. The CLI only talks to a named pipe owned by SYSTEM or Administrators, so a low-privilege process cannot impersonate the daemon.
+
+To register `sigils` as a Windows service:
+
+```powershell
+sigils --config <path> service install    # registers "serve --config <path>" as LocalSystem
+sigils service start
+```
+
+Events go to the Application event log with `sigils` as the source. `service uninstall` removes the event log source.
+
+`service install` registers a daemon with the system service manager, which restarts it after a failure; see [Services](#services) for details.
 
 ## Client configuration
 
@@ -113,7 +173,7 @@ After every round, whether the server reported a change, reported none, or could
 - On filesystems that cannot store Unix permission bits, the configured `mode` has no effect; protect such directories by other means.
 - An idle client reconciles about every 55 seconds. While errors persist, including a failing `on_change` program, rounds back off from 5 seconds to 5 minutes.
 
-This is a declarative model: manual edits to outputs are undone within a round. `sigilc fetch` pulls and reconciles at once; `--cert NAME` also downloads that certificate again. `sigilc reload` returns after reconciling with the new configuration. Changes to `client.data_dir` or `client.ipc_socket` require a restart.
+This is a declarative model: manual edits to outputs are undone within a round. `sigilc fetch` pulls and reconciles at once; `--cert NAME` also downloads that certificate again. `sigilc reload` returns after reconciling with the new configuration; it does not clear the last error shown by `sigilc status`, which updates on the next round. Changes to `client.data_dir` or `client.ipc_socket` require a restart.
 
 ## on_change programs
 
@@ -122,7 +182,7 @@ This is a declarative model: manual edits to outputs are undone within a round. 
 - It is an argument list whose first item must be an absolute path. It is not run through a shell.
 - Programs run one at a time in certificate-name order, after all outputs are reconciled. A certificate whose outputs could not all be written does not run its program.
 - Each run times out after 2 minutes. The program runs as the `sigilc` service account with its full environment and an empty stdin. Its working directory is the service's (`/` under systemd, `System32` for a Windows service), so use absolute paths.
-- A failed run is retried every round until it succeeds. Meanwhile the client backs off, so new certificates can arrive up to about 5 minutes late. `sigilc status` shows the error, which names only the certificate and the exit status or timeout; the last 4 KiB of the program's output go to the service log.
+- A failed run is retried every round until it succeeds. Meanwhile the client backs off, so new certificates can arrive up to about 5 minutes late. `sigilc status` shows the error, which names only the certificate and the exit status or timeout; the last 4 KiB of the program's output goes to the service log only (see [Events and logging](#events-and-logging)), not to the events shown by `sigilc events`.
 - A background process the program starts must redirect its own stdout and stderr. Otherwise `sigilc` waits 5 seconds after the program exits, then closes the pipe, logs it, and counts the run as successful; on Unix the process may be killed by `SIGPIPE` on its next write. `nohup` does not redirect output that is a pipe.
 - Values in `client.yaml` go through `${VAR}` expansion, so a literal `$` in an argument is written `$$`.
 - When `certs.json` starts empty, for example on the first start after an upgrade, each certificate with an `on_change` program runs it once, even if its outputs were already up to date.
@@ -138,6 +198,95 @@ certificates:
         password: "${PFX_PASSWORD}"
     on_change: ['C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', 'C:\sigil\reload-iis.ps1']
 ```
+
+## Renewal
+
+`sigils` renews each certificate automatically. When the ACME CA publishes a renewal window (ARI, RFC 9773), `sigils` picks a random moment within that window and renews there; the moment stays fixed until the window changes. When the CA offers no ARI, `sigils` uses a ratio rule aligned with Let's Encrypt's guidance: renew when a third of the certificate's lifetime remains, or when half remains for certificates with a lifetime under 10 days.
+
+`sigils cert list` and `sigils cert show` display the renewal moment and its source; see [Runtime reload and issuance](#runtime-reload-and-issuance).
+
+Renewal is automatic; there is nothing to configure. `renew_days_before` has been removed and is now rejected as an unknown field.
+
+**When a CA announces a mass revocation**, run `sigils reload` to make every certificate re-query ARI immediately. Without this, the next query may be up to 24 hours away.
+
+Two guards prevent tight retry loops when a certificate arrives already due for renewal:
+
+- **Ratio rule**: the error reads `issued certificate was stored, but is already due for renewal (lifetime ..., renewal due ...)`. The certificate is stored and delivered, but the issuance counts as a failure. Fix the cause and clear the backoff with `sigils cert renew <name>` or `sigils reload`.
+- **ARI**: the error reads `renewal window of a newly issued certificate has already passed`. The CA returned an ARI window that is entirely in the past. A `sigils reload` clears the database backoff, but the in-memory guard still blocks renewal until the backoff expires; to renew immediately, use `sigils cert renew <name>`.
+
+## Events and logging
+
+Both daemons write structured log lines to stderr, which under systemd goes to journald. On Windows, when running as a service, events go to the Application event log with the service name (`sigils` or `sigilc`) as the source and event IDs 1 (INFO), 2 (WARN) and 3 (ERROR).
+
+Each daemon also keeps the last 500 events in memory. Read them with the `events` command:
+
+```bash
+sigils events           # text
+sigils events --json    # JSON array
+sigilc events           # text
+sigilc events --json    # JSON array
+```
+
+`sigils events` uses the global `--json` flag; `sigilc events` has its own local `--json` flag.
+
+Events include certificate issuance, enrollment, reload results, identity renewal, client and token management, and ARI window updates. The output of `on_change` and `exec` DNS programs is sensitive and never appears in events; it goes only to the service log (stderr or journald). On Windows, the service log is the event log, and the output is shown as `(withheld)` there too, so it is not recorded anywhere; hook scripts should log their own output.
+
+TLS handshake errors from the public HTTPS listener go only to the service log and are rate-limited to 10 per minute. They do not appear in `sigils events`.
+
+## TUI
+
+### sigils
+
+`sigils` without a subcommand opens the server TUI, which refreshes from the daemon every 2 seconds.
+
+Five tabs:
+
+| Tab | Content |
+|---|---|
+| Overview | Certificate state counts, token counts (unused / used / expired), last 10 events |
+| Certificates | Name, State, Not After, Renew At (with `ari`/`ratio`), Domains, Subs; select a row for details |
+| Clients | Name, Last Seen, Enrolled, Certificates (reverse lookup of subscribed certificates) |
+| Tokens | ID, Name, Status, Expires |
+| Events | Auto-wrapping, follows the bottom automatically |
+
+Keys:
+
+| Key | Action |
+|---|---|
+| `1`-`5` | Switch tab |
+| `tab` / `shift+tab` | Next / previous tab |
+| `k`/`up`, `j`/`down` | Move in tables and events |
+| `pgup`, `pgdn` | Page in events |
+| `g`, `G` | Oldest / newest event |
+| `R` | Renew selected certificate (confirm with `y`) |
+| `d` | Delete selected client or revoke selected token (confirm with `y`) |
+| `n` | Create a new token (enter name and TTL, then `enter`) |
+| `r` | Refresh now |
+| `?` | Show all keys |
+| `q` / `ctrl+c` | Quit (ctrl+c works inside dialogs too) |
+
+The token is shown in the result dialog after creation, together with the install commands. Closing the dialog discards the token; for a complete command on one line, revoke it and use `sigils token create` on the command line. The selected row is marked with `›` so it is visible without color.
+
+### sigilc
+
+`sigilc` without a subcommand opens the client TUI, which refreshes every 2 seconds. It fails with an error when the daemon is not running.
+
+The header shows the client name, server URL, online/offline status, last pull time, and last error. Below it is a certificate table with columns Name, Not After (date plus remaining days; `expired` when past), Outputs, on_change, and Pending. A yellow Not After means the certificate has passed its ratio-rule renewal point; `sigils` may renew later when its CA suggests a later ARI window. Pending means the `on_change` program has not yet succeeded since the certificate or one of its outputs changed. Below the table are the most recent events.
+
+Keys:
+
+| Key | Action |
+|---|---|
+| `f` | Fetch now (runs until done, including hooks) |
+| `R` | Reload client.yaml |
+| `r` | Refresh display |
+| `e` | Full-screen events (follows the bottom) |
+| `?` | Full help and color legend |
+| `q` / `ctrl+c` | Quit |
+
+In the events view: `k`/`up`, `j`/`down`, `pgup`/`b`, `pgdn`/`space`, `u` (half page up), `d` (half page down).
+
+When the daemon restarts, events are cleared and fetched again from the beginning. If more certificates exist than the terminal can show, the last line reads `+N more; sigilc status --json lists them all`.
 
 ## Environment variables in configuration
 
@@ -177,7 +326,7 @@ certificates:
 - Each run times out after 2 minutes. The hook runs as the `sigils` service account with its full environment, including any credentials referenced from `server.yaml`. Its working directory is the service's (`System32` for a Windows service, `/` under systemd), so use absolute paths.
 - Different certificates can run the hook at the same time. Several domains of one certificate are handled without waiting between them.
 - Background processes started by the hook must redirect their output; otherwise the hook fails 5 seconds after it exits.
-- On failure, the error names only the action, the record, and the exit status or timeout. The hook's output goes to the service log, truncated.
+- On failure, the error names only the action, the record, and the exit status or timeout. The hook's output goes to the service log, truncated. It does not appear in `sigils events`.
 
 On Windows, run a PowerShell script through its full path, for example `command: ['C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', 'C:\sigil\hook.ps1']`.
 
@@ -188,16 +337,16 @@ Other DNS-01 settings:
 - Certificates that share a domain are issued in parallel and use the same `_acme-challenge` record. A provider may reject the second record, and one certificate's cleanup removes the record for both, so one of them fails and is retried after its backoff. Avoid overlapping domains across certificates.
 - To use a private ACME CA, set `LEGO_CA_CERTIFICATES` for `sigils` to the path of the CA's root certificate. lego panics if that file cannot be read.
 
-## Runtime reload and renewal
+## Runtime reload and issuance
 
-`sigils reload` validates `server.yaml` and applies supported changes through the local server IPC endpoint. ACME settings, DNS providers, and certificate definitions, including their subscribers, can be updated without restarting the daemon. Changes to `server.listen`, `server.public_url`, `server.data_dir`, `server.ipc_socket`, `server.tls_cert_file`, `server.tls_key_file`, or `acme.dns_resolvers` are rejected with restart guidance: the listener and TLS identity are fixed at startup, and lego keeps the DNS resolvers in process-wide state. The active runtime configuration remains unchanged.
+`sigils reload` validates `server.yaml` and applies supported changes through the local server IPC endpoint. ACME settings, DNS providers, and certificate definitions, including their subscribers, can be updated without restarting the daemon. Changes to `server.listen`, `server.public_url`, `server.data_dir`, `server.ipc_socket`, `server.tls_cert_file`, `server.tls_key_file`, or `acme.dns_resolvers` are rejected with restart guidance. The TLS file paths and listen address are fixed at startup; file content is reloaded automatically on each handshake (see [Production TLS](#production-tls)).
 
 `sigils` issues certificates in parallel, at most four at a time and at most one issuance per certificate at a time:
 
-- Reload does not wait for in-flight issuance. It clears retry backoff, publishes the new configuration, and immediately checks the certificate definitions.
+- Reload does not wait for in-flight issuance. It clears retry backoff (but keeps the last error message), publishes the new configuration, and immediately checks the certificate definitions.
 - An issuance that started before a reload is discarded if the certificate's CA directory, domains, or key type changed meanwhile, and the certificate is issued again under the new configuration. Stored certificate material is tied to those same settings, so stale same-name material is never distributed.
 - A failed issuance is retried after 5 minutes, doubling up to 24 hours. The backoff is stored in the database and survives a restart, so after fixing the cause (for example DNS credentials) run `sigils reload` or `sigils cert renew <name>` instead of restarting.
-- `sigils cert list` shows each configured certificate's state: `issuing`, `backoff`, `valid`, or `pending`. `sigils cert show <name>` adds the failure count, the last error, and the next attempt.
+- `sigils cert list` shows each configured certificate's state (`issuing`, `backoff`, `valid`, or `pending`), and a RENEW AT column with the renewal moment and its source (`ari` or `ratio`). `sigils cert show <name>` adds the subscribers, the failure count, the last error, and the next attempt.
 
 Read-only IPC responses expose metadata only and never include certificate private keys or enrollment-token hashes.
 
@@ -205,9 +354,29 @@ Read-only IPC responses expose metadata only and never include certificate priva
 
 The database schema only migrates forward. After an upgrade, an older `sigils` cannot open the database.
 
+## Naming rules
+
+All names in `server.yaml` --- certificate names, `acme.cas` keys, `dns_providers` keys --- and client names follow the same rule: a lowercase DNS label of 1 to 63 characters from `a-z`, `0-9` and `-`, not starting or ending with `-`.
+
+**Upgrading from a build before these rules**: names that contain uppercase letters, dots or underscores must be renamed before upgrading. A certificate name appears in `server.yaml` and in every subscriber's `client.yaml` under `certificates.<name>`; rename both together. A CA or provider name appears as a key in `acme.cas` or `dns_providers` and in the references that use it; rename the key and its references together. After upgrading, `server.yaml` is rejected at startup and reload if any name is invalid. A new `sigilc` connected to an old `sigils` reports an error for each invalid certificate name and stops delivering those certificates; their stored material is removed, but output files are left in place.
+
+Renaming a CA registers a new ACME account under the new name. Renaming a certificate triggers a fresh issuance; the old database record becomes an orphan. When a delivered certificate is renamed but the `client.yaml` key is not, `sigilc status` shows it with Outputs 0. Upgrade order: rename first, then upgrade the binaries.
+
+## Services
+
+On Windows, `service install` registers the daemon and writes a recovery action (restart after 10 seconds, reset the failure count after 24 hours). Events go to the Application event log. `service uninstall` removes the event log source.
+
+Under systemd, `service install` writes a unit with `Restart=on-failure` and `RestartSec=5`. A daemon that keeps failing restarts every 5 seconds indefinitely. To update an existing unit, run `service uninstall` then `service install`; kardianos reports an error when the service already exists. Environment variables for the service (DNS credentials, `LEGO_CA_CERTIFICATES`, etc.) go in `/etc/sysconfig/<name>`. Create the directory first on distributions that do not ship it.
+
 ## Current limitations
 
+- The enrollment token appears in the process command line of `sh -s -- --token` and `sigilc enroll --token`. A used token cannot be replayed.
+- Reinstalling `sigilc` over a running binary fails with `ETXTBSY` on Linux and a file-lock error on Windows. Stop the service first.
 - The container E2E issues certificates through the `exec` DNS provider; lego's built-in cloud DNS providers are not covered by an E2E.
-- Some TUI management actions are not wired yet; use the corresponding CLI commands for those operations.
 - Reconciliation does not compare Windows ACLs; see [Private key outputs on Windows](#private-key-outputs-on-windows).
 - Two output paths that name the same file, one relative and one absolute, are not detected as duplicates.
+- Certificates whose lifetime does not exceed about twice the CA's NotBefore backdate (about 2 hours for Let's Encrypt, which backdates by 1 hour) are not supported: they arrive already past their renewal point and are caught by the arrival guard, which backs off instead of retrying immediately.
+- The mini-CA root certificate expires after 10 years and has no rotation mechanism.
+- ARI does not do short-interval exponential backoff for 5xx responses (lego does not expose the HTTP status code); it retries after 6 hours.
+- The random renewal moment within an ARI window is not persisted; a restart picks a new moment within the same window.
+- A reload rejection caused by a YAML type error may include up to about 10 characters of the configuration value in the event and service log.
