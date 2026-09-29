@@ -96,7 +96,7 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 	}()
 
 	// Enrollment tokens are created over IPC and redeemed over HTTPS.
-	enrollSrv := enroll.NewServer(db.Tokens, db.Clients, miniCA)
+	enrollSrv := enroll.NewServer(db, miniCA)
 
 	// The errors of net/http servers, such as the failed TLS handshakes of
 	// every scanner on the internet, go to the service log but are not

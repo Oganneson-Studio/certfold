@@ -10,7 +10,7 @@ import (
 func TestCreateRejectsInvalidClientName(t *testing.T) {
 	ctx := context.Background()
 	db := mustOpenDB(t)
-	srv := NewServer(db.Tokens, db.Clients, mustBootstrapCA(t))
+	srv := NewServer(db, mustBootstrapCA(t))
 
 	for _, name := range []string{"", "Web-1", "web_1", "-web", strings.Repeat("a", 64)} {
 		_, err := srv.Create(ctx, "https://sigil.example.com", name, time.Hour)

@@ -3,6 +3,7 @@ package enroll
 import (
 	"context"
 	"crypto/x509"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
@@ -62,7 +63,7 @@ func TestCreateAndVerify(t *testing.T) {
 	ctx := context.Background()
 	db := mustOpenDB(t)
 	miniCA := mustBootstrapCA(t)
-	srv := NewServer(db.Tokens, db.Clients, miniCA)
+	srv := NewServer(db, miniCA)
 
 	tokenStr, err := srv.Create(ctx, "https://sigil.example.com", "web-1", time.Hour)
 	if err != nil {
@@ -87,7 +88,7 @@ func TestVerify_TamperedSecret(t *testing.T) {
 	ctx := context.Background()
 	db := mustOpenDB(t)
 	miniCA := mustBootstrapCA(t)
-	srv := NewServer(db.Tokens, db.Clients, miniCA)
+	srv := NewServer(db, miniCA)
 
 	tokenStr, _ := srv.Create(ctx, "https://sigil.example.com", "web-1", time.Hour)
 
@@ -106,7 +107,7 @@ func TestVerify_TamperedSecret(t *testing.T) {
 func TestVerify_TamperedTrustData(t *testing.T) {
 	ctx := context.Background()
 	db := mustOpenDB(t)
-	srv := NewServer(db.Tokens, db.Clients, mustBootstrapCA(t))
+	srv := NewServer(db, mustBootstrapCA(t))
 	tokenStr, err := srv.Create(ctx, "https://sigil.example.com", "web-1", time.Hour)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -138,7 +139,7 @@ func TestVerify_ExpiredToken(t *testing.T) {
 	ctx := context.Background()
 	db := mustOpenDB(t)
 	miniCA := mustBootstrapCA(t)
-	srv := NewServer(db.Tokens, db.Clients, miniCA)
+	srv := NewServer(db, miniCA)
 
 	tokenStr, err := srv.Create(ctx, "https://sigil.example.com", "web-1", -time.Hour)
 	if err != nil {
@@ -154,7 +155,7 @@ func TestVerify_UnknownToken(t *testing.T) {
 	ctx := context.Background()
 	db := mustOpenDB(t)
 	miniCA := mustBootstrapCA(t)
-	srv := NewServer(db.Tokens, db.Clients, miniCA)
+	srv := NewServer(db, miniCA)
 
 	payload := Token{
 		ServerURL: "https://sigil.example.com",
@@ -176,7 +177,7 @@ func TestSignClientCert_E2E(t *testing.T) {
 	ctx := context.Background()
 	db := mustOpenDB(t)
 	miniCA := mustBootstrapCA(t)
-	srv := NewServer(db.Tokens, db.Clients, miniCA)
+	srv := NewServer(db, miniCA)
 
 	tokenStr, err := srv.Create(ctx, "https://sigil.example.com", "web-1", time.Hour)
 	if err != nil {
@@ -227,7 +228,7 @@ func TestTokenReplay(t *testing.T) {
 	ctx := context.Background()
 	db := mustOpenDB(t)
 	miniCA := mustBootstrapCA(t)
-	srv := NewServer(db.Tokens, db.Clients, miniCA)
+	srv := NewServer(db, miniCA)
 
 	tokenStr, _ := srv.Create(ctx, "https://sigil.example.com", "web-1", time.Hour)
 	name, tokenID, _ := srv.Verify(ctx, tokenStr)
@@ -248,7 +249,7 @@ func TestTokenConcurrentConsumption(t *testing.T) {
 	ctx := context.Background()
 	db := mustOpenDB(t)
 	miniCA := mustBootstrapCA(t)
-	srv := NewServer(db.Tokens, db.Clients, miniCA)
+	srv := NewServer(db, miniCA)
 
 	tokenStr, err := srv.Create(ctx, "https://sigil.example.com", "web-1", time.Hour)
 	if err != nil {
@@ -300,6 +301,55 @@ func TestTokenConcurrentConsumption(t *testing.T) {
 	}
 	if succeeded != 1 || failed != 1 {
 		t.Fatalf("concurrent consumption: %d succeeded, %d failed; want 1 and 1", succeeded, failed)
+	}
+}
+
+// TestSignClientCertKeepsTokenWhenClientIsNotRecorded checks that the token
+// is consumed only together with the record of its client: an enrollment
+// that fails to record the client leaves the token for another attempt.
+func TestSignClientCertKeepsTokenWhenClientIsNotRecorded(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "sigils.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	srv := NewServer(db, mustBootstrapCA(t))
+	tokenStr, err := srv.Create(ctx, "https://sigil.example.com", "web-1", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, tokenID, err := srv.Verify(ctx, tokenStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Make every write of a client fail.
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`CREATE TRIGGER refuse_clients BEFORE INSERT ON clients BEGIN SELECT RAISE(ABORT, 'refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.SignClientCert(ctx, newCSR(t, name), name, tokenID); err == nil {
+		t.Fatal("SignClientCert succeeded without recording the client")
+	}
+	rec, err := db.Tokens.Get(ctx, tokenID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rec.UsedAt.IsZero() {
+		t.Fatalf("the token was used up by an enrollment that failed: used at %s", rec.UsedAt)
+	}
+
+	if _, err := raw.Exec(`DROP TRIGGER refuse_clients`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.SignClientCert(ctx, newCSR(t, name), name, tokenID); err != nil {
+		t.Fatalf("enrollment with the token left unused: %v", err)
 	}
 }
 

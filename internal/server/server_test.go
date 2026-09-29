@@ -25,7 +25,7 @@ func TestCreateTokenRejectsNonPositiveLifetime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrollSrv := enroll.NewServer(db.Tokens, db.Clients, miniCA)
+	enrollSrv := enroll.NewServer(db, miniCA)
 	cfg := &config.ServerConfig{Server: config.ServerSection{PublicURL: "https://sigil.example.com"}}
 	ctx := context.Background()
 

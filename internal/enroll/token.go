@@ -30,14 +30,13 @@ type Token struct {
 
 // Server handles server-side token creation and verification.
 type Server struct {
-	tokens  *store.TokenRepo
-	clients *store.ClientRepo
-	miniCA  *ca.MiniCA
+	db     *store.DB
+	miniCA *ca.MiniCA
 }
 
-// NewServer creates a Server.
-func NewServer(tokens *store.TokenRepo, clients *store.ClientRepo, miniCA *ca.MiniCA) *Server {
-	return &Server{tokens: tokens, clients: clients, miniCA: miniCA}
+// NewServer creates a Server that keeps tokens and clients in db.
+func NewServer(db *store.DB, miniCA *ca.MiniCA) *Server {
+	return &Server{db: db, miniCA: miniCA}
 }
 
 // Create generates a new one-time enrollment token for name with the given TTL.
@@ -76,7 +75,7 @@ func (s *Server) Create(ctx context.Context, serverURL, name string, ttl time.Du
 		ExpiresAt:  expiresAt,
 		CreatedAt:  time.Now().UTC(),
 	}
-	if err := s.tokens.Upsert(ctx, rec, nil); err != nil {
+	if err := s.db.Tokens.Upsert(ctx, rec, nil); err != nil {
 		return "", fmt.Errorf("store token: %w", err)
 	}
 	raw, err := json.Marshal(payload)
@@ -94,7 +93,7 @@ func (s *Server) Verify(ctx context.Context, tokenStr string) (name string, toke
 		return "", "", fmt.Errorf("decode: %w", err)
 	}
 
-	rec, err := s.tokens.Get(ctx, payload.TokenID, nil)
+	rec, err := s.db.Tokens.Get(ctx, payload.TokenID, nil)
 	if err == sql.ErrNoRows {
 		return "", "", fmt.Errorf("invalid token")
 	}
@@ -113,23 +112,36 @@ func (s *Server) Verify(ctx context.Context, tokenStr string) (name string, toke
 	return rec.Name, rec.TokenID, nil
 }
 
-// SignClientCert signs csr for the given client name and records the client
-// in the clients table. Returns the signed certificate DER bytes.
+// SignClientCert signs csr for the given client name, consumes the token and
+// records the client in the clients table. Returns the signed certificate DER
+// bytes.
 func (s *Server) SignClientCert(ctx context.Context, csr *x509.CertificateRequest, name, tokenID string) ([]byte, error) {
 	certDER, err := s.miniCA.Sign(csr, name)
 	if err != nil {
 		return nil, fmt.Errorf("sign: %w", err)
 	}
-	if err := s.tokens.MarkUsed(ctx, tokenID, nil); err != nil {
+	// The token is consumed only together with the record of its client, so
+	// an enrollment that fails to record it leaves the token for another
+	// attempt. The token goes first: of two enrollments with one token, the
+	// second fails there, before it could replace the fingerprint of the
+	// first.
+	tx, err := s.db.BeginTx(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := s.db.Tokens.MarkUsed(ctx, tokenID, tx); err != nil {
 		return nil, fmt.Errorf("mark used: %w", err)
 	}
-	fp := ca.Fingerprint(certDER)
-	if err := s.clients.Upsert(ctx, &store.ClientRecord{
+	if err := s.db.Clients.Upsert(ctx, &store.ClientRecord{
 		Name:        name,
-		Fingerprint: fp,
+		Fingerprint: ca.Fingerprint(certDER),
 		EnrolledAt:  time.Now().UTC(),
-	}, nil); err != nil {
+	}, tx); err != nil {
 		return nil, fmt.Errorf("record client: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
 	}
 	return certDER, nil
 }

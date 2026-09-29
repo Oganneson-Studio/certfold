@@ -64,7 +64,7 @@ func buildDeps(t *testing.T) Deps {
 	t.Helper()
 	miniCA := mustBootstrapCA(t)
 	db := mustOpenDB(t)
-	enrollSvc := enroll.NewServer(db.Tokens, db.Clients, miniCA)
+	enrollSvc := enroll.NewServer(db, miniCA)
 	cfg := &config.ServerConfig{
 		Server: config.ServerSection{Listen: ":0", DataDir: t.TempDir()},
 		Certificates: []config.CertificateSpec{
@@ -1440,7 +1440,7 @@ func buildFileDeps(t *testing.T) (Deps, *store.DB) {
 
 	deps := buildDeps(t)
 	deps.DB = db
-	deps.EnrollServer = enroll.NewServer(db.Tokens, db.Clients, deps.MiniCA)
+	deps.EnrollServer = enroll.NewServer(db, deps.MiniCA)
 	return deps, other
 }
 

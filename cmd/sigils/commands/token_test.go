@@ -213,7 +213,7 @@ func TestTokenCreateIssuesTokenThroughDaemon(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			name, _, err := enroll.NewServer(db.Tokens, db.Clients, miniCA).Verify(context.Background(), token)
+			name, _, err := enroll.NewServer(db, miniCA).Verify(context.Background(), token)
 			if err != nil {
 				t.Fatalf("Verify: %v", err)
 			}
