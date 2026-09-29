@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -37,10 +39,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 // ---------------------------------------------------------------------------
 
 func runReload(cmd *cobra.Command, _ []string) error {
-	ipcSocket := clientIPCSocket(cmd)
-	c, err := ipc.NewClient(ipcSocket)
+	c, err := dialDaemon(cmd)
 	if err != nil {
-		return fmt.Errorf("ipc dial: %w", err)
+		return err
 	}
 	if err := c.ReloadClient(context.Background()); err != nil {
 		return err
@@ -107,16 +108,13 @@ func runEnroll(cmd *cobra.Command, _ []string) (err error) {
 
 func runStatus(cmd *cobra.Command, _ []string) error {
 	asJSON, _ := cmd.Flags().GetBool("json")
-	ipcSocket := clientIPCSocket(cmd)
-	c, err := ipc.NewClient(ipcSocket)
+	st, err := clientState(cmd)
 	if err != nil {
 		if asJSON {
-			fmt.Println(`{"error":"daemon not running"}`)
+			_ = printJSON(struct {
+				Error string `json:"error"`
+			}{err.Error()})
 		}
-		return fmt.Errorf("sigilc daemon is not running: %w", err)
-	}
-	st, err := c.GetClientState(context.Background())
-	if err != nil {
 		return err
 	}
 	if asJSON {
@@ -135,15 +133,23 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+// clientState asks the daemon for its state.
+func clientState(cmd *cobra.Command) (*ipc.ClientState, error) {
+	c, err := dialDaemon(cmd)
+	if err != nil {
+		return nil, err
+	}
+	return c.GetClientState(context.Background())
+}
+
 // ---------------------------------------------------------------------------
 // fetch
 // ---------------------------------------------------------------------------
 
 func runFetch(cmd *cobra.Command, _ []string) error {
-	ipcSocket := clientIPCSocket(cmd)
-	c, err := ipc.NewClient(ipcSocket)
+	c, err := dialDaemon(cmd)
 	if err != nil {
-		return fmt.Errorf("ipc unavailable (is sigilc daemon running?): %w", err)
+		return err
 	}
 	certName, _ := cmd.Flags().GetString("cert")
 	if err := c.FetchClient(context.Background(), certName); err != nil {
@@ -162,9 +168,9 @@ func runDefaultTUI(cmd *cobra.Command, args []string) error {
 }
 
 func runClientTUI(cmd *cobra.Command, _ []string) error {
-	ipcClient, err := ipc.NewClient(clientIPCSocket(cmd))
+	ipcClient, err := dialDaemon(cmd)
 	if err != nil {
-		return fmt.Errorf("sigilc daemon is not running: %w", err)
+		return err
 	}
 	p := tea.NewProgram(tuiclient.New(ipcClient), tea.WithAltScreen())
 	_, err = p.Run()
@@ -186,6 +192,25 @@ func defaultClientCfgPath() string {
 		return p
 	}
 	return internalsvc.DefaultClientConfigPath()
+}
+
+// dialDaemon connects to the daemon at the endpoint clientIPCSocket resolves.
+// Its error says that the daemon is not running only when nothing listens
+// there: a denied permission, or a pipe that another owner holds, may hide a
+// daemon that runs.
+func dialDaemon(cmd *cobra.Command) (*ipc.Client, error) {
+	c, err := ipc.NewClient(clientIPCSocket(cmd))
+	if daemonNotRunning(err) {
+		return nil, fmt.Errorf("sigilc daemon is not running: %w", err)
+	}
+	return c, err
+}
+
+// daemonNotRunning reports whether a dial error shows that no daemon listens
+// on the endpoint: it does not exist, or nothing accepts connections on it.
+// sigils decides the same with a function of the same name.
+func daemonNotRunning(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED)
 }
 
 // clientConfigPath returns the path of client.yaml: --config, else
