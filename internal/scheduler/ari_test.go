@@ -1140,3 +1140,44 @@ func TestShutdownDoesNotWaitForRenewalInfo(t *testing.T) {
 		t.Fatalf("asked %d times, want no query after shutdown", n)
 	}
 }
+
+// countingRenewalInfo is a gatedIssuer that counts its renewal info queries.
+type countingRenewalInfo struct {
+	*gatedIssuer
+	asked atomic.Int32
+}
+
+func (c *countingRenewalInfo) RenewalInfo(*config.ServerConfig, config.CertificateSpec, []byte) (*acme.RenewalInfo, error) {
+	c.asked.Add(1)
+	return nil, acme.ErrNoRenewalInfo
+}
+
+// A certificate that is not due but that a manual renewal is issuing is not
+// asked about: the answer would concern the certificate being replaced. Once
+// the new one is stored, it is. The tick marks only the certificates it found
+// due as being issued, so this one is skipped through Issuing alone.
+func TestRenewalInfoIsNotAskedDuringManualRenewal(t *testing.T) {
+	ctx := context.Background()
+	db := mustOpenDB(t)
+	clock := newTestClock(ariStart)
+	iss := &countingRenewalInfo{gatedIssuer: newGatedIssuer(t, ariStart.Add(90*day))}
+	r := New(iss, db, nil, clock.Now)
+	cfg := minimalCfg("api-prod", nil)
+	storeCert(t, db, cfg, "api-prod", ariStart.Add(-10*day)) // due 50 days on
+
+	renewed := renewAsync(ctx, r, static(cfg), "api-prod")
+	call := iss.next(t)
+	tickAndCheck(t, r, cfg)
+	if n := iss.asked.Load(); n != 0 {
+		t.Fatalf("asked %d times about a certificate being issued, want 0", n)
+	}
+
+	call.succeed()
+	if err := receive(t, renewed, "RenewNamed"); err != nil {
+		t.Fatal(err)
+	}
+	tickAndCheck(t, r, cfg)
+	if n := iss.asked.Load(); n != 1 {
+		t.Fatalf("asked %d times about the stored certificate, want 1", n)
+	}
+}
