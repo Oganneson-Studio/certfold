@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -44,8 +45,9 @@ type MiniCA struct {
 }
 
 // Bootstrap ensures a CA certificate and key exist under dataDir/ca/.
-// If they do not exist, a new root CA is generated and written to disk.
-// Returns the loaded or newly created *MiniCA.
+// If neither exists, a new root CA is generated and written to disk; if only
+// one does, it fails and leaves that one alone. Returns the loaded or newly
+// created *MiniCA.
 func Bootstrap(dataDir string) (*MiniCA, error) {
 	dir := filepath.Join(dataDir, caSubDir)
 	if err := securefile.EnsurePrivateDirectory(dir); err != nil {
@@ -55,8 +57,20 @@ func Bootstrap(dataDir string) (*MiniCA, error) {
 	keyPath := filepath.Join(dir, caKeyFile)
 	serialPath := filepath.Join(dir, caSerialFile)
 
-	if fileExists(certPath) && fileExists(keyPath) {
+	haveCert, haveKey := fileExists(certPath), fileExists(keyPath)
+	if haveCert && haveKey {
 		return Load(certPath, keyPath)
+	}
+	if haveCert || haveKey {
+		// Such as a restore that left out the private key. A new CA would
+		// replace the one every enrolled client trusts, and overwrite the
+		// file that is left.
+		present, missing := certPath, keyPath
+		if haveKey {
+			present, missing = keyPath, certPath
+		}
+		return nil, fmt.Errorf("mini-CA is incomplete: %s exists but %s does not; restore %s, or remove %s to create a new CA that every client must enroll with again",
+			present, missing, missing, present)
 	}
 
 	cert, key, err := generateRootCA()
@@ -283,12 +297,7 @@ func generateRootCA() (certDER []byte, key *ecdsa.PrivateKey, err error) {
 }
 
 func writeCertPEM(path string, der []byte) error {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: der})
+	return securefile.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 }
 
 func writeKeyPEM(path string, key *ecdsa.PrivateKey) error {
@@ -316,7 +325,10 @@ func parsePrivateKey(block *pem.Block) (any, error) {
 	}
 }
 
+// fileExists reports whether path may exist: only an error that says it does
+// not counts as absent, so that Bootstrap never writes a CA over a file it
+// failed to stat.
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
-	return err == nil
+	return !errors.Is(err, os.ErrNotExist)
 }

@@ -1,6 +1,7 @@
 package ca
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -80,6 +81,49 @@ func TestBootstrap_CreatesFiles(t *testing.T) {
 	}
 	if m.cert.SerialNumber.Cmp(m2.cert.SerialNumber) != 0 {
 		t.Errorf("serial mismatch: %v vs %v", m.cert.SerialNumber, m2.cert.SerialNumber)
+	}
+}
+
+// TestBootstrapRefusesHalfPresentCA covers a data directory that holds only
+// one of ca.crt and ca.key, such as one restored from a backup that left out
+// private keys. A new root would silently replace the one every enrolled
+// client trusts, and overwrite the file that is left. Bootstrap must fail
+// instead, name both files, and leave the one that is left alone.
+func TestBootstrapRefusesHalfPresentCA(t *testing.T) {
+	for _, missing := range []string{caKeyFile, caCertFile} {
+		t.Run("without "+missing, func(t *testing.T) {
+			dir := t.TempDir()
+			if _, err := Bootstrap(dir); err != nil {
+				t.Fatal(err)
+			}
+			kept := caCertFile
+			if missing == caCertFile {
+				kept = caKeyFile
+			}
+			keptPath := filepath.Join(dir, caSubDir, kept)
+			missingPath := filepath.Join(dir, caSubDir, missing)
+			before, err := os.ReadFile(keptPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(missingPath); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = Bootstrap(dir)
+			if err == nil {
+				t.Errorf("Bootstrap without %s succeeded, want an error", missing)
+			} else if !strings.Contains(err.Error(), keptPath) || !strings.Contains(err.Error(), missingPath) {
+				t.Errorf("Bootstrap without %s: error %q does not name %s and %s", missing, err, keptPath, missingPath)
+			}
+			after, err := os.ReadFile(keptPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Errorf("Bootstrap without %s rewrote %s", missing, kept)
+			}
+		})
 	}
 }
 
