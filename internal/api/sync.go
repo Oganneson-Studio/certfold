@@ -115,7 +115,7 @@ func (h *handlers) certificateView(ctx context.Context, clientName string) ([]pr
 
 	// Filter by the subscriber list and ensure stored material still matches
 	// the current spec. A hot reload must never expose a same-name stale cert.
-	cfg := h.deps.serverConfig()
+	cfg := h.deps.CurrentServer()
 	subscribed := subscribedSpecs(cfg, clientName)
 	view := []proto.CertSummary{}
 	for _, c := range all {

@@ -67,7 +67,7 @@ func TestRouterLogsPanicsAsEvents(t *testing.T) {
 func TestIdentityRenewalEvents(t *testing.T) {
 	logs := setupLogs(t)
 	deps := buildDeps(t)
-	handler := NewInsecure(deps).Handler
+	handler := newHandler(deps)
 	oldIdentity := makeEnrolledClientCert(t, deps, "web-1")
 
 	newKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -142,7 +142,7 @@ func TestLastSeenWriteFailureIsAnErrorEvent(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, syncRequest(identity, ""))
+	newHandler(deps).ServeHTTP(rec, syncRequest(identity, ""))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}

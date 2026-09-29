@@ -134,11 +134,9 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 
 	// HTTPS server.
 	httpSrv := api.New(api.Deps{
-		ServerCfg:     cfg,
 		CurrentServer: runtimeConfig.Current,
 		DB:            db,
 		MiniCA:        miniCA,
-		DataDir:       cfg.Server.DataDir,
 		EnrollServer:  enrollSrv,
 		Changes:       changes,
 		Done:          ctx.Done(),

@@ -63,7 +63,7 @@ func readJSON(r *http.Request, v any) error {
 
 func (h *handlers) installSh(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/x-shellscript")
-	renderInstallSh(w, h.deps.serverConfig().PublicBaseURL())
+	renderInstallSh(w, h.deps.CurrentServer().PublicBaseURL())
 }
 
 // ---------------------------------------------------------------------------
@@ -74,7 +74,7 @@ func (h *handlers) installSh(w http.ResponseWriter, r *http.Request) {
 // it: the token is the -Token argument of the command that runs the script.
 func (h *handlers) installPs1(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	renderInstallPs1(w, h.deps.serverConfig().PublicBaseURL())
+	renderInstallPs1(w, h.deps.CurrentServer().PublicBaseURL())
 }
 
 // ---------------------------------------------------------------------------
@@ -99,7 +99,7 @@ func (h *handlers) downloadSigilc(w http.ResponseWriter, r *http.Request) {
 	if goos == "windows" {
 		name += ".exe"
 	}
-	baseDir := filepath.Join(h.deps.DataDir, "binaries")
+	baseDir := filepath.Join(h.deps.CurrentServer().Server.DataDir, "binaries")
 	path := filepath.Join(baseDir, name)
 	rel, err := filepath.Rel(baseDir, path)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -214,7 +214,7 @@ func (h *handlers) getCertBundle(w http.ResponseWriter, r *http.Request) {
 	clientName := cert.Subject.CommonName
 	certName := chi.URLParam(r, "name")
 
-	cfg := h.deps.serverConfig()
+	cfg := h.deps.CurrentServer()
 	spec, subscribed := subscribedSpecs(cfg, clientName)[certName]
 	if !subscribed {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -308,11 +308,11 @@ func subscribedSpecs(cfg *config.ServerConfig, clientName string) map[string]con
 	return out
 }
 
+// certRecordMatchesSpec reports whether rec was issued for spec as cfg has
+// it. The fingerprint covers the CA and its directory, the domains and the
+// key type.
 func certRecordMatchesSpec(rec *store.CertRecord, cfg *config.ServerConfig, spec config.CertificateSpec) bool {
-	return rec != nil &&
-		rec.CA == spec.CA &&
-		slices.Equal(rec.Domains, spec.Domains) &&
-		rec.SpecFingerprint == config.CertificateSpecFingerprint(cfg, spec)
+	return rec != nil && rec.SpecFingerprint == config.CertificateSpecFingerprint(cfg, spec)
 }
 
 func (h *handlers) requireActiveClient(next http.Handler) http.Handler {

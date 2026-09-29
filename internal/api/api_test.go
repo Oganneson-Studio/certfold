@@ -56,24 +56,33 @@ func mustBootstrapCA(t *testing.T) *ca.MiniCA {
 	return m
 }
 
+// buildDeps returns the dependencies of an API server whose configuration
+// stays the one CurrentServer returns at first, unless a test replaces
+// CurrentServer. Tests may change that configuration in place.
 func buildDeps(t *testing.T) Deps {
 	t.Helper()
 	miniCA := mustBootstrapCA(t)
 	db := mustOpenDB(t)
 	enrollSvc := enroll.NewServer(db.Tokens, db.Clients, miniCA)
-	return Deps{
-		ServerCfg: &config.ServerConfig{
-			Server: config.ServerSection{Listen: ":0", DataDir: t.TempDir()},
-			Certificates: []config.CertificateSpec{
-				{Name: "api-prod", CA: "letsencrypt", Domains: []string{"api.example.com"}, Subscribers: []string{"web-1"}},
-			},
+	cfg := &config.ServerConfig{
+		Server: config.ServerSection{Listen: ":0", DataDir: t.TempDir()},
+		Certificates: []config.CertificateSpec{
+			{Name: "api-prod", CA: "letsencrypt", Domains: []string{"api.example.com"}, Subscribers: []string{"web-1"}},
 		},
-		DB:           db,
-		MiniCA:       miniCA,
-		DataDir:      t.TempDir(),
-		EnrollServer: enrollSvc,
-		Changes:      NewChanges(),
 	}
+	return Deps{
+		CurrentServer: func() *config.ServerConfig { return cfg },
+		DB:            db,
+		MiniCA:        miniCA,
+		EnrollServer:  enrollSvc,
+		Changes:       NewChanges(),
+	}
+}
+
+// newHandler serves the API of deps without TLS. Tests that need a client
+// certificate set it on the request with simulateMTLS.
+func newHandler(deps Deps) http.Handler {
+	return buildRouter(newHandlers(deps))
 }
 
 // makeClientCert issues a client cert from the mini-CA with the given CN.
@@ -137,11 +146,8 @@ func simulateMTLS(r *http.Request, clientCert *tls.Certificate) *http.Request {
 // ---------------------------------------------------------------------------
 
 func TestInstallSh(t *testing.T) {
-	deps := buildDeps(t)
-	srv := NewInsecure(deps)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/install.sh", nil)
-	srv.Handler.ServeHTTP(rec, req)
+	newHandler(buildDeps(t)).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/install.sh", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: got %d", rec.Code)
@@ -159,31 +165,20 @@ func TestInstallSh(t *testing.T) {
 }
 
 func TestEnrollRejectsOversizedBody(t *testing.T) {
-	deps := buildDeps(t)
-	srv := NewInsecure(deps)
 	rec := httptest.NewRecorder()
 	body := `{"token":"` + strings.Repeat("a", maxAPIRequestBody) + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/enroll", strings.NewReader(body))
-	srv.Handler.ServeHTTP(rec, req)
+	newHandler(buildDeps(t)).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }
 
-func TestServerHasResourceTimeouts(t *testing.T) {
-	srv := NewInsecure(buildDeps(t))
-	if srv.ReadHeaderTimeout == 0 || srv.ReadTimeout == 0 || srv.WriteTimeout == 0 || srv.IdleTimeout == 0 {
-		t.Fatalf("server timeouts are incomplete: %+v", srv)
-	}
-}
-
 func TestDownloadSigilc_NotFound(t *testing.T) {
-	deps := buildDeps(t)
-	srv := NewInsecure(deps)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/download/sigilc?os=linux&arch=amd64", nil)
-	srv.Handler.ServeHTTP(rec, req)
+	newHandler(buildDeps(t)).ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", rec.Code)
 	}
@@ -191,7 +186,7 @@ func TestDownloadSigilc_NotFound(t *testing.T) {
 
 func TestDownloadSigilc_Success(t *testing.T) {
 	deps := buildDeps(t)
-	binDir := filepath.Join(deps.DataDir, "binaries")
+	binDir := filepath.Join(deps.CurrentServer().Server.DataDir, "binaries")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir binaries: %v", err)
 	}
@@ -201,7 +196,7 @@ func TestDownloadSigilc_Success(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/download/sigilc?os=linux&arch=amd64", nil)
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
+	newHandler(deps).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -213,7 +208,7 @@ func TestDownloadSigilc_Success(t *testing.T) {
 
 func TestDownloadSigilc_RejectsPathTraversal(t *testing.T) {
 	deps := buildDeps(t)
-	secretPath := filepath.Join(deps.DataDir, "ca", "ca.key")
+	secretPath := filepath.Join(deps.CurrentServer().Server.DataDir, "ca", "ca.key")
 	if err := os.MkdirAll(filepath.Dir(secretPath), 0o700); err != nil {
 		t.Fatalf("mkdir secret dir: %v", err)
 	}
@@ -223,7 +218,7 @@ func TestDownloadSigilc_RejectsPathTraversal(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/download/sigilc?os=linux&arch=../../../ca/ca.key", nil)
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
+	newHandler(deps).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
@@ -256,7 +251,7 @@ func TestEnroll_Success(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/enroll", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
+	newHandler(deps).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: got %d, body: %s", rec.Code, rec.Body.String())
@@ -282,7 +277,7 @@ func TestEnroll_InvalidToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/enroll", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
+	newHandler(deps).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rec.Code)
@@ -308,7 +303,7 @@ func TestEnroll_ExpiredToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/enroll", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
+	newHandler(deps).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rec.Code)
@@ -345,7 +340,7 @@ func TestEnroll_FullPathThroughEnrollServer(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/enroll", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
+	newHandler(deps).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("enroll status: got %d, body: %s", rec.Code, rec.Body.String())
@@ -391,7 +386,7 @@ func TestEnroll_FullPathThroughEnrollServer(t *testing.T) {
 	req2 := httptest.NewRequest(http.MethodPost, "/v1/enroll", bytes.NewReader(reqBody2))
 	req2.Header.Set("Content-Type", "application/json")
 	rec2 := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec2, req2)
+	newHandler(deps).ServeHTTP(rec2, req2)
 	if rec2.Code != http.StatusUnauthorized {
 		t.Errorf("replay should return 401, got %d", rec2.Code)
 	}
@@ -417,7 +412,7 @@ func TestEnroll_RejectWithClientCert(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/enroll", bytes.NewReader(body))
 	req = simulateMTLS(req, clientCert)
 	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
+	newHandler(deps).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 when mTLS cert present on enroll, got %d", rec.Code)
@@ -447,7 +442,7 @@ func TestRenewIdentityStagesThenPromotesOnFirstUse(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req = simulateMTLS(req, oldIdentity)
 	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
+	newHandler(deps).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("renew status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -484,7 +479,7 @@ func TestRenewIdentityStagesThenPromotesOnFirstUse(t *testing.T) {
 	// A lost response must not revoke the old identity.
 	oldReq := simulateMTLS(httptest.NewRequest(http.MethodGet, "/v1/sync", nil), oldIdentity)
 	oldRec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(oldRec, oldReq)
+	newHandler(deps).ServeHTTP(oldRec, oldReq)
 	if oldRec.Code != http.StatusOK {
 		t.Fatalf("old identity rejected before promotion: %d", oldRec.Code)
 	}
@@ -492,7 +487,7 @@ func TestRenewIdentityStagesThenPromotesOnFirstUse(t *testing.T) {
 	// First use of the new identity promotes it atomically.
 	newReq := simulateMTLS(httptest.NewRequest(http.MethodGet, "/v1/sync", nil), &newIdentity)
 	newRec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(newRec, newReq)
+	newHandler(deps).ServeHTTP(newRec, newReq)
 	if newRec.Code != http.StatusOK {
 		t.Fatalf("new identity status = %d, body = %s", newRec.Code, newRec.Body.String())
 	}
@@ -506,7 +501,7 @@ func TestRenewIdentityStagesThenPromotesOnFirstUse(t *testing.T) {
 
 	revokedReq := simulateMTLS(httptest.NewRequest(http.MethodGet, "/v1/sync", nil), oldIdentity)
 	revokedRec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(revokedRec, revokedReq)
+	newHandler(deps).ServeHTTP(revokedRec, revokedReq)
 	if revokedRec.Code != http.StatusUnauthorized {
 		t.Fatalf("old identity status after promotion = %d, want 401", revokedRec.Code)
 	}
@@ -519,7 +514,7 @@ func TestRenewIdentityRejectsInvalidCSR(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/identity/renew", bytes.NewReader(body))
 	req = simulateMTLS(req, identity)
 	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
+	newHandler(deps).ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}
@@ -625,7 +620,7 @@ func awaitSync(t *testing.T, answered <-chan *httptest.ResponseRecorder) *httpte
 func TestSync_NoMTLS(t *testing.T) {
 	deps := buildDeps(t)
 	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/sync", nil))
+	newHandler(deps).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/sync", nil))
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 without mTLS, got %d", rec.Code)
 	}
@@ -633,7 +628,7 @@ func TestSync_NoMTLS(t *testing.T) {
 
 func TestSyncListsSubscribedCurrentCertificatesWithETag(t *testing.T) {
 	deps := buildDeps(t)
-	cfg := deps.ServerCfg
+	cfg := deps.CurrentServer()
 	cfg.Certificates = append(cfg.Certificates,
 		config.CertificateSpec{Name: "db-prod", CA: "letsencrypt", Domains: []string{"db.example.com"}, Subscribers: []string{"web-2"}},
 		config.CertificateSpec{Name: "edge-prod", CA: "letsencrypt", Domains: []string{"edge.example.com"}, Subscribers: []string{"web-1"}},
@@ -647,7 +642,7 @@ func TestSyncListsSubscribedCurrentCertificatesWithETag(t *testing.T) {
 
 	identity := makeEnrolledClientCert(t, deps, "web-1")
 	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, syncRequest(identity, ""))
+	newHandler(deps).ServeHTTP(rec, syncRequest(identity, ""))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -666,7 +661,7 @@ func TestSubscriptionMatchIsExact(t *testing.T) {
 		Name:            "api-prod",
 		CA:              "letsencrypt",
 		Domains:         []string{"api.example.com"},
-		SpecFingerprint: config.CertificateSpecFingerprint(deps.ServerCfg, deps.ServerCfg.Certificates[0]),
+		SpecFingerprint: config.CertificateSpecFingerprint(deps.CurrentServer(), deps.CurrentServer().Certificates[0]),
 		FullchainPEM:    "chain",
 		KeyPEM:          "private-key-for-web-1",
 		UpdatedAt:       time.Now(),
@@ -677,7 +672,7 @@ func TestSubscriptionMatchIsExact(t *testing.T) {
 	// A client enrolled under another spelling of the subscriber "web-1" is a
 	// different client and must not receive its certificates.
 	clientCert := makeEnrolledClientCert(t, deps, "WEB-1")
-	handler := NewInsecure(deps).Handler
+	handler := newHandler(deps)
 
 	syncRec := httptest.NewRecorder()
 	handler.ServeHTTP(syncRec, syncRequest(clientCert, ""))
@@ -699,7 +694,7 @@ func TestSyncWaitsOnlyForItsExactETag(t *testing.T) {
 	setSyncMaxWait(t, time.Minute)
 	deps := buildDeps(t)
 	identity := makeEnrolledClientCert(t, deps, "web-1")
-	handler := NewInsecure(deps).Handler
+	handler := newHandler(deps)
 	_, etag := syncView(t, handler, identity)
 
 	for _, ifNoneMatch := range [][]string{
@@ -725,9 +720,9 @@ func TestSyncWaitsOnlyForItsExactETag(t *testing.T) {
 func TestSyncAnswersNotModifiedAfterWaitingOut(t *testing.T) {
 	setSyncMaxWait(t, 300*time.Millisecond)
 	deps := buildDeps(t)
-	seedCert(t, deps, deps.ServerCfg, deps.ServerCfg.Certificates[0], "sha256:API")
+	seedCert(t, deps, deps.CurrentServer(), deps.CurrentServer().Certificates[0], "sha256:API")
 	identity := makeEnrolledClientCert(t, deps, "web-1")
-	handler := NewInsecure(deps).Handler
+	handler := newHandler(deps)
 	_, etag := syncView(t, handler, identity)
 
 	start := time.Now()
@@ -746,15 +741,15 @@ func TestSyncAnswersNotModifiedAfterWaitingOut(t *testing.T) {
 func TestSyncAnswersStoredCertificateAtOnce(t *testing.T) {
 	setSyncMaxWait(t, time.Minute)
 	deps := buildDeps(t)
-	spec := deps.ServerCfg.Certificates[0]
-	seedCert(t, deps, deps.ServerCfg, spec, "sha256:OLD")
+	spec := deps.CurrentServer().Certificates[0]
+	seedCert(t, deps, deps.CurrentServer(), spec, "sha256:OLD")
 	identity := makeEnrolledClientCert(t, deps, "web-1")
-	handler := NewInsecure(deps).Handler
+	handler := newHandler(deps)
 	_, etag := syncView(t, handler, identity)
 
 	answered := startSync(handler, syncRequest(identity, etag))
 	assertWaiting(t, answered)
-	seedCert(t, deps, deps.ServerCfg, spec, "sha256:NEW")
+	seedCert(t, deps, deps.CurrentServer(), spec, "sha256:NEW")
 	deps.Changes.Notify()
 	rec := awaitSync(t, answered)
 	if rec.Code != http.StatusOK || rec.Header().Get("ETag") == etag {
@@ -772,13 +767,13 @@ func TestSyncAnswersStoredCertificateAtOnce(t *testing.T) {
 func TestSyncKeepsWaitingThroughOtherClientsChanges(t *testing.T) {
 	setSyncMaxWait(t, time.Second)
 	deps := buildDeps(t)
-	cfg := deps.ServerCfg
+	cfg := deps.CurrentServer()
 	cfg.Certificates = append(cfg.Certificates, config.CertificateSpec{
 		Name: "db-prod", CA: "letsencrypt", Domains: []string{"db.example.com"}, Subscribers: []string{"web-2"},
 	})
 	seedCert(t, deps, cfg, cfg.Certificates[0], "sha256:API")
 	identity := makeEnrolledClientCert(t, deps, "web-1")
-	handler := NewInsecure(deps).Handler
+	handler := newHandler(deps)
 	_, etag := syncView(t, handler, identity)
 
 	start := time.Now()
@@ -810,11 +805,11 @@ func TestSyncAnswersReloadedSubscriptionAtOnce(t *testing.T) {
 	setSyncMaxWait(t, time.Minute)
 	deps := buildDeps(t)
 	var current atomic.Pointer[config.ServerConfig]
-	current.Store(deps.ServerCfg)
+	current.Store(deps.CurrentServer())
 	deps.CurrentServer = current.Load
-	seedCert(t, deps, deps.ServerCfg, deps.ServerCfg.Certificates[0], "sha256:API")
+	seedCert(t, deps, deps.CurrentServer(), deps.CurrentServer().Certificates[0], "sha256:API")
 	identity := makeEnrolledClientCert(t, deps, "web-2")
-	handler := NewInsecure(deps).Handler
+	handler := newHandler(deps)
 	view, etag := syncView(t, handler, identity)
 	if len(view) != 0 {
 		t.Fatalf("view before reload = %+v", view)
@@ -822,8 +817,8 @@ func TestSyncAnswersReloadedSubscriptionAtOnce(t *testing.T) {
 
 	answered := startSync(handler, syncRequest(identity, etag))
 	assertWaiting(t, answered)
-	next := *deps.ServerCfg
-	next.Certificates = append([]config.CertificateSpec(nil), deps.ServerCfg.Certificates...)
+	next := *deps.CurrentServer()
+	next.Certificates = append([]config.CertificateSpec(nil), deps.CurrentServer().Certificates...)
 	next.Certificates[0].Subscribers = []string{"web-1", "web-2"}
 	current.Store(&next)
 	deps.Changes.Notify()
@@ -843,11 +838,11 @@ func TestSyncAnswersReloadedSubscriptionAtOnce(t *testing.T) {
 func TestSyncWakesForReloadPublishedDuringItsRead(t *testing.T) {
 	setSyncMaxWait(t, time.Minute)
 	deps := buildDeps(t)
-	next := *deps.ServerCfg
-	next.Certificates = append([]config.CertificateSpec(nil), deps.ServerCfg.Certificates...)
+	next := *deps.CurrentServer()
+	next.Certificates = append([]config.CertificateSpec(nil), deps.CurrentServer().Certificates...)
 	next.Certificates[0].Subscribers = []string{"web-1", "web-2"}
 	var current atomic.Pointer[config.ServerConfig]
-	current.Store(deps.ServerCfg)
+	current.Store(deps.CurrentServer())
 	var reloadDuringRead atomic.Bool
 	changes := deps.Changes
 	deps.CurrentServer = func() *config.ServerConfig {
@@ -858,9 +853,9 @@ func TestSyncWakesForReloadPublishedDuringItsRead(t *testing.T) {
 		}
 		return cfg
 	}
-	seedCert(t, deps, deps.ServerCfg, deps.ServerCfg.Certificates[0], "sha256:API")
+	seedCert(t, deps, deps.CurrentServer(), deps.CurrentServer().Certificates[0], "sha256:API")
 	identity := makeEnrolledClientCert(t, deps, "web-2")
-	handler := NewInsecure(deps).Handler
+	handler := newHandler(deps)
 	view, etag := syncView(t, handler, identity)
 	if len(view) != 0 {
 		t.Fatalf("view before reload = %+v", view)
@@ -879,13 +874,13 @@ func TestSyncWakesForReloadPublishedDuringItsRead(t *testing.T) {
 func TestSyncRejectsClientRemovedWhileWaiting(t *testing.T) {
 	setSyncMaxWait(t, time.Minute)
 	deps := buildDeps(t)
-	cfg := deps.ServerCfg
+	cfg := deps.CurrentServer()
 	cfg.Certificates = append(cfg.Certificates, config.CertificateSpec{
 		Name: "payroll-prod", CA: "letsencrypt", Domains: []string{"payroll.example.com"}, Subscribers: []string{"web-1"},
 	})
 	seedCert(t, deps, cfg, cfg.Certificates[0], "sha256:API")
 	identity := makeEnrolledClientCert(t, deps, "web-1")
-	handler := NewInsecure(deps).Handler
+	handler := newHandler(deps)
 	_, etag := syncView(t, handler, identity)
 
 	answered := startSync(handler, syncRequest(identity, etag))
@@ -912,13 +907,13 @@ func TestSyncRejectsClientRemovedWhileWaiting(t *testing.T) {
 func TestSyncRejectsIdentityReplacedWhileWaiting(t *testing.T) {
 	setSyncMaxWait(t, time.Minute)
 	deps := buildDeps(t)
-	cfg := deps.ServerCfg
+	cfg := deps.CurrentServer()
 	cfg.Certificates = append(cfg.Certificates, config.CertificateSpec{
 		Name: "payroll-prod", CA: "letsencrypt", Domains: []string{"payroll.example.com"}, Subscribers: []string{"web-1"},
 	})
 	seedCert(t, deps, cfg, cfg.Certificates[0], "sha256:API")
 	replaced := makeEnrolledClientCert(t, deps, "web-1")
-	handler := NewInsecure(deps).Handler
+	handler := newHandler(deps)
 	_, etag := syncView(t, handler, replaced)
 
 	answered := startSync(handler, syncRequest(replaced, etag))
@@ -952,7 +947,7 @@ func TestSyncAnswersAtShutdown(t *testing.T) {
 	shutdown := make(chan struct{})
 	deps.Done = shutdown
 	identity := makeEnrolledClientCert(t, deps, "web-1")
-	handler := NewInsecure(deps).Handler
+	handler := newHandler(deps)
 	_, etag := syncView(t, handler, identity)
 
 	answered := startSync(handler, syncRequest(identity, etag))
@@ -981,7 +976,7 @@ func TestSyncOutlivesServerTimeouts(t *testing.T) {
 			deps := buildDeps(t)
 			identity := makeEnrolledClientCert(t, deps, "web-1")
 
-			handler := NewInsecure(deps).Handler
+			handler := newHandler(deps)
 			ctxErrs := make(chan error, 2)
 			ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				handler.ServeHTTP(w, r)
@@ -1049,7 +1044,7 @@ func TestGetCertBundle_Success(t *testing.T) {
 		Name:            "api-prod",
 		CA:              "letsencrypt",
 		Domains:         []string{"api.example.com"},
-		SpecFingerprint: config.CertificateSpecFingerprint(deps.ServerCfg, deps.ServerCfg.Certificates[0]),
+		SpecFingerprint: config.CertificateSpecFingerprint(deps.CurrentServer(), deps.CurrentServer().Certificates[0]),
 		FullchainPEM:    "chain",
 		KeyPEM:          "key",
 		Fingerprint:     "sha256:AABB",
@@ -1060,7 +1055,7 @@ func TestGetCertBundle_Success(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/certificates/api-prod/bundle", nil)
 	req = simulateMTLS(req, clientCert)
 	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
+	newHandler(deps).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: got %d, body: %s", rec.Code, rec.Body.String())
@@ -1074,15 +1069,16 @@ func TestGetCertBundle_Success(t *testing.T) {
 
 func TestGetCertBundleRejectsStaleMaterialAfterSpecReload(t *testing.T) {
 	deps := buildDeps(t)
-	next := *deps.ServerCfg
-	next.Certificates = append([]config.CertificateSpec(nil), deps.ServerCfg.Certificates...)
+	old := deps.CurrentServer()
+	next := *old
+	next.Certificates = append([]config.CertificateSpec(nil), old.Certificates...)
 	next.Certificates[0].Domains = []string{"api-v2.example.com"}
 	deps.CurrentServer = func() *config.ServerConfig { return &next }
 	_ = deps.DB.Certs.Upsert(context.Background(), &store.CertRecord{
 		Name:            "api-prod",
 		CA:              "letsencrypt",
 		Domains:         []string{"api.example.com"},
-		SpecFingerprint: config.CertificateSpecFingerprint(deps.ServerCfg, deps.ServerCfg.Certificates[0]),
+		SpecFingerprint: config.CertificateSpecFingerprint(old, old.Certificates[0]),
 		FullchainPEM:    "old-chain",
 		KeyPEM:          "old-private-key",
 		UpdatedAt:       time.Now(),
@@ -1091,7 +1087,7 @@ func TestGetCertBundleRejectsStaleMaterialAfterSpecReload(t *testing.T) {
 	clientCert := makeEnrolledClientCert(t, deps, "web-1")
 	req := simulateMTLS(httptest.NewRequest(http.MethodGet, "/v1/certificates/api-prod/bundle", nil), clientCert)
 	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
+	newHandler(deps).ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -1102,8 +1098,8 @@ func TestGetCertBundleRejectsStaleMaterialAfterSpecReload(t *testing.T) {
 
 func TestGetCertBundleRejectsOldKeyTypeAfterReload(t *testing.T) {
 	deps := buildDeps(t)
-	oldCfg := *deps.ServerCfg
-	oldCfg.Certificates = append([]config.CertificateSpec(nil), deps.ServerCfg.Certificates...)
+	oldCfg := *deps.CurrentServer()
+	oldCfg.Certificates = append([]config.CertificateSpec(nil), deps.CurrentServer().Certificates...)
 	oldCfg.Certificates[0].KeyType = "ec256"
 	next := oldCfg
 	next.Certificates = append([]config.CertificateSpec(nil), oldCfg.Certificates...)
@@ -1118,7 +1114,7 @@ func TestGetCertBundleRejectsOldKeyTypeAfterReload(t *testing.T) {
 	clientCert := makeEnrolledClientCert(t, deps, "web-1")
 	req := simulateMTLS(httptest.NewRequest(http.MethodGet, "/v1/certificates/api-prod/bundle", nil), clientCert)
 	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
+	newHandler(deps).ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -1131,7 +1127,7 @@ func TestGetCertBundle_Unauthorized(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/certificates/api-prod/bundle", nil)
 	req = simulateMTLS(req, clientCert)
 	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
+	newHandler(deps).ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", rec.Code)
 	}
@@ -1194,7 +1190,7 @@ func TestAuthenticatedRequestsRecordLastSeenAtMostOncePerInterval(t *testing.T) 
 	deps := buildDeps(t)
 	identity := makeEnrolledClientCert(t, deps, "web-1")
 	ctx := context.Background()
-	handler := NewInsecure(deps).Handler
+	handler := newHandler(deps)
 	request := func() {
 		t.Helper()
 		rec := httptest.NewRecorder()
@@ -1257,7 +1253,7 @@ func TestAuthenticatedRequestIsServedWhenLastSeenCannotBeWritten(t *testing.T) {
 	// fails at once while the other handle holds the write lock.
 	locker := deps.DB
 	deps.DB = other
-	handler := NewInsecure(deps).Handler
+	handler := newHandler(deps)
 	request := func() {
 		t.Helper()
 		rec := httptest.NewRecorder()
@@ -1309,7 +1305,7 @@ func TestRemovedClientCannotUseMTLSAPI(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/sync", nil)
 	req = simulateMTLS(req, clientCert)
 	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, req)
+	newHandler(deps).ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("removed client: expected 401, got %d", rec.Code)
 	}
@@ -1332,7 +1328,7 @@ func TestAuthenticatedRequestDoesNotRecreateClientRemovedDuringRequest(t *testin
 		t.Fatal(err)
 	}
 
-	rec := requestDuringWrite(t, NewInsecure(deps).Handler, syncRequest(identity, ""), tx)
+	rec := requestDuringWrite(t, newHandler(deps), syncRequest(identity, ""), tx)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
@@ -1361,7 +1357,7 @@ func TestAuthenticatedRequestKeepsIdentityStagedDuringRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rec := requestDuringWrite(t, NewInsecure(deps).Handler, syncRequest(identity, ""), tx)
+	rec := requestDuringWrite(t, newHandler(deps), syncRequest(identity, ""), tx)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -1405,7 +1401,7 @@ func TestAuthenticatedRequestAcceptsIdentityPromotedDuringRequest(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	rec := requestDuringWrite(t, NewInsecure(deps).Handler, syncRequest(renewed, ""), tx)
+	rec := requestDuringWrite(t, newHandler(deps), syncRequest(renewed, ""), tx)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -1442,7 +1438,7 @@ func TestAuthenticatedRequestRejectsPendingIdentityReplacedDuringRequest(t *test
 	// fingerprint would refuse the replaced identity too and hide a missing
 	// check. It must come before the transaction, whose write lock it would
 	// otherwise wait for.
-	handler := NewInsecure(deps).Handler
+	handler := newHandler(deps)
 	active := httptest.NewRecorder()
 	handler.ServeHTTP(active, syncRequest(enrolled, ""))
 	if active.Code != http.StatusOK {
@@ -1469,15 +1465,4 @@ func TestAuthenticatedRequestRejectsPendingIdentityReplacedDuringRequest(t *test
 	if got.Fingerprint != ca.Fingerprint(enrolled.Certificate[0]) || got.PendingFingerprint != ca.Fingerprint(newer.Certificate[0]) {
 		t.Fatalf("unexpected client after the request: %+v", got)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

@@ -17,9 +17,9 @@ const installTestURL = "https://sigil.example.com:8443"
 func getInstallScript(t *testing.T, target string) *httptest.ResponseRecorder {
 	t.Helper()
 	deps := buildDeps(t)
-	deps.ServerCfg.Server.PublicURL = installTestURL
+	deps.CurrentServer().Server.PublicURL = installTestURL
 	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+	newHandler(deps).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET %s: status %d, body %s", target, rec.Code, rec.Body.String())
 	}
