@@ -18,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/Oganneson-Studio/sigil/internal/securefile"
@@ -36,10 +35,11 @@ const (
 // MiniCA is the Sigil internal certificate authority used for mTLS client
 // certificate issuance. All public methods are goroutine-safe.
 type MiniCA struct {
-	cert       *x509.Certificate
-	key        *ecdsa.PrivateKey
-	serial     atomic.Int64
+	cert *x509.Certificate
+	key  *ecdsa.PrivateKey
+	// serialMu guards serial, the last serial number issued.
 	serialMu   sync.Mutex
+	serial     int64
 	serialPath string
 }
 
@@ -77,9 +77,7 @@ func Bootstrap(dataDir string) (*MiniCA, error) {
 	if err := persistSerial(serialPath, initialSerial); err != nil {
 		return nil, fmt.Errorf("initialize CA serial: %w", err)
 	}
-	m := &MiniCA{cert: parsed, key: key, serialPath: serialPath}
-	m.serial.Store(initialSerial)
-	return m, nil
+	return &MiniCA{cert: parsed, key: key, serial: initialSerial, serialPath: serialPath}, nil
 }
 
 // Load reads ca.crt and ca.key from disk and returns a *MiniCA.
@@ -102,7 +100,7 @@ func Load(certPath, keyPath string) (*MiniCA, error) {
 		return nil, fmt.Errorf("load CA serial: %w", err)
 	}
 	m.serialPath = serialPath
-	m.serial.Store(serial)
+	m.serial = serial
 	return m, nil
 }
 
@@ -130,9 +128,7 @@ func ParsePEM(certPEM, keyPEM []byte) (*MiniCA, error) {
 	if !ok {
 		return nil, fmt.Errorf("CA key must be ECDSA")
 	}
-	m := &MiniCA{cert: cert, key: ecKey}
-	m.serial.Store(cert.SerialNumber.Int64())
-	return m, nil
+	return &MiniCA{cert: cert, key: ecKey, serial: cert.SerialNumber.Int64()}, nil
 }
 
 // Cert returns the parsed CA certificate.
@@ -172,8 +168,8 @@ func (m *MiniCA) Sign(csr *x509.CertificateRequest, name string) ([]byte, error)
 
 // IssueServerCert signs a TLS server certificate valid for the given hosts
 // (DNS names and/or IP addresses). Returns the cert and key as PEM bytes.
-// KeyUsage is DigitalSignature + KeyEncipherment; ExtKeyUsage is ServerAuth.
-// Validity is 1 year from now.
+// KeyUsage is DigitalSignature, all an ECDSA key does in TLS; ExtKeyUsage is
+// ServerAuth. Validity is 1 year from now.
 func (m *MiniCA) IssueServerCert(hosts []string) (certPEM, keyPEM []byte, err error) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -188,7 +184,7 @@ func (m *MiniCA) IssueServerCert(hosts []string) (certPEM, keyPEM []byte, err er
 		Subject:      pkix.Name{CommonName: "sigils"},
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 	for _, h := range hosts {
@@ -225,17 +221,16 @@ func (m *MiniCA) nextSerial() (int64, error) {
 	m.serialMu.Lock()
 	defer m.serialMu.Unlock()
 
-	current := m.serial.Load()
-	if current == math.MaxInt64 {
+	if m.serial == math.MaxInt64 {
 		return 0, fmt.Errorf("serial space exhausted")
 	}
-	next := current + 1
+	next := m.serial + 1
 	if m.serialPath != "" {
 		if err := persistSerial(m.serialPath, next); err != nil {
 			return 0, err
 		}
 	}
-	m.serial.Store(next)
+	m.serial = next
 	return next, nil
 }
 

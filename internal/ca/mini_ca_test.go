@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -190,7 +191,7 @@ func TestSign_ValidCert(t *testing.T) {
 	}
 
 	// Verify expiry is ~90 days from now
-	validity := cert.NotAfter.Sub(time.Now())
+	validity := time.Until(cert.NotAfter)
 	if validity < 89*24*time.Hour || validity > 91*24*time.Hour {
 		t.Errorf("validity %v not near 90d", validity)
 	}
@@ -585,5 +586,52 @@ func TestIssueServerCert_VerifiableByCA(t *testing.T) {
 	}
 	if _, err := cert.Verify(opts); err != nil {
 		t.Errorf("Verify: %v", err)
+	}
+}
+
+// TestIssuedCertificatesCannotSign pins what keeps a certificate of the
+// mini-CA from acting as anything but its own role: neither a client nor the
+// server certificate is a CA or may sign certificates, a client certificate
+// is for client authentication only, and the server certificate for server
+// authentication only. A client certificate that could sign, or authenticate
+// a server, would let any enrolled client stand in for sigils.
+func TestIssuedCertificatesCannotSign(t *testing.T) {
+	m := bootstrapInTemp(t)
+	clientDER, err := m.Sign(makeCSR(t, "web-1"), "web-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := x509.ParseCertificate(clientDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverPEM, _, err := m.IssueServerCert([]string{"localhost"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode(serverPEM)
+	if block == nil {
+		t.Fatal("no server certificate PEM block")
+	}
+	server, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tt := range []struct {
+		name string
+		cert *x509.Certificate
+		eku  x509.ExtKeyUsage
+	}{
+		{name: "client", cert: client, eku: x509.ExtKeyUsageClientAuth},
+		{name: "server", cert: server, eku: x509.ExtKeyUsageServerAuth},
+	} {
+		if tt.cert.IsCA || tt.cert.KeyUsage&(x509.KeyUsageCertSign|x509.KeyUsageCRLSign) != 0 {
+			t.Errorf("%s certificate can sign: IsCA %v, KeyUsage %d", tt.name, tt.cert.IsCA, tt.cert.KeyUsage)
+		}
+		if !slices.Equal(tt.cert.ExtKeyUsage, []x509.ExtKeyUsage{tt.eku}) || len(tt.cert.UnknownExtKeyUsage) != 0 {
+			t.Errorf("%s certificate ExtKeyUsage = %v (unknown %v), want only %v",
+				tt.name, tt.cert.ExtKeyUsage, tt.cert.UnknownExtKeyUsage, tt.eku)
+		}
 	}
 }
