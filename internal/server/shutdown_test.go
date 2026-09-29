@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,15 +18,16 @@ import (
 // would otherwise hold a service stop for as long as it stalls.
 func TestRunAbandonsIssuanceAfterStopTimeout(t *testing.T) {
 	arrived, release := make(chan struct{}), make(chan struct{})
-	var arrivedOnce sync.Once
+	var arrivedOnce, releaseOnce sync.Once
 	stalled := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		arrivedOnce.Do(func() { close(arrived) })
 		<-release
 		http.Error(w, "stalled", http.StatusServiceUnavailable)
 	}))
+	releaseCA := func() { releaseOnce.Do(func() { close(release) }) }
 	// Cleanups run last first: the handler returns before Close waits for it.
 	t.Cleanup(stalled.Close)
-	t.Cleanup(func() { close(release) })
+	t.Cleanup(releaseCA)
 	// lego's HTTP client trusts exactly the certificates in this file.
 	caFile := filepath.Join(t.TempDir(), "acme-server.pem")
 	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: stalled.Certificate().Raw}), 0o600); err != nil {
@@ -62,7 +62,8 @@ certificates:
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	logs := setupLogs(t, io.Discard)
+	sink := &lockedBuffer{}
+	logs := setupLogs(t, sink)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -89,4 +90,9 @@ certificates:
 	if e := findEvent(t, logs.Events.Since(0), "certificate issuance abandoned at shutdown"); e.Level != "WARN" || e.Attrs != "certs=api-prod" {
 		t.Errorf("abandonment event = %+v, want WARN naming api-prod", e)
 	}
+
+	// The abandoned issuance ends once the CA answers, and reports its
+	// failure last. That must happen before the next test captures events.
+	releaseCA()
+	waitLogged(t, sink, "certificate issuance failed")
 }
