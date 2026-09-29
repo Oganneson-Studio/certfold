@@ -199,8 +199,10 @@ func clientIPCSocket(cmd *cobra.Command) string {
 	if cfgPath == "" {
 		cfgPath = defaultClientCfgPath()
 	}
-	if cfg, err := config.LoadClient(cfgPath); err == nil && cfg.Client.IPCSocket != "" {
-		return cfg.Client.IPCSocket
+	// Locating the daemon must not require the variables client.yaml takes
+	// from the service's environment.
+	if socket, err := config.ReadClientIPCSocket(cfgPath); err == nil && socket != "" {
+		return socket
 	}
 	return ipc.DefaultClientSocket()
 }
