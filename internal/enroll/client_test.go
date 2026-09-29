@@ -10,10 +10,12 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -144,5 +146,60 @@ func TestPostEnrollRejectsUntrustedServer(t *testing.T) {
 	}
 	if reached.Load() {
 		t.Fatal("enrollment request reached an untrusted server")
+	}
+}
+
+// TestPostEnrollDoesNotFollowRedirects checks that the enrollment request,
+// which carries the token, goes only to the server whose TLS was verified.
+// A 307 or 308 would make an HTTP client send the body again, to any host
+// and over plain HTTP as well, so a front proxy that canonicalizes the host
+// or the scheme would pass the token on without a word.
+func TestPostEnrollDoesNotFollowRedirects(t *testing.T) {
+	var leaked atomic.Bool
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), `"token"`) {
+			leaked.Store(true)
+		}
+		http.Error(w, "gone", http.StatusGone)
+	}))
+	t.Cleanup(plain.Close)
+
+	miniCA := newTestCA(t)
+	withSystemRoots(t)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	der, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+		SerialNumber: big.NewInt(3),
+		Subject:      pkix.Name{CommonName: "sigils"},
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
+		NotBefore:    now.Add(-time.Minute),
+		NotAfter:     now.Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}, miniCA.cert, &key.PublicKey, miniCA.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL+r.URL.Path, http.StatusPermanentRedirect)
+	}))
+	ts.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
+	ts.StartTLS()
+	t.Cleanup(ts.Close)
+
+	token := encodeTestToken(t, Token{ServerURL: ts.URL, Name: "web-1", CACert: miniCA.certPEM()})
+	kc, err := GenerateKeyAndCSR("web-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PostEnroll(ts.URL, token, kc.CSRDER); err == nil {
+		t.Fatal("PostEnroll succeeded through a redirect")
+	}
+	if leaked.Load() {
+		t.Fatal("the enrollment token followed a redirect to a plain HTTP server")
 	}
 }

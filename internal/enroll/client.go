@@ -99,6 +99,10 @@ func PostEnroll(serverURL, tokenStr string, csrDER []byte) (*proto.EnrollRespons
 
 	enrollClient := &http.Client{
 		Timeout: 30 * time.Second,
+		// The request carries the token, so it goes to the server whose TLS
+		// was checked and nowhere else: a 307 or 308 would send it again, to
+		// any host and over plain HTTP too.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				RootCAs:    roots,
