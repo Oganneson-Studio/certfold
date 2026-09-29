@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -31,10 +32,15 @@ type CertBundle struct {
 // and reports whether it rewrote the content of any of them.
 //
 // The content of an output matches bundle when all of these hold:
-//   - os.Lstat finds a regular file at its path. A missing file does not
+//   - openOutput finds a regular file at its path. A missing file does not
 //     match, and neither does a symbolic link or any other kind of file; a
 //     symbolic link is replaced by a regular file, and the file it points to
-//     is left alone.
+//     is left alone. On Unix the file is opened without following a symbolic
+//     link or waiting for the writer of a FIFO, and what follows works on
+//     that open file, never on the path again: an account that can write the
+//     output's directory may change what the path names at any moment, and a
+//     chmod through the path would reach the file a symbolic link put there
+//     points to.
 //   - The file holds bundle. A pkcs12 file must decode with
 //     pkcs12.DecodeChain(content, spec.Password), and its leaf, the Raw of
 //     each chain certificate and its private key (compared with Equal) must
@@ -82,12 +88,14 @@ type CertBundle struct {
 func Reconcile(bundle *CertBundle, specs []config.OutputSpec) (changed bool, err error) {
 	var stale []config.OutputSpec
 	for _, spec := range specs {
-		info, ok := contentMatches(bundle, spec)
+		f, info, ok := contentMatches(bundle, spec)
 		if !ok {
 			stale = append(stale, spec)
 			continue
 		}
-		if err := repairMetadata(info, spec); err != nil {
+		err := repairMetadata(f, info, spec)
+		_ = f.Close()
+		if err != nil {
 			return false, fmt.Errorf("write %s: %w", spec.Path, err)
 		}
 	}
@@ -117,22 +125,29 @@ func Reconcile(bundle *CertBundle, specs []config.OutputSpec) (changed bool, err
 }
 
 // contentMatches reports whether the output spec describes is a regular file
-// that already holds the content Reconcile would write there, and returns
-// what os.Lstat found for it.
-func contentMatches(bundle *CertBundle, spec config.OutputSpec) (info os.FileInfo, ok bool) {
-	info, err := os.Lstat(spec.Path)
-	if err != nil || !info.Mode().IsRegular() {
-		return nil, false
+// that already holds the content Reconcile would write there. When it is, it
+// returns the file openOutput opened, for the caller to repair and close, and
+// what openOutput found for it.
+func contentMatches(bundle *CertBundle, spec config.OutputSpec) (f *os.File, info os.FileInfo, ok bool) {
+	f, info, ok = openOutput(spec.Path)
+	if !ok {
+		return nil, nil, false
 	}
-	data, err := os.ReadFile(spec.Path)
-	if err != nil {
-		return nil, false
+	data, err := io.ReadAll(f)
+	switch {
+	case err != nil:
+		ok = false
+	case spec.Format == "pkcs12":
+		ok = pkcs12Matches(bundle, data, spec.Password)
+	default:
+		want, err := encode(bundle, spec)
+		ok = err == nil && bytes.Equal(data, want)
 	}
-	if spec.Format == "pkcs12" {
-		return info, pkcs12Matches(bundle, data, spec.Password)
+	if !ok {
+		_ = f.Close()
+		return nil, nil, false
 	}
-	want, err := encode(bundle, spec)
-	return info, err == nil && bytes.Equal(data, want)
+	return f, info, true
 }
 
 // pkcs12Matches reports whether data decodes with password to the private

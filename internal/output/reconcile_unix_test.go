@@ -10,9 +10,94 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
 )
+
+// TestRepairMetadataDoesNotFollowASymlinkSwappedIn covers the moment between
+// the comparison of an output, which found a regular file with the right
+// content and another mode, and the chmod that repairs the mode. An account
+// that can write the output's directory, typically the one configured as
+// owner, can replace the file with a symbolic link in that moment; it owns
+// the output, so it can also change its mode to make reconcile take this
+// path. The repair must not reach the file the link points to: sigilc runs as
+// root, and a chmod through the path would give that file the output's mode,
+// 0644 for a certificate.
+func TestRepairMetadataDoesNotFollowASymlinkSwappedIn(t *testing.T) {
+	b := makeBundle(t)
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "shadow")
+	if err := os.WriteFile(victim, []byte("root:$6$hash:::\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spec := config.OutputSpec{Format: "pem-cert", Path: filepath.Join(dir, "cert.pem")}
+	// The right content, private where a certificate is 0644.
+	if err := os.WriteFile(spec.Path, b.CertPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, info, ok := contentMatches(b, spec)
+	if !ok {
+		t.Fatal("the output does not match")
+	}
+	defer f.Close()
+	if modeMatches(info, spec) {
+		t.Fatal("the output's mode must differ for the repair to run")
+	}
+
+	// The swap.
+	if err := os.Remove(spec.Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, spec.Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := repairMetadata(f, info, spec); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := os.Stat(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := st.Mode().Perm(); got != 0o600 {
+		t.Fatalf("the repair followed the symbolic link: the file it points to has mode %#o, want 0600", got)
+	}
+}
+
+// TestReconcileReplacesFIFO covers a FIFO at an output path, which an account
+// that can write the output's directory may put there. Opening it to compare
+// its content would wait for a writer, with pullMu held, and stop every round
+// of sigilc; it is replaced by the output instead.
+func TestReconcileReplacesFIFO(t *testing.T) {
+	b := makeBundle(t)
+	spec := config.OutputSpec{Format: "pem-cert", Path: filepath.Join(t.TempDir(), "cert.pem")}
+	if err := syscall.Mkfifo(spec.Path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := Reconcile(b, []config.OutputSpec{spec})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		// A writer lets the open waiting for one return.
+		if w, err := os.OpenFile(spec.Path, os.O_WRONLY, 0); err == nil {
+			_ = w.Close()
+		}
+		<-done
+		t.Fatal("Reconcile waited for a writer of the FIFO at the output path")
+	}
+	if info, err := os.Lstat(spec.Path); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("output is not a regular file: %v, %v", info, err)
+	}
+	checkContent(t, b, spec)
+}
 
 // TestReconcileRestoresMode covers outputs whose permission bits were changed
 // after they were written: a key made readable by others, and a certificate

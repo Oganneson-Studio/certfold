@@ -39,7 +39,23 @@ func createTemp(dir string, spec config.OutputSpec) (*os.File, error) {
 // next rewrite; createTemp sets the access controls instead.
 func applyMetadata(*os.File, config.OutputSpec) error { return nil }
 
+// openOutput opens the output at path for reading, and returns it with what
+// os.Lstat found for it, when that is a regular file: a symbolic link is not
+// followed. Nothing is set through the path after that on Windows, where
+// repairMetadata does nothing.
+func openOutput(path string) (*os.File, os.FileInfo, bool) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, nil, false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, false
+	}
+	return f, info, true
+}
+
 // repairMetadata does nothing on Windows: Reconcile compares only the content
 // of an output there. The mode is not applied, the owner is not set, and the
 // DACL that createTemp gave the output is not compared.
-func repairMetadata(os.FileInfo, config.OutputSpec) error { return nil }
+func repairMetadata(*os.File, os.FileInfo, config.OutputSpec) error { return nil }
