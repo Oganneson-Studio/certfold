@@ -53,7 +53,6 @@ func newStatusCmd() *cobra.Command {
 		RunE:  runStatus,
 	}
 	cmd.Flags().Bool("json", false, "emit machine-readable JSON")
-	cmd.Flags().Bool("plain", false, "emit plain text without color")
 	return cmd
 }
 
