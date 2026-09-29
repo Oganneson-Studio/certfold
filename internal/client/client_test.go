@@ -1256,6 +1256,44 @@ func TestRunRestoresOutputsBeforeFirstAnswer(t *testing.T) {
 	waitFor(t, "the output restored from the store", func() bool { return fileContent(outPath) == bundle.FullchainPEM })
 }
 
+// TestRunRemovesLeftoverTemps covers the temporary files that a sigilc
+// stopped while it wrote an output or the store leaves behind: Run removes
+// them before its first reconcile, and nothing else.
+func TestRunRemovesLeftoverTemps(t *testing.T) {
+	bundle := newTestBundle(t, "api-prod")
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(ts.Close)
+	cfg := buildTestCfg(t, ts.URL)
+	outDir := t.TempDir()
+	outPath := fullchainOutput(cfg, outDir, "api-prod")
+	seedStore(t, cfg.Client.DataDir, bundle)
+	leftovers := []string{
+		filepath.Join(outDir, ".sigil-tmp-123"),
+		filepath.Join(cfg.Client.DataDir, ".sigil-private-456"),
+	}
+	kept := filepath.Join(outDir, "other.pem")
+	for _, path := range append(leftovers, kept) {
+		if err := os.WriteFile(path, []byte("left"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := newTestClient(t, cfg)
+
+	startRun(t, c)
+	waitFor(t, "the output restored from the store", func() bool { return fileContent(outPath) == bundle.FullchainPEM })
+	for _, path := range leftovers {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s was left: %v", path, err)
+		}
+	}
+	if fileContent(kept) != "left" {
+		t.Errorf("%s was removed", kept)
+	}
+}
+
 // TestStoppingRunKillsHook checks that on_change programs run under the ctx
 // of Run: stopping the daemon kills a running program instead of waiting for
 // it to end.

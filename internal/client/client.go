@@ -15,6 +15,8 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -161,13 +163,14 @@ func New(cfg *config.ClientConfig, options ...Option) (*Client, error) {
 	return c, nil
 }
 
-// Run reconciles the outputs with the store, then runs the sync loop until
-// ctx is cancelled.
+// Run removes the temporary files an earlier sigilc left behind, reconciles
+// the outputs with the store, then runs the sync loop until ctx is cancelled.
 func (c *Client) Run(ctx context.Context) error {
 	// Restore the outputs before the first request: they come back even
 	// while the server is unreachable.
 	c.pullMu.Lock()
 	c.runCtx = ctx
+	c.removeLeftoverTempsLocked()
 	c.recordReconcile(c.reconcileLocked())
 	c.pullMu.Unlock()
 
@@ -177,6 +180,39 @@ func (c *Client) Run(ctx context.Context) error {
 	c.pullMu.Lock()
 	c.pullMu.Unlock()
 	return err
+}
+
+// removeLeftoverTempsLocked removes the temporary files that a sigilc stopped
+// while it wrote left behind: those of output.Reconcile, named .sigil-tmp-*,
+// next to every output configured, and those of securefile.WriteFile, named
+// .sigil-private-*, in the data directory. Every write of this process holds
+// pullMu, so none of them is its own. The directory of client.yaml is left
+// alone, since sigilc enroll may be writing there.
+func (c *Client) removeLeftoverTempsLocked() {
+	removeTemps(c.cfg.Client.DataDir, ".sigil-private-")
+	dirs := make(map[string]bool)
+	for _, certificate := range c.cfg.Certificates {
+		for _, spec := range certificate.Outputs {
+			dirs[filepath.Dir(spec.Path)] = true
+		}
+	}
+	for dir := range dirs {
+		removeTemps(dir, ".sigil-tmp-")
+	}
+}
+
+// removeTemps removes the entries of dir whose names start with prefix. A
+// directory that cannot be read has none to remove.
+func removeTemps(dir, prefix string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), prefix) {
+			_ = os.Remove(filepath.Join(dir, entry.Name()))
+		}
+	}
 }
 
 // Fetch runs a full pull in the caller's goroutine. It asks GET /v1/sync for
