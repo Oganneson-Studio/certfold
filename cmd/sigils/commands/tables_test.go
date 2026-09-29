@@ -80,6 +80,32 @@ func TestTokenListAlignsColumns(t *testing.T) {
 	}
 }
 
+// TestTokenListShowsExpiredTokens covers a token that expired unused. The
+// store lists every token, and the TUI shows this one as expired; the CLI
+// must not offer it as unused, since enrolling with it fails.
+func TestTokenListShowsExpiredTokens(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	now := time.Now().UTC().Truncate(time.Second)
+	expired := &store.TokenRecord{
+		TokenID: "0123456789abcdef0123456789abcdef", Name: "web-1",
+		ExpiresAt: now.Add(-time.Minute), CreatedAt: now.Add(-time.Hour),
+	}
+	if err := db.Tokens.Upsert(context.Background(), expired, nil); err != nil {
+		t.Fatal(err)
+	}
+	socket := serveCertificates(t, db, &config.ServerConfig{})
+
+	table := runSigils(t, "--ipc", socket, "token", "list")
+	got := tableCells(t, table, "ID", "NAME", "STATUS", "EXPIRES")
+	if len(got) != 2 || got[1][2] != "expired" {
+		t.Fatalf("token list does not show the expired token as expired:\n%s", table)
+	}
+}
+
 // TestClientListAlignsColumns covers sigils client list with a name of 63
 // characters and fingerprints of 71: every row starts its cells where the
 // header starts its columns.

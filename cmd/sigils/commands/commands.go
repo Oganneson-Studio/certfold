@@ -110,7 +110,7 @@ func newTokenCmd() *cobra.Command {
 
 	cmd.AddCommand(
 		create,
-		&cobra.Command{Use: "list", Short: "List active enrollment tokens", RunE: runTokenList},
+		&cobra.Command{Use: "list", Short: "List enrollment tokens: unused, used or expired", RunE: runTokenList},
 		&cobra.Command{Use: "revoke <id>", Short: "Revoke an unused enrollment token", Args: cobra.ExactArgs(1), RunE: runTokenRevoke},
 	)
 	return cmd

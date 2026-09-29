@@ -253,10 +253,14 @@ func runTokenList(cmd *cobra.Command, _ []string) error {
 	// hold.
 	table := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(table, "ID\tNAME\tSTATUS\tEXPIRES")
+	now := time.Now()
 	for _, tok := range tokens {
 		status := "unused"
-		if !tok.UsedAt.IsZero() {
+		switch {
+		case !tok.UsedAt.IsZero():
 			status = "used"
+		case !now.Before(tok.ExpiresAt):
+			status = "expired"
 		}
 		fmt.Fprintf(table, "%s\t%s\t%s\t%s\n",
 			tok.TokenID, tok.Name, status, tok.ExpiresAt.Format("2006-01-02 15:04"))
