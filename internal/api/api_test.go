@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -194,15 +195,104 @@ func TestDownloadSigilc_Success(t *testing.T) {
 		t.Fatalf("write binary: %v", err)
 	}
 
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/download/sigilc?os=linux&arch=amd64", nil)
-	newHandler(deps).ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	// sha256=1 once made the server hash the whole binary for anyone who
+	// asked; it is an unknown parameter now.
+	for _, target := range []string{
+		"/download/sigilc?os=linux&arch=amd64",
+		"/download/sigilc?os=linux&arch=amd64&sha256=1",
+	} {
+		rec := httptest.NewRecorder()
+		newHandler(deps).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: expected 200, got %d: %s", target, rec.Code, rec.Body.String())
+		}
+		if rec.Body.String() != "binary" || rec.Header().Get("Content-Length") != "6" ||
+			rec.Header().Get("Content-Type") != "application/octet-stream" {
+			t.Fatalf("GET %s: body %q, Content-Length %q, Content-Type %q; want the binary, its length and octet-stream",
+				target, rec.Body.String(), rec.Header().Get("Content-Length"), rec.Header().Get("Content-Type"))
+		}
 	}
-	if rec.Body.String() != "binary" {
-		t.Fatalf("unexpected body %q", rec.Body.String())
+}
+
+// TestDownloadOutlivesWriteTimeout downloads sigilc over a link too slow to
+// finish within the server's WriteTimeout. The production binary is about
+// 20 MB and WriteTimeout is 30s, so any client below about 5 Mbit/s would get
+// a truncated download; here the binary is 32 MB, the timeout 1s and the
+// client reads at about 8 MB/s. curl negotiates HTTP/2 and Windows PowerShell
+// 5.1 HTTP/1.1, so both are checked.
+func TestDownloadOutlivesWriteTimeout(t *testing.T) {
+	const size = 32 << 20
+	for _, tt := range []struct {
+		name  string
+		http2 bool
+	}{
+		{name: "HTTP/1.1"},
+		{name: "HTTP/2", http2: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			deps := buildDeps(t)
+			binDir := filepath.Join(deps.CurrentServer().Server.DataDir, "binaries")
+			if err := os.MkdirAll(binDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(binDir, "sigilc-linux-amd64"), make([]byte, size), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			certPEM, keyPEM, err := deps.MiniCA.IssueServerCert([]string{"127.0.0.1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cert, err := tls.X509KeyPair(certPEM, keyPEM)
+			if err != nil {
+				t.Fatal(err)
+			}
+			srv := New(deps, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil })
+			srv.WriteTimeout = time.Second
+			l, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			go func() { _ = srv.ServeTLS(l, "", "") }()
+			defer srv.Close()
+
+			roots := x509.NewCertPool()
+			roots.AddCert(deps.MiniCA.Cert())
+			client := &http.Client{Transport: &http.Transport{
+				TLSClientConfig:   &tls.Config{RootCAs: roots},
+				ForceAttemptHTTP2: tt.http2,
+			}}
+			defer client.CloseIdleConnections()
+			resp, err := client.Get("https://" + l.Addr().String() + "/download/sigilc?os=linux&arch=amd64")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d", resp.StatusCode)
+			}
+			if got, want := resp.ProtoMajor, map[bool]int{false: 1, true: 2}[tt.http2]; got != want {
+				t.Fatalf("protocol = %s, want %s", resp.Proto, tt.name)
+			}
+
+			// Read at about 8 MB/s: 256 KiB every 30ms.
+			var n int64
+			buf := make([]byte, 256<<10)
+			start := time.Now()
+			for {
+				m, err := io.ReadFull(resp.Body, buf)
+				n += int64(m)
+				if err == io.EOF || err == io.ErrUnexpectedEOF && n == size {
+					break
+				}
+				if err != nil {
+					t.Fatalf("download failed after %d of %d bytes in %s: %v", n, size, time.Since(start), err)
+				}
+				time.Sleep(30 * time.Millisecond)
+			}
+			if n != size {
+				t.Fatalf("downloaded %d of %d bytes", n, size)
+			}
+		})
 	}
 }
 

@@ -1,13 +1,11 @@
 package api
 
 import (
-	"crypto/sha256"
 	"crypto/x509"
 	"database/sql"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -29,6 +27,11 @@ import (
 // lastSeenInterval is the least time between two writes of one client's
 // last_seen. A variable so that tests can shorten it.
 var lastSeenInterval = time.Minute
+
+// downloadWriteTimeout is how long GET /download/sigilc may take to send the
+// binary. Anyone can download it, so a reader that slow holds a connection
+// that long.
+const downloadWriteTimeout = 10 * time.Minute
 
 type handlers struct {
 	deps Deps
@@ -117,23 +120,21 @@ func (h *handlers) downloadSigilc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
-
-	// Serve sha256 if requested.
-	if r.URL.Query().Get("sha256") == "1" {
-		data, err := io.ReadAll(f)
-		if err != nil {
-			http.Error(w, "read error", http.StatusInternalServerError)
-			return
-		}
-		sum := sha256.Sum256(data)
-		w.Header().Set("Content-Type", "text/plain")
-		fmt.Fprintf(w, "%x", sum[:])
+	info, err := f.Stat()
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
+	// sigilc is about 20 MB, which a link below about 5 Mbit/s does not carry
+	// within the server's WriteTimeout. Only this response's deadline moves,
+	// as in GET /v1/sync; httptest.ResponseRecorder does not support
+	// deadlines.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(downloadWriteTimeout))
+	// Set before ServeContent, which would otherwise sniff the type.
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, name))
 	w.Header().Set("Content-Type", "application/octet-stream")
-	_, _ = io.Copy(w, f)
+	http.ServeContent(w, r, name, info.ModTime(), f)
 }
 
 func validPlatformPart(s string) bool {
