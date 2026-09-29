@@ -390,6 +390,59 @@ func TestTLSSourceServesReplacedFilesToNewConnections(t *testing.T) {
 	}
 }
 
+// A mini-CA root certificate that expires within a year is warned of at
+// startup, whichever certificate the listener serves.
+func TestTLSSourceWarnsOfRootExpiryAtStartup(t *testing.T) {
+	miniCA := mustBootstrapTLSCA(t)
+	notAfter := miniCA.Cert().NotAfter
+	withFiles := tlsFilesConfig(t)
+	issueTLSPair(t, miniCA).write(t, withFiles, time.Now())
+	for name, cfg := range map[string]*config.ServerConfig{
+		"mini-CA":   {Server: config.ServerSection{Listen: "127.0.0.1:8443"}},
+		"TLS files": withFiles,
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, tc := range []struct {
+				left time.Duration
+				want []string
+			}{
+				{left: rootExpiryWarning + time.Hour},
+				{left: rootExpiryWarning - time.Hour, want: []string{"WARN mini-CA root certificate expires within a year not_after="}},
+			} {
+				events := setupLogs(t, io.Discard).Events
+				now := notAfter.Add(-tc.left)
+				if _, err := newTLSSource(miniCA, cfg, func() time.Time { return now }); err != nil {
+					t.Fatal(err)
+				}
+				assertTLSEvents(t, events, tc.want...)
+			}
+		})
+	}
+}
+
+// Each certificate the mini-CA issues once its root expires within a year
+// repeats the warning.
+func TestTLSSourceWarnsOfRootExpiryOnReissue(t *testing.T) {
+	events := setupLogs(t, io.Discard).Events
+	dataDir := t.TempDir()
+	miniCA, err := ca.Bootstrap(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notAfter := miniCA.Cert().NotAfter
+	// The first certificate the mini-CA issues is dated by the real time, so
+	// on this clock it is due at the first handshake, and so is each next.
+	now := notAfter.Add(-rootExpiryWarning - time.Hour)
+	src := newMiniCATLSSource(t, dataDir, &now)
+	servedSerial(t, src)
+	now = notAfter.Add(-rootExpiryWarning + time.Hour)
+	servedSerial(t, src)
+	assertTLSEvents(t, events,
+		"INFO server TLS certificate reissued not_after=",
+		"INFO server TLS certificate reissued not_after=",
+		"WARN mini-CA root certificate expires within a year not_after=")
+}
+
 func mustBootstrapTLSCA(t *testing.T) *ca.MiniCA {
 	t.Helper()
 	miniCA, err := ca.Bootstrap(t.TempDir())

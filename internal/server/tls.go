@@ -54,6 +54,12 @@ type tlsSource struct {
 // waits for it.
 const reissueRetry = time.Minute
 
+// rootExpiryWarning is how long before the mini-CA root certificate expires
+// sigils starts warning of it, at startup and whenever the mini-CA issues a
+// new HTTPS certificate. The root signs every client certificate, and nothing
+// replaces it: once it expires, no client can connect.
+const rootExpiryWarning = 365 * 24 * time.Hour
+
 // fileVersion tells versions of a file apart by modification time and size.
 type fileVersion struct {
 	modTime int64 // Unix nanoseconds
@@ -64,6 +70,7 @@ type fileVersion struct {
 // certificate. now decides when that certificate is due for renewal.
 func newTLSSource(miniCA *ca.MiniCA, cfg *config.ServerConfig, now func() time.Time) (*tlsSource, error) {
 	s := &tlsSource{miniCA: miniCA, cfg: cfg, now: now}
+	s.warnRootExpiry()
 	if cfg.Server.TLSCertFile == "" {
 		cert, renewAt, err := s.issue()
 		if err != nil {
@@ -134,6 +141,15 @@ func (s *tlsSource) reissue() {
 	}
 	s.cert, s.issueAt, s.reissueFailed = cert, renewAt, false
 	slog.Info("server TLS certificate reissued", "not_after", cert.Leaf.NotAfter)
+	s.warnRootExpiry()
+}
+
+// warnRootExpiry logs a warning if the mini-CA root certificate expires
+// within rootExpiryWarning.
+func (s *tlsSource) warnRootExpiry() {
+	if notAfter := s.miniCA.Cert().NotAfter; s.now().Add(rootExpiryWarning).After(notAfter) {
+		slog.Warn("mini-CA root certificate expires within a year", "not_after", notAfter)
+	}
 }
 
 // issue has the mini-CA issue a certificate, and returns it with the time it
