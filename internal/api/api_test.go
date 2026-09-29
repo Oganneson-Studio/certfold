@@ -645,6 +645,47 @@ func TestRenewIdentityDoesNotStageOnReenrolledClient(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	rec := requestDuringWrite(t, handler, renewRequest(t, old), tx)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("renewal by the replaced identity: status = %d, want 401", rec.Code)
+	}
+	got, err := deps.DB.Clients.Get(ctx, "web-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Fingerprint != replacementFingerprint || got.PendingFingerprint != "" {
+		t.Fatalf("re-enrolled client = %+v, want fingerprint %s and no pending identity", got, replacementFingerprint)
+	}
+}
+
+// Each renewal syncs the CA's serial file and logs an event, so a client
+// renews at most once per renewInterval; other clients are not held up.
+func TestRenewIdentityAtMostOncePerInterval(t *testing.T) {
+	deps := buildDeps(t)
+	web1 := makeEnrolledClientCert(t, deps, "web-1")
+	web2 := makeEnrolledClientCert(t, deps, "web-2")
+	handler := newHandler(deps)
+
+	for _, tt := range []struct {
+		name     string
+		identity *tls.Certificate
+		want     int
+	}{
+		{name: "web-1", identity: web1, want: http.StatusOK},
+		{name: "web-1 again", identity: web1, want: http.StatusTooManyRequests},
+		{name: "web-2", identity: web2, want: http.StatusOK},
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, renewRequest(t, tt.identity))
+		if rec.Code != tt.want {
+			t.Errorf("renewal of %s: status = %d, want %d", tt.name, rec.Code, tt.want)
+		}
+	}
+}
+
+// renewRequest is POST /v1/identity/renew from identity, for a new key.
+func renewRequest(t *testing.T, identity *tls.Certificate) *http.Request {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -659,18 +700,7 @@ func TestRenewIdentityDoesNotStageOnReenrolledClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := simulateMTLS(httptest.NewRequest(http.MethodPost, "/v1/identity/renew", bytes.NewReader(body)), old)
-	rec := requestDuringWrite(t, handler, req, tx)
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("renewal by the replaced identity: status = %d, want 401", rec.Code)
-	}
-	got, err := deps.DB.Clients.Get(ctx, "web-1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Fingerprint != replacementFingerprint || got.PendingFingerprint != "" {
-		t.Fatalf("re-enrolled client = %+v, want fingerprint %s and no pending identity", got, replacementFingerprint)
-	}
+	return simulateMTLS(httptest.NewRequest(http.MethodPost, "/v1/identity/renew", bytes.NewReader(body)), identity)
 }
 
 // ---------------------------------------------------------------------------

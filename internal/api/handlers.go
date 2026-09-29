@@ -33,6 +33,10 @@ var lastSeenInterval = time.Minute
 // that long.
 const downloadWriteTimeout = 10 * time.Minute
 
+// renewInterval is the least time between two identity renewals of one
+// client. sigilc renews its identity about every 60 days.
+const renewInterval = time.Minute
+
 type handlers struct {
 	deps Deps
 
@@ -45,6 +49,11 @@ type handlers struct {
 	// requests in progress.
 	syncMu  sync.Mutex
 	syncing map[string]int
+
+	// renewMu guards renewed, which holds for each client the time of its
+	// last identity renewal, or of the one in progress.
+	renewMu sync.Mutex
+	renewed map[string]time.Time
 }
 
 func newHandlers(deps Deps) *handlers {
@@ -52,6 +61,7 @@ func newHandlers(deps Deps) *handlers {
 		deps:     deps,
 		lastSeen: make(map[string]time.Time),
 		syncing:  make(map[string]int),
+		renewed:  make(map[string]time.Time),
 	}
 }
 
@@ -272,6 +282,25 @@ func (h *handlers) renewIdentity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	clientName := cert.Subject.CommonName
+
+	// Each renewal syncs the serial file to disk and logs an event, so a
+	// client that renewed in a loop would flush the event ring within
+	// seconds. As with last_seen, the claim stands whatever the renewal
+	// returns, and sigilc backs off on the 429.
+	now := time.Now()
+	h.renewMu.Lock()
+	last, seen := h.renewed[clientName]
+	allowed := !seen || now.Sub(last) >= renewInterval
+	if allowed {
+		h.renewed[clientName] = now
+	}
+	h.renewMu.Unlock()
+	if !allowed {
+		http.Error(w, "identity renewed less than a minute ago", http.StatusTooManyRequests)
+		return
+	}
+
 	var req proto.RenewIdentityRequest
 	if err := readJSON(r, &req); err != nil || req.CSR == "" {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -288,7 +317,6 @@ func (h *handlers) renewIdentity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientName := cert.Subject.CommonName
 	certDER, err := h.deps.MiniCA.Sign(csr, clientName)
 	if err != nil {
 		serverError(w, "client identity renewal failed", "client", clientName, "error", err)
