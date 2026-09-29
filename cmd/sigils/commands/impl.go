@@ -11,7 +11,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 
 	"github.com/Oganneson-Studio/sigil/internal/api"
 	"github.com/Oganneson-Studio/sigil/internal/config"
@@ -72,7 +71,7 @@ func dialReloadServer(cmd *cobra.Command) (serverReloader, error) {
 }
 
 // ---------------------------------------------------------------------------
-// config validate / config show
+// config validate
 // ---------------------------------------------------------------------------
 
 func runConfigValidate(cmd *cobra.Command, _ []string) error {
@@ -85,20 +84,6 @@ func runConfigValidate(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	fmt.Println("ok")
-	return nil
-}
-
-func runConfigShow(cmd *cobra.Command, _ []string) error {
-	cfgPath, _ := cmd.Root().PersistentFlags().GetString("config")
-	if cfgPath == "" {
-		cfgPath = defaultServerCfgPath()
-	}
-	cfg, err := config.LoadServer(cfgPath)
-	if err != nil {
-		return err
-	}
-	out, _ := yaml.Marshal(cfg)
-	fmt.Print(string(out))
 	return nil
 }
 

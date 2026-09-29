@@ -42,11 +42,10 @@ func newVersionCmd() *cobra.Command {
 func newConfigCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "Inspect and validate server.yaml",
+		Short: "Validate server.yaml",
 	}
 	cmd.AddCommand(
 		&cobra.Command{Use: "validate", Short: "Parse and validate server.yaml without starting the daemon", RunE: runConfigValidate},
-		&cobra.Command{Use: "show", Short: "Print the effective configuration (with defaults applied)", RunE: runConfigShow},
 	)
 	return cmd
 }

@@ -292,6 +292,17 @@ func serveCertificates(t *testing.T, db *store.DB, cfg *config.ServerConfig) str
 // runSigils runs sigils with args and returns what it printed to stdout.
 func runSigils(t *testing.T, args ...string) string {
 	t.Helper()
+	out, err := runSigilsErr(t, args...)
+	if err != nil {
+		t.Fatalf("sigils %s: %v", strings.Join(args, " "), err)
+	}
+	return out
+}
+
+// runSigilsErr runs sigils with args and returns what it printed to stdout
+// and its error.
+func runSigilsErr(t *testing.T, args ...string) (string, error) {
+	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -310,10 +321,7 @@ func runSigils(t *testing.T, args ...string) string {
 	_ = w.Close()
 	out := <-printed
 	_ = r.Close()
-	if runErr != nil {
-		t.Fatalf("sigils %s: %v", strings.Join(args, " "), runErr)
-	}
-	return string(out)
+	return string(out), runErr
 }
 
 func TestCertListAndShowReportIssuanceState(t *testing.T) {
