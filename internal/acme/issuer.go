@@ -175,8 +175,15 @@ func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec confi
 // ---------------------------------------------------------------------------
 
 // accountClient returns a lego client acting for the ACME account of spec's
-// CA, creating and registering the account first when the store has none for
-// the CA's current directory and email.
+// CA, registering the account first when the store has none for the CA's
+// directory, and sending the CA the configured email address when it changed.
+//
+// An account belongs to the directory it was registered with, so a new
+// directory gets a new key. The key is stored with its registration, once the
+// CA has registered it: an account the CA refuses never replaces the stored
+// one. A new email address keeps the account and its key, and only updates the
+// account's contact: a new key would need a new registration, which a CA that
+// binds accounts to a one-time external account binding refuses.
 //
 // Everything from reading the stored account to storing the registration runs
 // under the lock of spec's CA. Without it, two first issuances for one CA
@@ -189,30 +196,49 @@ func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec confi
 // issuances: every issuance holds its CA's lock while lego fetches the
 // directory, for up to lego's request timeouts. The lock is keyed by CA name,
 // the key of the account record in the store. A change of the CA's directory
-// or of the email replaces the key in that same record, so keying by directory
-// and email would let an issuance started before a reload and one started
-// after it write the record at once.
+// replaces that same record, so keying by directory would let an issuance
+// started before a reload and one started after it write the record at once.
+//
+// An error of the store is returned without registering or writing anything:
+// it may be transient and says nothing about the record, and taking it for a
+// missing account would throw away a working one and register another.
 func (i *Issuer) accountClient(ctx context.Context, cfg *config.ServerConfig, spec config.CertificateSpec, caEntry config.CAEntry) (*lego.Client, error) {
 	lock, _ := i.accountLocks.LoadOrStore(spec.CA, new(sync.Mutex))
 	mu := lock.(*sync.Mutex)
 	mu.Lock()
 	defer mu.Unlock()
 
-	userKey, err := i.loadOrCreateAccountKey(ctx, spec.CA, caEntry.Directory, cfg.ACME.Email)
-	if err != nil {
-		return nil, fmt.Errorf("account key: %w", err)
+	rec, err := i.accounts.Get(ctx, spec.CA, nil)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		rec = &store.AccountRecord{}
+	case err != nil:
+		return nil, fmt.Errorf("account: %w", err)
 	}
-
-	// Load persisted registration if present.
-	reg, err := i.loadRegistration(ctx, spec.CA, caEntry.Directory, cfg.ACME.Email)
-	if err != nil {
-		return nil, fmt.Errorf("account registration: %w", err)
+	var key *ecdsa.PrivateKey
+	if rec.Directory == caEntry.Directory && rec.KeyPEM != "" {
+		if key, err = parseECDSAKey([]byte(rec.KeyPEM)); err != nil {
+			return nil, fmt.Errorf("account key: %w", err)
+		}
+	} else {
+		if key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader); err != nil {
+			return nil, fmt.Errorf("account key: %w", err)
+		}
+		der, err := x509.MarshalPKCS8PrivateKey(key)
+		if err != nil {
+			return nil, fmt.Errorf("account key: %w", err)
+		}
+		rec = &store.AccountRecord{
+			CA:        spec.CA,
+			Directory: caEntry.Directory,
+			KeyPEM:    string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})),
+		}
 	}
 
 	u := &legoUser{
 		email: cfg.ACME.Email,
-		key:   userKey,
-		reg:   reg,
+		key:   key,
+		reg:   storedRegistration(rec),
 	}
 
 	legoCfg := lego.NewConfig(u)
@@ -224,113 +250,64 @@ func (i *Issuer) accountClient(ctx context.Context, cfg *config.ServerConfig, sp
 		return nil, fmt.Errorf("lego client: %w", err)
 	}
 
-	// Register account if we don't have one yet.
-	if u.reg == nil {
-		if err := i.register(ctx, client, u, spec.CA, caEntry, cfg.ACME.Email); err != nil {
+	switch {
+	case u.reg == nil:
+		if u.reg, err = register(client, caEntry); err != nil {
 			return nil, fmt.Errorf("register: %w", err)
 		}
+	case rec.Email != cfg.ACME.Email:
+		// The contact is the only field sent: RFC 8555 lets a client not
+		// update its agreement to the terms of service, and lego leaves
+		// the field out when it is false.
+		if u.reg, err = client.Registration.UpdateRegistration(registration.RegisterOptions{}); err != nil {
+			return nil, fmt.Errorf("update account contact: %w", err)
+		}
+	default:
+		return client, nil
+	}
+	regJSON, err := json.Marshal(u.reg)
+	if err != nil {
+		return nil, err
+	}
+	rec.Email = cfg.ACME.Email
+	rec.RegistrationJSON = string(regJSON)
+	if err := i.accounts.Upsert(ctx, rec, nil); err != nil {
+		return nil, fmt.Errorf("store account: %w", err)
 	}
 	return client, nil
 }
 
-// loadOrCreateAccountKey returns the stored account key of ca, or creates and
-// stores a new one, replacing the whole record, when the store has no record
-// for ca or its record is for another directory or email. Any other error of
-// the store is returned without writing: taking it for a missing account
-// would throw away a working one and register another.
-func (i *Issuer) loadOrCreateAccountKey(ctx context.Context, ca, directory, email string) (*ecdsa.PrivateKey, error) {
-	rec, err := i.accounts.Get(ctx, ca, nil)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		// No account yet: create one below.
-	case err != nil:
-		return nil, err
-	case rec.Directory == directory && rec.Email == email && rec.KeyPEM != "":
-		return parseECDSAKey([]byte(rec.KeyPEM))
-	}
-	// Generate a new key.
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, err
-	}
-	der, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		return nil, err
-	}
-	keyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
-	newRec := &store.AccountRecord{
-		CA:        ca,
-		Directory: directory,
-		Email:     email,
-		KeyPEM:    keyPEM,
-	}
-	if err := i.accounts.Upsert(ctx, newRec, nil); err != nil {
-		return nil, fmt.Errorf("persist account key: %w", err)
-	}
-	return key, nil
-}
-
-// loadRegistration returns the stored registration of ca's account, or nil
-// when the store has none for directory and email.
+// storedRegistration returns the registration stored in rec, or nil when it
+// has none.
 //
 // A stored registration that does not parse counts as none. Such a record is
 // damaged and stays so, and registering the stored key again repairs it
 // without replacing the account: a CA answers a key it knows with the
-// existing account (RFC 8555, section 7.3). A store error is returned
-// instead, as in loadOrCreateAccountKey: it may be transient and says nothing
-// about the record, so it is no reason to register or write anything.
-func (i *Issuer) loadRegistration(ctx context.Context, ca, directory, email string) (*registration.Resource, error) {
-	rec, err := i.accounts.Get(ctx, ca, nil)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if rec.Directory != directory || rec.Email != email || rec.RegistrationJSON == "" {
-		return nil, nil
+// existing account (RFC 8555, section 7.3).
+func storedRegistration(rec *store.AccountRecord) *registration.Resource {
+	if rec.RegistrationJSON == "" {
+		return nil
 	}
 	var reg registration.Resource
 	if json.Unmarshal([]byte(rec.RegistrationJSON), &reg) != nil {
-		return nil, nil // damaged: register the key again, see above
+		return nil // damaged: register the key again, see above
 	}
-	return &reg, nil
+	return &reg
 }
 
-func (i *Issuer) register(ctx context.Context, client *lego.Client, u *legoUser, ca string, caEntry config.CAEntry, email string) error {
-	var reg *registration.Resource
-	var err error
+// register registers the account key of client with the CA, bound to the
+// CA's external account when it has one, and returns the registration.
+func register(client *lego.Client, caEntry config.CAEntry) (*registration.Resource, error) {
 	if caEntry.EABKID != "" {
-		reg, err = client.Registration.RegisterWithExternalAccountBinding(registration.RegisterEABOptions{
+		return client.Registration.RegisterWithExternalAccountBinding(registration.RegisterEABOptions{
 			TermsOfServiceAgreed: true,
 			Kid:                  caEntry.EABKID,
 			HmacEncoded:          caEntry.EABHMAC,
 		})
-	} else {
-		reg, err = client.Registration.Register(registration.RegisterOptions{
-			TermsOfServiceAgreed: true,
-		})
 	}
-	if err != nil {
-		return err
-	}
-	u.reg = reg
-
-	regJSON, err := json.Marshal(reg)
-	if err != nil {
-		return err
-	}
-	// Upsert replaces every column, so start from the stored record, which
-	// holds the key loadOrCreateAccountKey stored under the same lock; a new
-	// record would store the registration without its key.
-	rec, err := i.accounts.Get(ctx, ca, nil)
-	if err != nil {
-		return fmt.Errorf("load account: %w", err)
-	}
-	rec.Directory = caEntry.Directory
-	rec.Email = email
-	rec.RegistrationJSON = string(regJSON)
-	return i.accounts.Upsert(ctx, rec, nil)
+	return client.Registration.Register(registration.RegisterOptions{
+		TermsOfServiceAgreed: true,
+	})
 }
 
 // ---------------------------------------------------------------------------
