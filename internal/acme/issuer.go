@@ -121,8 +121,8 @@ func NewIssuer(accounts *store.AccountRepo) *Issuer { return &Issuer{accounts: a
 // ctx is used only for the account store. lego's API takes no context, so
 // cancelling ctx does not interrupt a running ACME exchange; the timeouts
 // described at the top of this file bound it instead. sigils waits for the
-// scheduler's in-flight Issue during shutdown, so those timeouts also bound
-// how long issuance can delay shutdown.
+// scheduler's in-flight Issue during shutdown for a bounded time only
+// (server.Run), and abandons it past that.
 func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec config.CertificateSpec, replacing []byte) (*Result, error) {
 	caEntry, ok := cfg.ACME.CAs[spec.CA]
 	if !ok {
