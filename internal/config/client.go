@@ -109,8 +109,13 @@ func (c *ClientConfig) applyDefaults() {
 func (c *ClientConfig) Validate() error {
 	v := &ValidationError{}
 
-	if strings.TrimSpace(c.Client.Name) == "" {
+	// The client name is the CN of the client certificate and the names of
+	// certificates are those of server.yaml, which follow the same rule: a
+	// name outside it would never match.
+	if c.Client.Name == "" {
 		v.Add("client.name", "must be set")
+	} else if err := ValidateClientName(c.Client.Name); err != nil {
+		v.Add("client.name", "%v", err)
 	}
 	if c.Client.ServerURL == "" {
 		v.Add("client.server_url", "must be set")
@@ -127,11 +132,14 @@ func (c *ClientConfig) Validate() error {
 	// running their on_change programs each time.
 	outputPaths := make(map[string]string)
 	for _, certName := range slices.Sorted(maps.Keys(c.Certificates)) {
+		// An invalid name is reported alone: the paths of the other errors
+		// of its entry would quote it.
+		if err := ValidateCertificateName(certName); err != nil {
+			v.Add("certificates", "%v", err)
+			continue
+		}
 		cert := c.Certificates[certName]
 		path := "certificates." + certName
-		if certName == "" {
-			v.Add("certificates", "certificate name key must not be empty")
-		}
 		if len(cert.Outputs) == 0 {
 			v.Add(path+".outputs", "must have at least one output")
 		}
