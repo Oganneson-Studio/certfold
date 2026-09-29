@@ -22,7 +22,7 @@ type CertRecord struct {
 	UpdatedAt       time.Time
 }
 
-// CertRepo provides CRUD for the certificates table.
+// CertRepo reads and writes the certificates table.
 type CertRepo struct{ db *sql.DB }
 
 func (r *CertRepo) execer(tx *sql.Tx) interface {
@@ -95,12 +95,6 @@ func (r *CertRepo) Upsert(ctx context.Context, rec *CertRecord, tx *sql.Tx) erro
 		nullTime(rec.NotAfter), rec.Fingerprint,
 		nullTime(rec.IssuedAt), rec.UpdatedAt.Format(time.RFC3339),
 	)
-	return err
-}
-
-// Delete removes a certificate by name.
-func (r *CertRepo) Delete(ctx context.Context, name string, tx *sql.Tx) error {
-	_, err := r.execer(tx).ExecContext(ctx, `DELETE FROM certificates WHERE name=?`, name)
 	return err
 }
 

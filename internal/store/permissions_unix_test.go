@@ -4,8 +4,46 @@ package store
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
+
+// Reopening a database tightens its main file, -wal and -shm when they were
+// loosened in the meantime. New files are created 0600, so only a reopen
+// shows that Open protects the files it finds.
+func TestOpenTightensLoosenedFilesOnReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sigils.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		// A clean close removes both; leave loose empty ones behind as a
+		// crash or another tool would.
+		if err := os.WriteFile(path+suffix, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path+suffix, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	db, err = Open(path)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	defer db.Close()
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		assertPrivateSQLiteFile(t, path+suffix)
+	}
+}
 
 func makeSQLiteDirectoryBroad(t *testing.T, path string) {
 	t.Helper()
