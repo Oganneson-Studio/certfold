@@ -174,6 +174,11 @@ func migrate(db *sql.DB) error {
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
+	// Migrations only go forward; this binary cannot know what a newer one
+	// changed.
+	if ver > currentSchemaVersion {
+		return fmt.Errorf("the database has schema version %d, newer than version %d that this sigils knows: a newer sigils has upgraded it, and upgrades cannot be undone", ver, currentSchemaVersion)
+	}
 	for ver < currentSchemaVersion {
 		ver++
 		tx, err := db.Begin()
