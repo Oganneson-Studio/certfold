@@ -56,10 +56,15 @@ func runReload(cmd *cobra.Command, _ []string) error {
 
 func runEnroll(cmd *cobra.Command, _ []string) (err error) {
 	tokenStr, _ := cmd.Flags().GetString("token")
-	cfgPath, _ := cmd.Root().PersistentFlags().GetString("config")
-	if cfgPath == "" {
-		cfgPath = defaultClientCfgPath()
+	if tokenStr == "" {
+		// Any user may read the command line of a process, but not its
+		// environment: the install scripts hand the token over this way.
+		tokenStr = os.Getenv("SIGILC_TOKEN")
 	}
+	if tokenStr == "" {
+		return errors.New("no enrollment token: set SIGILC_TOKEN, or pass --token")
+	}
+	cfgPath := clientConfigPath(cmd)
 
 	// Decode the opaque token to get the server URL.
 	payload, err := enroll.DecodeToken(tokenStr)

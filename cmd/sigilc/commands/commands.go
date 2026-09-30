@@ -41,8 +41,7 @@ func newEnrollCmd() *cobra.Command {
 		Short: "Bootstrap this client by exchanging a one-time token for an mTLS certificate",
 		RunE:  runEnroll,
 	}
-	cmd.Flags().String("token", "", "enrollment token issued by sigils")
-	_ = cmd.MarkFlagRequired("token")
+	cmd.Flags().String("token", "", "enrollment token issued by sigils (default: $SIGILC_TOKEN, which keeps it off the command line)")
 	return cmd
 }
 
