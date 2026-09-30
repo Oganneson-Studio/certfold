@@ -511,6 +511,11 @@ func (m Model) selectedCert() *ipc.CertificateInfo {
 	return nil
 }
 
+// timeLayout is the layout of a time of day in the details, the layout of
+// sigils cert show: the offset from UTC as a number, since Windows lacks the
+// abbreviations of most zones.
+const timeLayout = "2006-01-02 15:04:05 -07:00"
+
 // formatTime formats t in local time with layout, or returns none for the
 // zero time.
 func formatTime(t time.Time, layout, none string) string {

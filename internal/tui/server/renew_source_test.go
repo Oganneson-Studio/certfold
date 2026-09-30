@@ -1,8 +1,12 @@
 package server
 
 import (
+	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 )
@@ -26,7 +30,16 @@ func TestCertificatesShowRenewSource(t *testing.T) {
 		}
 	}
 	// onTab selects the second row, mail.
-	if want := "Renew At " + renew.Local().Format("2006-01-02 15:04 -07:00") + " (ratio)"; !shows(m, want) {
+	if want := "Renew At " + renew.Local().Format("2006-01-02 15:04:05 -07:00") + " (ratio)"; !shows(m, want) {
 		t.Errorf("the details of mail lack %q: %q", want, m.View())
+	}
+	// The time, with its seconds and offset, fits on the line of its label
+	// in a window of 80 columns.
+	m, _ = drive(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	want := renew.Local().Format("2006-01-02 15:04:05 -07:00") + " (ratio)"
+	if !slices.ContainsFunc(strings.Split(m.View(), "\n"), func(line string) bool {
+		return strings.Contains(line, "Renew At") && strings.Contains(line, want)
+	}) {
+		t.Errorf("at 80 columns, no line holds Renew At and %q:\n%s", want, m.View())
 	}
 }

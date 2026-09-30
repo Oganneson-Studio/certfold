@@ -116,20 +116,17 @@ func (m Model) certDetails(w int) string {
 	if c == nil {
 		return ""
 	}
-	// The offset from UTC as a number: Windows lacks the abbreviations of
-	// most zones.
-	const layout = "2006-01-02 15:04 -07:00"
 	fields := [][2]string{
 		{"CA", c.CA},
 		{"Domains", strings.Join(c.Domains, ", ")},
 		{"Subscribers", strings.Join(c.Subscribers, ", ")},
 		{"Fingerprint", c.Fingerprint},
-		{"Issued At", formatTime(c.IssuedAt, layout, "")},
-		{"Not After", formatTime(c.NotAfter, layout, "")},
-		{"Renew At", renewAt(c, layout)},
+		{"Issued At", formatTime(c.IssuedAt, timeLayout, "")},
+		{"Not After", formatTime(c.NotAfter, timeLayout, "")},
+		{"Renew At", renewAt(c, timeLayout)},
 		{"Failures", strconv.Itoa(c.Failures)},
-		{"Last Attempt", formatTime(c.LastAttemptAt, layout, "")},
-		{"Next Attempt", formatTime(c.NextAttemptAt, layout, "")},
+		{"Last Attempt", formatTime(c.LastAttemptAt, timeLayout, "")},
+		{"Next Attempt", formatTime(c.NextAttemptAt, timeLayout, "")},
 		{"Last Error", c.LastError},
 	}
 	value := lipgloss.NewStyle().Width(max(w-14, 10))
