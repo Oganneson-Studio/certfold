@@ -91,11 +91,11 @@ esac
 
 # One rename puts the download in the place of the installed sigilc: a
 # download that fails leaves that as it was, and a sigilc that runs keeps the
-# file it started from.
+# file it started from. -q, first, keeps root's ~/.curlrc out of it.
 TMP=$(mktemp "$DEST.XXXXXX")
 trap 'rm -f "$TMP"' EXIT
 echo "Downloading sigilc for $OS/$ARCH..."
-curl -fsSL --proto '=https' --proto-redir '=https' "$SERVER_URL/download/sigilc?os=$OS&arch=$ARCH" -o "$TMP"
+curl -q -fsSL --proto '=https' --proto-redir '=https' "$SERVER_URL/download/sigilc?os=$OS&arch=$ARCH" -o "$TMP"
 chmod 0755 "$TMP"
 # A sigilc that does not run fails here, before anything changes.
 "$TMP" version

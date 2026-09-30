@@ -350,7 +350,7 @@ func TestInstallShLeavesTheTokenAlone(t *testing.T) {
 		t.Errorf("script contains %q:\n%s", k, script)
 	}
 	// Outside comments, curl runs only to download sigilc.
-	const download = `curl -fsSL --proto '=https' --proto-redir '=https' "$SERVER_URL/download/sigilc?os=$OS&arch=$ARCH" -o "$TMP"`
+	const download = `curl -q -fsSL --proto '=https' --proto-redir '=https' "$SERVER_URL/download/sigilc?os=$OS&arch=$ARCH" -o "$TMP"`
 	for _, line := range strings.Split(script, "\n") {
 		if strings.Contains(line, "curl") && !strings.HasPrefix(line, "#") && line != download {
 			t.Errorf("curl line %q, want only\n%s", line, download)
@@ -427,7 +427,7 @@ func TestInstallShReplacesSigilc(t *testing.T) {
 	inOrder(t, script,
 		"\n    --upgrade) UPGRADE=1; shift ;;\n",
 		"\nTMP=$(mktemp \"$DEST.XXXXXX\")\ntrap 'rm -f \"$TMP\"' EXIT\n",
-		`curl -fsSL --proto '=https' --proto-redir '=https' "$SERVER_URL/download/sigilc?os=$OS&arch=$ARCH" -o "$TMP"`,
+		`curl -q -fsSL --proto '=https' --proto-redir '=https' "$SERVER_URL/download/sigilc?os=$OS&arch=$ARCH" -o "$TMP"`,
 		"\n\"$TMP\" version\n",
 		"\nfor f in /etc/systemd/system/sigilc.service /Library/LaunchDaemons/sigilc.plist; do\n"+
 			"  if [ -e \"$f\" ]; then INSTALLED=1; fi\ndone\n",
