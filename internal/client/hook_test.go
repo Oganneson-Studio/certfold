@@ -80,6 +80,30 @@ func runTestHook(mode string) int {
 	case "sleep":
 		time.Sleep(20 * time.Second)
 		return 0
+	case "spawn":
+		// Start a child, whose output is not this program's, then sleep.
+		exe, err := os.Executable()
+		if err != nil {
+			return 1
+		}
+		child := exec.Command(exe)
+		child.Env = append(os.Environ(), testHookEnv+"=child")
+		if err := child.Start(); err != nil {
+			return 1
+		}
+		time.Sleep(20 * time.Second)
+		return 0
+	case "child":
+		// Write the time to the heartbeat file until the stop file appears,
+		// for at most 20 seconds.
+		dir := os.Getenv(testHookDirEnv)
+		for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			if _, err := os.Stat(filepath.Join(dir, "stop")); err == nil {
+				break
+			}
+			_ = os.WriteFile(filepath.Join(dir, "heartbeat"), []byte(strconv.FormatInt(time.Now().UnixNano(), 10)), 0o600)
+		}
+		return 0
 	case "orphan":
 		// Exit 0 at once, leaving a process that holds this one's output open.
 		fmt.Println(outputSecret)
@@ -224,8 +248,9 @@ func TestRunHookLogsTheEndOfTheOutput(t *testing.T) {
 	if !strings.Contains(got, floodTail) || strings.Contains(got, floodHead) {
 		t.Errorf("log does not hold just the end of the output: %.200q", got)
 	}
-	if len(got) > hookOutputLimit+256 {
-		t.Errorf("log is %d bytes, want about %d", len(got), hookOutputLimit)
+	// proc.Run keeps the last 4 KiB.
+	if len(got) > 4<<10+256 {
+		t.Errorf("log is %d bytes, want about 4 KiB", len(got))
 	}
 }
 
@@ -265,20 +290,47 @@ func TestRunHookKillsProgramAfterTimeout(t *testing.T) {
 }
 
 // TestRunHookKillsProgramWhenContextEnds covers the daemon stopping while a
-// program runs: ctx ends, and the program is killed, not waited for.
+// program runs: ctx ends, and the program is killed, not waited for, along
+// with the processes it started. Programs are often interpreters, such as
+// /bin/sh or powershell.exe, whose children do the work.
 func TestRunHookKillsProgramWhenContextEnds(t *testing.T) {
 	captureEvents(t)
+	dir := t.TempDir()
+	t.Setenv(testHookDirEnv, dir)
+	t.Cleanup(func() {
+		_ = os.WriteFile(filepath.Join(dir, "stop"), nil, 0o600)
+		time.Sleep(200 * time.Millisecond) // let a surviving child see it and exit
+	})
+	heartbeat := func() string {
+		data, _ := os.ReadFile(filepath.Join(dir, "heartbeat"))
+		return string(data)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	time.AfterFunc(200*time.Millisecond, cancel)
+	go func() {
+		// Once the program's child runs, or after 10 seconds.
+		for deadline := time.Now().Add(10 * time.Second); heartbeat() == "" && time.Now().Before(deadline); {
+			time.Sleep(20 * time.Millisecond)
+		}
+		cancel()
+	}()
 
 	start := time.Now()
-	err := runHook(ctx, "api-prod", hookArgv(t, "sleep"))
-	if elapsed := time.Since(start); elapsed > 10*time.Second {
+	err := runHook(ctx, "api-prod", hookArgv(t, "spawn"))
+	if elapsed := time.Since(start); elapsed > 15*time.Second {
 		t.Fatalf("runHook returned after %v, want it soon after ctx ended", elapsed)
 	}
 	if err == nil || !strings.Contains(err.Error(), context.Canceled.Error()) {
 		t.Fatalf("runHook error = %v, want the cancellation", err)
+	}
+	if heartbeat() == "" {
+		t.Fatal("the program's child never ran")
+	}
+	time.Sleep(300 * time.Millisecond)
+	before := heartbeat()
+	time.Sleep(300 * time.Millisecond)
+	if heartbeat() != before {
+		t.Fatal("a process the on_change program started is still running after runHook killed the program")
 	}
 }
 

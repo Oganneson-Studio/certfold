@@ -232,7 +232,7 @@ func TestBuildDNSProvider_SupportedTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p, err := buildDNSProvider(tt.provider)
+			p, err := buildDNSProvider(context.Background(), tt.provider)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
@@ -263,7 +263,7 @@ func TestBuildDNSProviderBoundsPropagationWait(t *testing.T) {
 		{Type: "route53", Config: map[string]any{"access_key": "ak", "secret_key": "sk", "region": "us-east-1"}},
 		{Type: "exec", Command: []string{"/usr/local/bin/dns-hook"}},
 	} {
-		provider, err := buildDNSProvider(p)
+		provider, err := buildDNSProvider(context.Background(), p)
 		if err != nil {
 			t.Fatalf("%s: %v", p.Type, err)
 		}
@@ -280,7 +280,7 @@ func TestBuildDNSProviderBoundsPropagationWait(t *testing.T) {
 }
 
 func TestBuildDNSProvider_UnknownType(t *testing.T) {
-	_, err := buildDNSProvider(config.DNSProvider{Type: "madeup"})
+	_, err := buildDNSProvider(context.Background(), config.DNSProvider{Type: "madeup"})
 	if err == nil {
 		t.Fatal("expected error for unknown type, got nil")
 	}
@@ -584,7 +584,7 @@ func TestIssueInitializesTheAccountOnceForConcurrentIssuances(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	issuer := NewIssuer(db.Accounts)
+	issuer := NewIssuer(context.Background(), db.Accounts)
 	cfg := &config.ServerConfig{
 		ACME: config.ACMESection{
 			Email:     "ops@example.com",
@@ -675,7 +675,7 @@ func TestStalledCADoesNotDelayAccountSetupForAnotherCA(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	issuer := NewIssuer(db.Accounts)
+	issuer := NewIssuer(context.Background(), db.Accounts)
 	cfg := &config.ServerConfig{
 		ACME: config.ACMESection{
 			Email:     "ops@example.com",
@@ -757,7 +757,7 @@ func TestAccountStoreErrorsDoNotReplaceTheAccount(t *testing.T) {
 			cfg, spec := renewalInfoConfig(server.URL + "/dir")
 			if registered {
 				// The fake CA fails the order, after the account is registered.
-				_, _ = NewIssuer(db.Accounts).Issue(ctx, cfg, spec, nil)
+				_, _ = NewIssuer(context.Background(), db.Accounts).Issue(ctx, cfg, spec, nil)
 			}
 			before, beforeErr := db.Accounts.Get(ctx, "fake", nil)
 
@@ -822,7 +822,7 @@ func storedAccount(t *testing.T, db *store.DB) (*store.AccountRecord, *ecdsa.Pri
 func TestAccountKeyRotatesWhenDirectoryChanges(t *testing.T) {
 	old, moved := newFakeACME(t, 1), newFakeACME(t, 1)
 	db := openAccountStore(t)
-	issuer := NewIssuer(db.Accounts)
+	issuer := NewIssuer(context.Background(), db.Accounts)
 	ctx := context.Background()
 	cfg, spec := renewalInfoConfig(old.URL + "/dir")
 	// The fake CAs fail the orders, after the account is registered.
@@ -856,7 +856,7 @@ func TestAccountKeyRotatesWhenDirectoryChanges(t *testing.T) {
 func TestEmailChangeUpdatesTheAccountContact(t *testing.T) {
 	server := newFakeACME(t, 1)
 	db := openAccountStore(t)
-	issuer := NewIssuer(db.Accounts)
+	issuer := NewIssuer(context.Background(), db.Accounts)
 	ctx := context.Background()
 	cfg, spec := renewalInfoConfig(server.URL + "/dir")
 	// The fake CA fails the orders, after the account is registered.
@@ -899,7 +899,7 @@ func TestRefusedRegistrationStoresNothing(t *testing.T) {
 	refusing.refuseAccounts = true
 	refusing.mu.Unlock()
 	db := openAccountStore(t)
-	issuer := NewIssuer(db.Accounts)
+	issuer := NewIssuer(context.Background(), db.Accounts)
 	ctx := context.Background()
 	cfg, spec := renewalInfoConfig(refusing.URL + "/dir")
 
@@ -942,7 +942,7 @@ func TestDamagedStoredRegistrationIsRepairedWithTheSameAccount(t *testing.T) {
 		DNSProviders: map[string]config.DNSProvider{"hook": {Type: "exec", Command: []string{"/usr/local/bin/dns-hook"}}},
 	}
 	spec := config.CertificateSpec{Name: "api", Domains: []string{"api.example.com"}, CA: "fake", DNSProvider: "hook", KeyType: "ec256"}
-	issuer := NewIssuer(db.Accounts)
+	issuer := NewIssuer(context.Background(), db.Accounts)
 	// The fake CA fails the order, after the account is registered.
 	_, _ = issuer.Issue(ctx, cfg, spec, nil)
 	rec, err := db.Accounts.Get(ctx, "fake", nil)
@@ -1008,7 +1008,7 @@ func TestRegisteredAccountIsStoredWhenTheCallerLeaves(t *testing.T) {
 	defer cancel()
 	// The fake CA fails the order, after the account is registered.
 	_, _ = (&Issuer{accounts: cancellingAccounts{db.Accounts, cancel}}).Issue(ctx, cfg, spec, nil)
-	_, _ = NewIssuer(db.Accounts).Issue(context.Background(), cfg, spec, nil)
+	_, _ = NewIssuer(context.Background(), db.Accounts).Issue(context.Background(), cfg, spec, nil)
 
 	server.mu.Lock()
 	defer server.mu.Unlock()
