@@ -150,16 +150,13 @@ var installPs1Tmpl = template.Must(template.New("install.ps1").Parse(`# Sigil cl
 # installed, installs it again and enrolls it anew. For the name of an
 # enrolled client, create the token with
 #   sigils token create --name <name> --replace
-# Without -Token, PowerShell asks for the token:
+# Without -Token, the installer asks for the token, which keeps it out of
+# the command history:
 #   {{ .AskToken }}
 # With -Upgrade, it replaces sigilc on a host where it is installed and
 # restarts its service, which keeps its enrollment.
 #   {{ .Upgrade }}
-[CmdletBinding(DefaultParameterSetName = 'Install')]
-param(
-    [Parameter(Mandatory = $true, ParameterSetName = 'Install')][string]$Token,
-    [Parameter(Mandatory = $true, ParameterSetName = 'Upgrade')][switch]$Upgrade
-)
+param([string]$Token, [switch]$Upgrade)
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -167,6 +164,15 @@ $ProgressPreference = 'SilentlyContinue'
 $Principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Run this installer in an elevated PowerShell (Run as administrator).'
+}
+if ($Upgrade -and $Token) {
+    throw 'Give either -Token or -Upgrade.'
+}
+if (-not $Upgrade -and -not $Token) {
+    Write-Host 'For the name of an enrolled client, create the token with --replace.'
+    $SecureToken = Read-Host -Prompt 'Enrollment token' -AsSecureString
+    $Token = [Net.NetworkCredential]::new('', $SecureToken).Password
+    if (-not $Token) { throw 'No enrollment token given.' }
 }
 
 $ServerURL = '{{ .ServerURL }}'
@@ -272,7 +278,7 @@ func renderInstallSh(w io.Writer, serverURL string) {
 
 // renderInstallPs1 writes the Windows installer, which is the same for every
 // request: the token reaches it as the -Token argument, or as the answer to
-// PowerShell's prompt for it, never through the server.
+// its prompt for it, never through the server.
 func renderInstallPs1(w io.Writer, serverURL string) {
 	_, ps1 := usages(serverURL)
 	_ = installPs1Tmpl.Execute(w, ps1)

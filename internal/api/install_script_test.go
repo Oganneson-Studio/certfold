@@ -53,21 +53,15 @@ func TestInstallPs1Script(t *testing.T) {
 		}
 	}
 
-	// Only comments may come before the param block. Its parameter sets make
-	// PowerShell ask for the token, which -Upgrade does not take.
-	first := 0
-	for first < len(lines) && (lines[first] == "" || strings.HasPrefix(lines[first], "#")) {
-		first++
-	}
-	params := strings.Join([]string{
-		`[CmdletBinding(DefaultParameterSetName = 'Install')]`,
-		`param(`,
-		`    [Parameter(Mandatory = $true, ParameterSetName = 'Install')][string]$Token,`,
-		`    [Parameter(Mandatory = $true, ParameterSetName = 'Upgrade')][switch]$Upgrade`,
-		`)`,
-	}, "\n") + "\n"
-	if rest := strings.Join(lines[first:], "\n"); !strings.HasPrefix(rest, params) {
-		t.Errorf("script does not start with the param block\n%s\nbut with\n%s", params, rest)
+	// Only comments may come before the param block.
+	for _, line := range lines {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if want := `param([string]$Token, [switch]$Upgrade)`; line != want {
+			t.Errorf("first statement = %q, want %q", line, want)
+		}
+		break
 	}
 
 	// exit would close the operator's session.
@@ -114,15 +108,22 @@ func TestInstallPs1Script(t *testing.T) {
 	}
 }
 
-// TestInstallPs1KeepsTokenOffCommandLines checks that install.ps1 hands the
-// token to sigilc through its environment, and takes it out of the
-// operator's session again, whether enroll fails or not.
+// TestInstallPs1KeepsTokenOffCommandLines checks that install.ps1 asks for
+// the token without echo when -Token does not give it, before anything
+// changes, and hands it to sigilc through its environment, which it takes
+// out of the operator's session again whether enroll fails or not.
 func TestInstallPs1KeepsTokenOffCommandLines(t *testing.T) {
 	script := getInstallScript(t, "/install.ps1").Body.String()
 	if strings.Contains(script, "enroll --token") {
 		t.Errorf("script passes the token to sigilc as an argument:\n%s", script)
 	}
 	inOrder(t, script,
+		"\nif ($Upgrade -and $Token) {\n    throw ",
+		"\nif (-not $Upgrade -and -not $Token) {\n",
+		"\n    $SecureToken = Read-Host -Prompt 'Enrollment token' -AsSecureString\n"+
+			"    $Token = [Net.NetworkCredential]::new('', $SecureToken).Password\n"+
+			"    if (-not $Token) { throw ",
+		"\nNew-Item ",
 		"\n    $env:SIGILC_TOKEN = $Token\n    try {\n        & $Dest enroll\n",
 		"\n    } finally {\n        Remove-Item -Path Env:\\SIGILC_TOKEN\n    }\n",
 	)
