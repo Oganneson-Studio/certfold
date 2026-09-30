@@ -141,11 +141,11 @@ func runCertShow(cmd *cobra.Command, args []string) error {
 			fmt.Printf("Domains:      %s\n", strings.Join(cert.Domains, ", "))
 			fmt.Printf("Subscribers:  %s\n", subscribers)
 			fmt.Printf("Not After:    %s\n", formatTime(cert.NotAfter, "2006-01-02"))
-			fmt.Printf("Renew At:     %s\n", formatRenewAt(cert, "2006-01-02 15:04:05 MST"))
+			fmt.Printf("Renew At:     %s\n", formatRenewAt(cert, timeLayout))
 			fmt.Printf("State:        %s\n", cert.State)
 			fmt.Printf("Failures:     %d\n", cert.Failures)
 			fmt.Printf("Last Error:   %s\n", lastError)
-			fmt.Printf("Next Attempt: %s\n", formatTime(cert.NextAttemptAt, "2006-01-02 15:04:05 MST"))
+			fmt.Printf("Next Attempt: %s\n", formatTime(cert.NextAttemptAt, timeLayout))
 			return nil
 		}
 	}
@@ -176,7 +176,7 @@ func runClientList(cmd *cobra.Command, _ []string) error {
 	for _, cl := range clients {
 		lastSeen := "never"
 		if !cl.LastSeen.IsZero() {
-			lastSeen = cl.LastSeen.Format("2006-01-02 15:04")
+			lastSeen = formatTime(cl.LastSeen, "2006-01-02 15:04")
 		}
 		fmt.Fprintf(table, "%s\t%s\t%s\n", cl.Name, cl.Fingerprint, lastSeen)
 	}
@@ -274,7 +274,7 @@ func runTokenCreate(cmd *cobra.Command, _ []string) error {
 		})
 	}
 	fmt.Fprintf(out, "Token ID: %s\n", created.TokenID)
-	fmt.Fprintf(out, "Expires:  %s\n", created.ExpiresAt.Local().Format("2006-01-02 15:04:05 -07:00"))
+	fmt.Fprintf(out, "Expires:  %s\n", formatTime(created.ExpiresAt, timeLayout))
 	fmt.Fprintf(out, "Token: %s\n\n", created.Token)
 	fmt.Fprintln(out, "Install (Linux/macOS):")
 	fmt.Fprintf(out, "  %s\n\n", sh)
@@ -310,7 +310,7 @@ func runTokenList(cmd *cobra.Command, _ []string) error {
 			status = "expired"
 		}
 		fmt.Fprintf(table, "%s\t%s\t%s\t%s\n",
-			tok.TokenID, tok.Name, status, tok.ExpiresAt.Format("2006-01-02 15:04"))
+			tok.TokenID, tok.Name, status, formatTime(tok.ExpiresAt, "2006-01-02 15:04"))
 	}
 	return table.Flush()
 }

@@ -195,11 +195,11 @@ func runClientShow(cmd *cobra.Command, args []string) error {
 		}
 		lastSeen := "never"
 		if details.LastSeen != nil {
-			lastSeen = details.LastSeen.Format("2006-01-02 15:04:05 MST")
+			lastSeen = formatTime(*details.LastSeen, timeLayout)
 		}
 		fmt.Printf("Name:        %s\n", details.Name)
 		fmt.Printf("Fingerprint: %s\n", details.Fingerprint)
-		fmt.Printf("Enrolled At: %s\n", details.EnrolledAt.Format("2006-01-02 15:04:05 MST"))
+		fmt.Printf("Enrolled At: %s\n", formatTime(details.EnrolledAt, timeLayout))
 		fmt.Printf("Last Seen:   %s\n", lastSeen)
 		return nil
 	}
@@ -264,12 +264,18 @@ func timePointer(value time.Time) *time.Time {
 	return &copy
 }
 
-// formatTime formats value with layout, or returns "-" for the zero time.
+// timeLayout is the layout of a time of day that people read: in local
+// time, with the offset from UTC as a number, which Windows has for every
+// zone, rather than the zone's abbreviation, which it lacks.
+const timeLayout = "2006-01-02 15:04:05 -07:00"
+
+// formatTime formats value in local time with layout, or returns "-" for the
+// zero time.
 func formatTime(value time.Time, layout string) string {
 	if value.IsZero() {
 		return "-"
 	}
-	return value.Format(layout)
+	return value.Local().Format(layout)
 }
 
 // formatRenewAt formats when cert is due for renewal with layout, followed by

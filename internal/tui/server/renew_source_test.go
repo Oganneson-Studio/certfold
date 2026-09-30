@@ -26,7 +26,7 @@ func TestCertificatesShowRenewSource(t *testing.T) {
 		}
 	}
 	// onTab selects the second row, mail.
-	if want := "Renew At " + renew.Local().Format("2006-01-02 15:04 MST") + " (ratio)"; !shows(m, want) {
+	if want := "Renew At " + renew.Local().Format("2006-01-02 15:04 -07:00") + " (ratio)"; !shows(m, want) {
 		t.Errorf("the details of mail lack %q: %q", want, m.View())
 	}
 }

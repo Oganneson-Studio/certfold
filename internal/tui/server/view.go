@@ -116,7 +116,9 @@ func (m Model) certDetails(w int) string {
 	if c == nil {
 		return ""
 	}
-	const layout = "2006-01-02 15:04 MST"
+	// The offset from UTC as a number: Windows lacks the abbreviations of
+	// most zones.
+	const layout = "2006-01-02 15:04 -07:00"
 	fields := [][2]string{
 		{"CA", c.CA},
 		{"Domains", strings.Join(c.Domains, ", ")},

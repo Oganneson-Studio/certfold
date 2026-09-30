@@ -72,8 +72,8 @@ func TestTokenListAlignsColumns(t *testing.T) {
 	got := tableCells(t, table, "ID", "NAME", "STATUS", "EXPIRES")
 	want := [][]string{
 		{"ID", "NAME", "STATUS", "EXPIRES"},
-		{tokens[0].TokenID, "web-1", "unused", expires.Format("2006-01-02 15:04")},
-		{tokens[1].TokenID, longName, "used", expires.Format("2006-01-02 15:04")},
+		{tokens[0].TokenID, "web-1", "unused", expires.Local().Format("2006-01-02 15:04")},
+		{tokens[1].TokenID, longName, "used", expires.Local().Format("2006-01-02 15:04")},
 	}
 	if !slices.EqualFunc(got, want, slices.Equal) {
 		t.Fatalf("token list does not line up with its header:\n%s", table)
@@ -134,7 +134,7 @@ func TestClientListAlignsColumns(t *testing.T) {
 	want := [][]string{
 		{"NAME", "FINGERPRINT", "LAST SEEN"},
 		{longName, clients[0].Fingerprint, "never"},
-		{"web-1", clients[1].Fingerprint, now.Format("2006-01-02 15:04")},
+		{"web-1", clients[1].Fingerprint, now.Local().Format("2006-01-02 15:04")},
 	}
 	if !slices.EqualFunc(got, want, slices.Equal) {
 		t.Fatalf("client list does not line up with its header:\n%s", table)
