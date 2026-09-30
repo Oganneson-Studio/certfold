@@ -17,10 +17,25 @@ func writeClientYAML(t *testing.T, raw string) string {
 	return path
 }
 
-// ReadClientFields reads the name, server URL and socket that LoadClient
+// readClientFields reads name, server_url and ipc_socket with
+// ReadClientField.
+func readClientFields(t *testing.T, path string) []string {
+	t.Helper()
+	var values []string
+	for _, key := range []string{"name", "server_url", "ipc_socket"} {
+		v, err := ReadClientField(path, key)
+		if err != nil {
+			t.Fatalf("ReadClientField %s: %v", key, err)
+		}
+		values = append(values, v)
+	}
+	return values
+}
+
+// ReadClientField reads the name, server URL and socket that LoadClient
 // reads, but does not need the variables that the rest of client.yaml
 // references.
-func TestReadClientFieldsAgreesWithLoadClient(t *testing.T) {
+func TestReadClientFieldAgreesWithLoadClient(t *testing.T) {
 	tests := []struct {
 		name  string
 		yaml  string // the client section of client.yaml
@@ -60,6 +75,24 @@ func TestReadClientFieldsAgreesWithLoadClient(t *testing.T) {
 			yaml: "client:\n  name: web-1\n  server_url: https://sigil.example.com\n  ipc_socket: \"/run/$$sigil.sock\"\n",
 			want: []string{"web-1", "https://sigil.example.com", "/run/$sigil.sock"},
 		},
+		{
+			name:  "alias of an anchored value with a variable",
+			yaml:  "client:\n  name: &n web-${SIGIL_TEST_VALUE}\n  server_url: https://sigil.example.com\n  ipc_socket: *n\n",
+			value: "3",
+			want:  []string{"web-3", "https://sigil.example.com", "web-3"},
+		},
+		{
+			name:  "merge key",
+			yaml:  "client:\n  <<: {name: \"web-${SIGIL_TEST_VALUE}\", server_url: \"https://sigil.example.com\"}\n  ipc_socket: /run/sigil/m.sock\n",
+			value: "4",
+			want:  []string{"web-4", "https://sigil.example.com", "/run/sigil/m.sock"},
+		},
+		{
+			name:  "anchored merge key, overridden by the mapping",
+			yaml:  "client:\n  <<: &base {name: web-1, server_url: \"https://${SIGIL_TEST_VALUE}.example.com\"}\n  name: web-5\n",
+			value: "sigil",
+			want:  []string{"web-5", "https://sigil.example.com", ""},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -73,12 +106,8 @@ func TestReadClientFieldsAgreesWithLoadClient(t *testing.T) {
 			if loaded := []string{cfg.Client.Name, cfg.Client.ServerURL, cfg.Client.IPCSocket}; !slices.Equal(loaded, tt.want) {
 				t.Errorf("LoadClient read %q, want %q", loaded, tt.want)
 			}
-			got, err := ReadClientFields(path, "name", "server_url", "ipc_socket")
-			if err != nil {
-				t.Fatalf("ReadClientFields: %v", err)
-			}
-			if !slices.Equal(got, tt.want) {
-				t.Errorf("ReadClientFields = %q, want %q", got, tt.want)
+			if got := readClientFields(t, path); !slices.Equal(got, tt.want) {
+				t.Errorf("ReadClientField read %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -86,8 +115,8 @@ func TestReadClientFieldsAgreesWithLoadClient(t *testing.T) {
 
 // A PKCS#12 password may come from a variable that only the service's
 // environment sets, which sudo does not pass to the CLI; so may any value
-// other than the ones read, the name too when only the socket is read.
-func TestReadClientFieldsDoesNotRequireOtherVariables(t *testing.T) {
+// other than the one read, the name too when only the socket is read.
+func TestReadClientFieldDoesNotRequireOtherVariables(t *testing.T) {
 	path := writeClientYAML(t, `client:
   name: ${SIGIL_TEST_UNSET_NAME}
   server_url: https://sigil.example.com:8443
@@ -100,28 +129,28 @@ certificates:
         path: /etc/ssl/api.p12
         password: ${SIGIL_TEST_UNSET_P12_PASSWORD}
 `)
-	got, err := ReadClientFields(path, "ipc_socket")
+	got, err := ReadClientField(path, "ipc_socket")
 	if err != nil {
-		t.Fatalf("ReadClientFields: %v", err)
+		t.Fatalf("ReadClientField: %v", err)
 	}
-	if want := []string{"/run/sigil/custom.sock"}; !slices.Equal(got, want) {
-		t.Errorf("ReadClientFields = %q, want %q", got, want)
+	if got != "/run/sigil/custom.sock" {
+		t.Errorf("ReadClientField = %q, want /run/sigil/custom.sock", got)
 	}
 	if _, err := LoadClient(path); err == nil || !strings.Contains(err.Error(), "SIGIL_TEST_UNSET_") {
 		t.Fatalf("LoadClient should still require the other variables, got %v", err)
 	}
 }
 
-func TestReadClientFieldsRejectsUnsetVariable(t *testing.T) {
-	for _, tt := range []struct{ field, yaml string }{
-		{"client.name", "client:\n  name: ${SIGIL_TEST_UNSET}\n  server_url: https://sigil.example.com\n"},
-		{"client.server_url", "client:\n  name: web-1\n  server_url: ${SIGIL_TEST_UNSET}\n"},
-		{"client.ipc_socket", validClientYAML + "  ipc_socket: ${SIGIL_TEST_UNSET}\n"},
+func TestReadClientFieldRejectsUnsetVariable(t *testing.T) {
+	for _, tt := range []struct{ key, yaml string }{
+		{"name", "client:\n  name: ${SIGIL_TEST_UNSET}\n  server_url: https://sigil.example.com\n"},
+		{"server_url", "client:\n  name: web-1\n  server_url: ${SIGIL_TEST_UNSET}\n"},
+		{"ipc_socket", validClientYAML + "  ipc_socket: ${SIGIL_TEST_UNSET}\n"},
 	} {
-		t.Run(tt.field, func(t *testing.T) {
-			_, err := ReadClientFields(writeClientYAML(t, tt.yaml), "name", "server_url", "ipc_socket")
-			if err == nil || !strings.Contains(err.Error(), tt.field) || !strings.Contains(err.Error(), "SIGIL_TEST_UNSET") {
-				t.Fatalf("ReadClientFields error = %v, want one about SIGIL_TEST_UNSET in %s", err, tt.field)
+		t.Run(tt.key, func(t *testing.T) {
+			_, err := ReadClientField(writeClientYAML(t, tt.yaml), tt.key)
+			if err == nil || !strings.Contains(err.Error(), "client."+tt.key) || !strings.Contains(err.Error(), "SIGIL_TEST_UNSET") {
+				t.Fatalf("ReadClientField error = %v, want one about SIGIL_TEST_UNSET in client.%s", err, tt.key)
 			}
 		})
 	}

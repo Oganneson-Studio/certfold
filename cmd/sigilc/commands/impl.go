@@ -251,8 +251,8 @@ func clientIPCSocket(cmd *cobra.Command) string {
 	}
 	// Locating the daemon must not require the variables client.yaml takes
 	// from the service's environment.
-	if socket, err := config.ReadClientFields(clientConfigPath(cmd), "ipc_socket"); err == nil && socket[0] != "" {
-		return socket[0]
+	if socket, err := config.ReadClientField(clientConfigPath(cmd), "ipc_socket"); err == nil && socket != "" {
+		return socket
 	}
 	return ipc.DefaultClientSocket()
 }
@@ -272,17 +272,21 @@ func ensureEnrollmentConfig(cfgPath, tokenName, serverURL string) (name string, 
 	if err := securefile.CheckDirectory(filepath.Dir(cfgPath)); err != nil {
 		return "", false, fmt.Errorf("configuration directory: %w", err)
 	}
-	cfg, err := config.ReadClientFields(cfgPath, "name", "server_url")
+	name, err = config.ReadClientField(cfgPath, "name")
 	if err == nil {
-		if cfg[0] != tokenName {
+		if name != tokenName {
 			return "", false, fmt.Errorf("client name %q in %s does not match token name %q; to enroll as %q, remove %s and try again",
-				cfg[0], cfgPath, tokenName, tokenName, cfgPath)
+				name, cfgPath, tokenName, tokenName, cfgPath)
 		}
-		if cfg[1] != serverURL {
+		url, err := config.ReadClientField(cfgPath, "server_url")
+		if err != nil {
+			return "", false, fmt.Errorf("load config: %w", err)
+		}
+		if url != serverURL {
 			return "", false, fmt.Errorf("server URL %q in %s does not match token server URL %q; to enroll with %s, remove %s and try again",
-				cfg[1], cfgPath, serverURL, serverURL, cfgPath)
+				url, cfgPath, serverURL, serverURL, cfgPath)
 		}
-		return cfg[0], false, nil
+		return name, false, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return "", false, fmt.Errorf("load config: %w", err)
