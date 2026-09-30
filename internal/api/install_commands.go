@@ -12,8 +12,14 @@ import "fmt"
 // offers, which older Windows versions leave out. Where the setting is
 // SystemDefault, this leaves only TLS 1.2, so the server must accept it.
 func InstallCommands(serverURL, token string) (sh, ps1 string) {
-	sh = fmt.Sprintf("curl -fsSL '%s/install.sh' | sudo sh -s -- --token '%s'", serverURL, token)
+	return installCommands(serverURL, " -s -- --token '"+token+"'", " -Token '"+token+"'")
+}
+
+// installCommands returns the commands of InstallCommands that pass the
+// install scripts shArgs and ps1Args, each empty or starting with a space.
+func installCommands(serverURL, shArgs, ps1Args string) (sh, ps1 string) {
+	sh = fmt.Sprintf("curl -fsSL '%s/install.sh' | sudo sh%s", serverURL, shArgs)
 	ps1 = fmt.Sprintf("[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; "+
-		"& ([scriptblock]::Create((irm '%s/install.ps1'))) -Token '%s'", serverURL, token)
+		"& ([scriptblock]::Create((irm '%s/install.ps1')))%s", serverURL, ps1Args)
 	return sh, ps1
 }

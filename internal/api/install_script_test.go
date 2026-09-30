@@ -102,12 +102,99 @@ func TestInstallPs1Script(t *testing.T) {
 	}
 }
 
+// TestInstallShUsage checks the commands that the comment of install.sh
+// gives: with a token, as sigils token create prints it; asking for the
+// token; and to upgrade. It names --replace, which the token for a reinstall
+// needs, as does the usage the script prints.
 func TestInstallShUsage(t *testing.T) {
 	script := getInstallScript(t, "/install.sh").Body.String()
-	usage, _ := InstallCommands(installTestURL, "<TOKEN>")
-	if !strings.Contains(script, "\n# Usage: "+usage+"\n") {
-		t.Errorf("script lacks the usage %q:\n%s", usage, script)
+	withToken, _ := InstallCommands(installTestURL, "<TOKEN>")
+	for _, want := range []string{
+		"\n#   " + withToken + "\n",
+		"\n#   curl -fsSL '" + installTestURL + "/install.sh' | sudo sh\n",
+		"\n#   curl -fsSL '" + installTestURL + "/install.sh' | sudo sh -s -- --upgrade\n",
+		"\n#   sigils token create --name <name> --replace\n",
+		`echo "client, create the token with: sigils token create --name <name> --replace" >&2`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("script lacks %q:\n%s", want, script)
+		}
 	}
+}
+
+// inOrder checks that script holds each of parts after the one before it.
+func inOrder(t *testing.T, script string, parts ...string) {
+	t.Helper()
+	rest := script
+	for i, part := range parts {
+		at := strings.Index(rest, part)
+		if at < 0 {
+			if i == 0 {
+				t.Errorf("script lacks %q:\n%s", part, script)
+			} else {
+				t.Errorf("script lacks %q after %q:\n%s", part, parts[i-1], script)
+			}
+			return
+		}
+		// The next part may begin with the newline that ends this one.
+		rest = rest[at+1:]
+	}
+}
+
+// TestInstallShKeepsTokenOffCommandLines checks that install.sh hands the
+// token to sigilc through its environment, and asks for it on the terminal,
+// without echo, when --token does not give it: the script runs from a pipe,
+// which is its standard input. The EXIT trap that restores echo is set before
+// echo goes off, and the trap for signals makes them run it.
+func TestInstallShKeepsTokenOffCommandLines(t *testing.T) {
+	script := getInstallScript(t, "/install.sh").Body.String()
+	if !strings.Contains(script, "\n  SIGILC_TOKEN=\"$TOKEN\" \"$DEST\" enroll\n") {
+		t.Errorf("script does not pass the token to sigilc enroll as SIGILC_TOKEN:\n%s", script)
+	}
+	if strings.Contains(script, "enroll --token") {
+		t.Errorf("script passes the token to sigilc as an argument:\n%s", script)
+	}
+	inOrder(t, script,
+		"\ntrap 'exit 1' HUP INT TERM\n",
+		"\n  if ! (: </dev/tty) 2>/dev/null; then\n",
+		"\n  trap 'stty echo </dev/tty' EXIT\n",
+		"\n  stty -echo </dev/tty\n",
+		"\n  read -r TOKEN </dev/tty || :\n",
+		"\n  stty echo </dev/tty\n",
+		"\n  if [ -z \"$TOKEN\" ]; then usage; fi\n",
+		// All of it before anything changes.
+		"\nTMP=$(mktemp ",
+	)
+}
+
+// TestInstallShReplacesSigilc checks the steps of install.sh: the download
+// goes to a file beside sigilc, which runs once before anything changes, and
+// which one rename puts in place, so an interrupted download leaves the
+// sigilc there as it was. On a host with the service, the service stops
+// before the rename, and is uninstalled after the new enrollment and before
+// it is installed again. --upgrade skips the enrollment and needs the
+// service.
+func TestInstallShReplacesSigilc(t *testing.T) {
+	script := getInstallScript(t, "/install.sh").Body.String()
+	if strings.Contains(script, `-o "$DEST"`) {
+		t.Errorf("script downloads over sigilc:\n%s", script)
+	}
+	inOrder(t, script,
+		"\n    --upgrade) UPGRADE=1; shift ;;\n",
+		"\nTMP=$(mktemp \"$DEST.XXXXXX\")\ntrap 'rm -f \"$TMP\"' EXIT\n",
+		` -o "$TMP"`,
+		"\n\"$TMP\" version\n",
+		"\nif \"$TMP\" service status >/dev/null 2>&1; then INSTALLED=1; fi\n",
+		"\nif [ -n \"$UPGRADE\" ] && [ -z \"$INSTALLED\" ]; then\n",
+		"\n  \"$TMP\" service stop\n",
+		"\nmv -f \"$TMP\" \"$DEST\"\n",
+		"\nif [ -z \"$UPGRADE\" ]; then\n",
+		"\" enroll\n",
+		"\n    \"$DEST\" service uninstall\n",
+		"\n  \"$DEST\" service install\n",
+		"\nfi\n",
+		"\n\"$DEST\" service start\n",
+	)
 }
 
 // TestInstallShArchitectures checks that install.sh names each machine that
