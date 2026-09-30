@@ -1,0 +1,67 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+# -count=1 everywhere: setup-go restores the test cache along with the
+# module cache.
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Vet e2e tests
+        run: go vet -tags e2e ./test/e2e
+
+      - name: Test
+        run: go test ./... -count=1
+
+      - name: Test with the race detector
+        run: go test -race -count=1 ./...
+
+      # Pinned: an unpinned govulncheck could change what it reports, or
+      # stop running on this Go, without a change in this repository. The
+      # vulnerability database it reads is always the current one.
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The IPC tests skip, not fail, in a shell that is not elevated.
+      - name: Require an elevated shell
+        shell: pwsh
+        run: |
+          $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+          if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'the shell is not elevated: the IPC tests would skip'
+          }
+
+      - name: Test
+        run: go test ./... -count=1
