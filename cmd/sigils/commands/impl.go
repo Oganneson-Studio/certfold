@@ -250,12 +250,6 @@ func runTokenCreate(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("create token: %w", err)
 	}
-	// A daemon started before this binary was installed answers the same
-	// route without the token ID, or with a bare token ID that can never be
-	// redeemed. It did not refuse the name of an enrolled client either.
-	if created.Token == "" || created.TokenID == "" || created.ServerURL == "" {
-		return fmt.Errorf("create token: the running sigils daemon returned no usable token; it is older than this command, so restart the sigils service and try again")
-	}
 	// Without public_url the URL is derived from server.listen and may not be
 	// reachable by clients.
 	if !created.PublicURLConfigured {

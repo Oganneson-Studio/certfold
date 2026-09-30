@@ -212,8 +212,13 @@ func (c *createdToken) content(width int) string {
 	lines := []string{
 		shared.TitleStyle.Render("New enrollment token for " + strconv.Quote(c.name)),
 		"",
-		text.Render(copyHint),
+		"Token ID  " + c.token.TokenID,
+		"Expires   " + formatTime(c.token.ExpiresAt, timeLayout, "-"),
 	}
+	if c.token.Revoked > 0 {
+		lines = append(lines, fmt.Sprintf("Revoked   %d unused token(s) for %s", c.token.Revoked, strconv.Quote(c.name)))
+	}
+	lines = append(lines, "", text.Render(copyHint))
 	if !c.token.PublicURLConfigured {
 		warning := "server.public_url is not set, so the commands use " + c.token.ServerURL +
 			", which comes from server.listen and may be unreachable for clients."

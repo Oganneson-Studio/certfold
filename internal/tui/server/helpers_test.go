@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -214,9 +215,21 @@ func (f *fakeBackend) CreateToken(_ context.Context, req ipc.CreateTokenRequest)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	now := time.Now()
-	token := &ipc.TokenInfo{TokenID: fmt.Sprintf("t%d", len(f.tokens)+1), Name: req.Name, ExpiresAt: now.Add(req.TTL), CreatedAt: now}
+	// A replacement revokes the unused tokens of the name, as the daemon's.
+	revoked := 0
+	if req.Replace {
+		f.tokens = slices.DeleteFunc(f.tokens, func(t *ipc.TokenInfo) bool {
+			unused := t.Name == req.Name && t.UsedAt.IsZero()
+			if unused {
+				revoked++
+			}
+			return unused
+		})
+	}
+	token := &ipc.TokenInfo{TokenID: fmt.Sprintf("t%d", len(f.tokens)+1+revoked), Name: req.Name, ExpiresAt: now.Add(req.TTL), CreatedAt: now}
 	f.tokens = append([]*ipc.TokenInfo{token}, f.tokens...)
-	return &ipc.CreateTokenResponse{Token: testToken, ServerURL: testServerURL, PublicURLConfigured: true}, nil
+	return &ipc.CreateTokenResponse{Token: testToken, TokenID: token.TokenID, ExpiresAt: token.ExpiresAt, Revoked: revoked,
+		ServerURL: testServerURL, PublicURLConfigured: true}, nil
 }
 
 // drive sends msgs to m, then the messages of the commands Update returns,

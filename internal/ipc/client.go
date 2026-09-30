@@ -3,6 +3,7 @@ package ipc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -159,6 +160,12 @@ func (c *Client) CreateToken(ctx context.Context, req CreateTokenRequest) (*Crea
 	var out CreateTokenResponse
 	if err := c.do(ctx, http.MethodPost, "/ipc/v1/tokens", req, &out); err != nil {
 		return nil, err
+	}
+	// A daemon started before its binary was upgraded answers without the
+	// token ID, or with a bare token ID that can never be redeemed. It does
+	// not refuse the names that need a replacement either.
+	if out.Token == "" || out.TokenID == "" || out.ServerURL == "" {
+		return nil, errors.New("the running sigils daemon returned no usable token; it is older than this program, so restart the sigils service and try again")
 	}
 	return &out, nil
 }

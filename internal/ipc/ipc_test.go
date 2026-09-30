@@ -396,6 +396,9 @@ func TestCreateToken(t *testing.T) {
 	var got CreateTokenRequest
 	want := CreateTokenResponse{
 		Token:               "opaque-token",
+		TokenID:             "0123456789abcdef0123456789abcdef",
+		ExpiresAt:           time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC),
+		Revoked:             1,
 		ServerURL:           "https://sigil.example.com",
 		PublicURLConfigured: true,
 	}
@@ -436,6 +439,28 @@ func TestCreateTokenReportsDaemonRejection(t *testing.T) {
 	}
 	if errors.Is(err, ErrReplaceRequired) {
 		t.Errorf("CreateToken error %v is ErrReplaceRequired", err)
+	}
+}
+
+// A daemon started before its binary was upgraded answers with a bare token
+// ID, or, before --replace, without the token ID; that one creates tokens for
+// names that need a replacement without asking. Neither answer is a token,
+// for the CLI or the TUI.
+func TestCreateTokenRefusesAnswerOfOutdatedDaemon(t *testing.T) {
+	for _, answer := range []string{
+		`{"token":"0123456789abcdef"}`,
+		`{"token":"token","server_url":"https://sigil.example.com","public_url_configured":true}`,
+	} {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, answer)
+		}))
+		created, err := newTestClient(ts).CreateToken(context.Background(), CreateTokenRequest{Name: "web-1", TTL: time.Hour})
+		ts.Close()
+		if err == nil || !strings.Contains(err.Error(), "restart the sigils service") {
+			t.Errorf("answer %s: token %+v, error %v; want a request to restart the daemon", answer, created, err)
+		}
 	}
 }
 
