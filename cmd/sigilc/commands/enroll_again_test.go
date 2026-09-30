@@ -108,7 +108,7 @@ func TestEnrollSaysTheTokenIsSpentWhenSavingFails(t *testing.T) {
 		}
 	}
 	_, err := runSigilcErr(t, "--config", cfgPath, "enroll", "--token", srv.token(t, "web-1"))
-	for _, want := range []string{"save identity: ", "the server took the token", "sigils token create --name web-1 --replace"} {
+	for _, want := range []string{"save identity: ", "the server took the token, so any earlier identity of \"web-1\" no longer works", "sigils token create --name web-1 --replace"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("enroll error = %v, want one that says %q", err, want)
 		}
@@ -131,7 +131,7 @@ func TestEnrollSaysTheTokenIsSpentWhenTheAnswerIsBad(t *testing.T) {
 			}))
 			t.Cleanup(srv.Close)
 			_, err := runSigilcErr(t, "--config", privateConfigPath(t), "enroll", "--token", srv.token(t, "web-1"))
-			for _, want := range []string{"enroll: ", "the server took the token", "sigils token create --name web-1 --replace"} {
+			for _, want := range []string{"enroll: ", "the server took the token, so any earlier identity of \"web-1\" no longer works", "sigils token create --name web-1 --replace"} {
 				if err == nil || !strings.Contains(err.Error(), want) {
 					t.Errorf("enroll error = %v, want one that says %q", err, want)
 				}
