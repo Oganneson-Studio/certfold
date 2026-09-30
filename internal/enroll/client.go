@@ -2,6 +2,7 @@ package enroll
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -13,7 +14,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -68,35 +68,30 @@ func ServerRoots(caCertPEM string) (*x509.CertPool, error) {
 	return roots, nil
 }
 
-// PostEnroll sends the enroll request to the server and returns the response.
-// tokenStr is the opaque base64url token from Create. csrDER is the raw CSR.
+// PostEnroll sends the enroll request for tokenStr, which DecodeToken read as
+// token, to the server the token names, and returns the client certificate,
+// in PEM, that the server issued for csrDER, the raw CSR.
 //
 // The token carries the expected server CA certificate. TLS is verified against
 // that pinned CA and the system roots before the bearer token or CSR is sent.
-func PostEnroll(serverURL, tokenStr string, csrDER []byte) (*proto.EnrollResponse, error) {
-	payload, err := DecodeToken(tokenStr)
+// The client certificate is checked as sigilc checks a renewed identity: it
+// must be for the token's client name, chain to the token's CA for client
+// authentication, and hold the key of the CSR. The identity to save is the
+// token's CA and this certificate.
+func PostEnroll(token *Token, tokenStr string, csrDER []byte) (string, error) {
+	csr, err := x509.ParseCertificateRequest(csrDER)
 	if err != nil {
-		return nil, fmt.Errorf("decode token: %w", err)
+		return "", fmt.Errorf("parse CSR: %w", err)
 	}
-	if payload.ServerURL != serverURL {
-		return nil, fmt.Errorf("token server URL %q does not match %q", payload.ServerURL, serverURL)
-	}
-	u, err := url.ParseRequestURI(serverURL)
+	roots, err := ServerRoots(token.CACert)
 	if err != nil {
-		return nil, fmt.Errorf("invalid server URL: %w", err)
-	}
-	if u.Scheme != "https" || u.Host == "" {
-		return nil, fmt.Errorf("invalid server URL %q", serverURL)
-	}
-	roots, err := ServerRoots(payload.CACert)
-	if err != nil {
-		return nil, fmt.Errorf("token does not contain a valid server CA certificate")
+		return "", fmt.Errorf("token does not contain a valid server CA certificate")
 	}
 
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
 	reqBody, err := json.Marshal(proto.EnrollRequest{Token: tokenStr, CSR: string(csrPEM)})
 	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
 	enrollClient := &http.Client{
@@ -112,22 +107,55 @@ func PostEnroll(serverURL, tokenStr string, csrDER []byte) (*proto.EnrollRespons
 			},
 		},
 	}
-	resp, err := enrollClient.Post(serverURL+"/v1/enroll", "application/json", bytes.NewReader(reqBody)) //nolint:noctx
+	resp, err := enrollClient.Post(token.ServerURL+"/v1/enroll", "application/json", bytes.NewReader(reqBody)) //nolint:noctx
 	if err != nil {
-		return nil, fmt.Errorf("http post: %w", err)
+		return "", fmt.Errorf("http post: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		// The server says why, such as that the token was already used. The
 		// text comes from the network: sigilc makes the error one line.
 		reason, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
-		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(reason)))
+		return "", fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(reason)))
 	}
 	var out proto.EnrollResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+		return "", fmt.Errorf("decode response: %w", err)
 	}
-	return &out, nil
+	return checkIssued(token, out.ClientCert, csr)
+}
+
+// checkIssued checks the client certificate certPEM that the server issued at
+// enrollment, and returns it re-encoded, so that what sigilc saves is what
+// was checked. Its errors quote the network.
+func checkIssued(token *Token, certPEM string, csr *x509.CertificateRequest) (string, error) {
+	block, _ := pem.Decode([]byte(certPEM))
+	if block == nil || block.Type != "CERTIFICATE" {
+		return "", fmt.Errorf("response does not contain a client certificate")
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("parse client certificate: %w", err)
+	}
+	if leaf.Subject.CommonName != token.Name {
+		return "", fmt.Errorf("client certificate name %q does not match client %q", leaf.Subject.CommonName, token.Name)
+	}
+	// Only the token's CA: the one in the system roots that may have signed
+	// the server's TLS certificate does not sign clients.
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM([]byte(token.CACert)) {
+		return "", fmt.Errorf("token does not contain a valid server CA certificate")
+	}
+	if _, err := leaf.Verify(x509.VerifyOptions{
+		Roots:     roots,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}); err != nil {
+		return "", fmt.Errorf("verify client certificate: %w", err)
+	}
+	if key, ok := leaf.PublicKey.(interface{ Equal(crypto.PublicKey) bool }); !ok || !key.Equal(csr.PublicKey) {
+		return "", fmt.Errorf("client certificate is not for the key of the request")
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})), nil
 }
 
 // identityPatch is the subset of client.yaml we update after enroll.

@@ -61,10 +61,54 @@ func (authority *testCA) certPEM() string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: authority.cert.Raw}))
 }
 
-// startEnrollServer serves successful enrollments over a certificate that
-// issuer signs for the httptest listener address. reached reports whether a
+// clientCert returns, in PEM, a client certificate for name and pub that
+// authority issues as the mini-CA does, after edit, unless nil, changes the
+// template.
+func (authority *testCA) clientCert(name string, pub any, edit func(*x509.Certificate)) (string, error) {
+	now := time.Now()
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(4),
+		Subject:      pkix.Name{CommonName: name},
+		NotBefore:    now.Add(-time.Minute),
+		NotAfter:     now.Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	if edit != nil {
+		edit(template)
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, authority.cert, pub, authority.key)
+	if err != nil {
+		return "", err
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), nil
+}
+
+// issuedBy answers an enrollment as sigils does, with a certificate for web-1
+// and the key of the request that authority issues, after edit, unless nil,
+// changes it.
+func issuedBy(authority *testCA, edit func(*x509.Certificate)) func(*x509.CertificateRequest) (string, error) {
+	return func(csr *x509.CertificateRequest) (string, error) {
+		return authority.clientCert("web-1", csr.PublicKey, edit)
+	}
+}
+
+// postEnroll runs PostEnroll as sigilc enroll does, on the token that
+// DecodeToken reads from tokenStr.
+func postEnroll(t *testing.T, tokenStr string, csrDER []byte) (string, error) {
+	t.Helper()
+	token, err := DecodeToken(tokenStr)
+	if err != nil {
+		t.Fatalf("decode token: %v", err)
+	}
+	return PostEnroll(token, tokenStr, csrDER)
+}
+
+// startEnrollServer serves enrollments over a certificate that issuer signs
+// for the httptest listener address, and answers each with the client
+// certificate that issue returns for its CSR. reached reports whether a
 // request got past the TLS handshake.
-func startEnrollServer(t *testing.T, issuer *testCA) (ts *httptest.Server, reached *atomic.Bool) {
+func startEnrollServer(t *testing.T, issuer *testCA, issue func(*x509.CertificateRequest) (string, error)) (ts *httptest.Server, reached *atomic.Bool) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -86,9 +130,29 @@ func startEnrollServer(t *testing.T, issuer *testCA) (ts *httptest.Server, reach
 	}
 
 	reached = new(atomic.Bool)
-	ts = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	ts = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reached.Store(true)
-		_ = json.NewEncoder(w).Encode(proto.EnrollResponse{CACert: "ca-pem", ClientCert: "client-pem"})
+		var req proto.EnrollRequest
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/enroll" || json.NewDecoder(r.Body).Decode(&req) != nil {
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		block, _ := pem.Decode([]byte(req.CSR))
+		if block == nil {
+			http.Error(w, "no CSR", http.StatusBadRequest)
+			return
+		}
+		csr, err := x509.ParseCertificateRequest(block.Bytes)
+		if err != nil {
+			http.Error(w, "bad CSR", http.StatusBadRequest)
+			return
+		}
+		certPEM, err := issue(csr)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(proto.EnrollResponse{ClientCert: certPEM})
 	}))
 	ts.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
 	ts.StartTLS()
@@ -115,15 +179,73 @@ func withSystemRoots(t *testing.T, roots ...*x509.Certificate) {
 func TestPostEnrollTrustsSystemRoots(t *testing.T) {
 	publicCA, miniCA := newTestCA(t), newTestCA(t)
 	withSystemRoots(t, publicCA.cert)
-	ts, _ := startEnrollServer(t, publicCA)
+	ts, _ := startEnrollServer(t, publicCA, issuedBy(miniCA, nil))
 
 	token := encodeTestToken(t, Token{ServerURL: ts.URL, Name: "web-1", CACert: miniCA.certPEM()})
 	kc, err := GenerateKeyAndCSR("web-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := PostEnroll(ts.URL, token, kc.CSRDER); err != nil {
+	if _, err := postEnroll(t, token, kc.CSRDER); err != nil {
 		t.Fatalf("PostEnroll: %v", err)
+	}
+}
+
+// TestPostEnrollChecksTheIssuedCertificate checks the certificate that the
+// server answers as sigilc checks a renewed identity: it must be for the
+// token's client name, chain to the token's CA for client authentication,
+// and hold the key of the request. The CA of the server's TLS certificate,
+// which the system roots trust, does not count.
+func TestPostEnrollChecksTheIssuedCertificate(t *testing.T) {
+	publicCA, miniCA := newTestCA(t), newTestCA(t)
+	withSystemRoots(t, publicCA.cert)
+	otherKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tt := range []struct {
+		name  string
+		issue func(*x509.CertificateRequest) (string, error)
+		ok    bool
+	}{
+		{name: "as asked", issue: issuedBy(miniCA, nil), ok: true},
+		{name: "for another client", issue: issuedBy(miniCA, func(c *x509.Certificate) { c.Subject.CommonName = "web-2" })},
+		{name: "by the CA of the server certificate", issue: issuedBy(publicCA, nil)},
+		{name: "for server authentication", issue: issuedBy(miniCA, func(c *x509.Certificate) {
+			c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
+		})},
+		{name: "for another key", issue: func(*x509.CertificateRequest) (string, error) {
+			return miniCA.clientCert("web-1", &otherKey.PublicKey, nil)
+		}},
+		{name: "that is not one", issue: func(*x509.CertificateRequest) (string, error) { return "client-pem", nil }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ts, _ := startEnrollServer(t, publicCA, tt.issue)
+			token := encodeTestToken(t, Token{ServerURL: ts.URL, Name: "web-1", CACert: miniCA.certPEM()})
+			kc, err := GenerateKeyAndCSR("web-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			certPEM, err := postEnroll(t, token, kc.CSRDER)
+			if !tt.ok {
+				if err == nil {
+					t.Fatal("PostEnroll accepted the certificate")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("PostEnroll: %v", err)
+			}
+			block, _ := pem.Decode([]byte(certPEM))
+			if block == nil {
+				t.Fatalf("PostEnroll returned no certificate: %q", certPEM)
+			}
+			leaf, err := x509.ParseCertificate(block.Bytes)
+			if err != nil || leaf.Subject.CommonName != "web-1" {
+				t.Fatalf("PostEnroll returned %v (parse error %v), want the certificate for web-1", leaf, err)
+			}
+		})
 	}
 }
 
@@ -132,14 +254,14 @@ func TestPostEnrollTrustsSystemRoots(t *testing.T) {
 func TestPostEnrollRejectsUntrustedServer(t *testing.T) {
 	publicCA, miniCA, unrelatedCA := newTestCA(t), newTestCA(t), newTestCA(t)
 	withSystemRoots(t, publicCA.cert)
-	ts, reached := startEnrollServer(t, unrelatedCA)
+	ts, reached := startEnrollServer(t, unrelatedCA, issuedBy(miniCA, nil))
 
 	token := encodeTestToken(t, Token{ServerURL: ts.URL, Name: "web-1", CACert: miniCA.certPEM()})
 	kc, err := GenerateKeyAndCSR("web-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = PostEnroll(ts.URL, token, kc.CSRDER)
+	_, err = postEnroll(t, token, kc.CSRDER)
 	var unknownAuthority x509.UnknownAuthorityError
 	if !errors.As(err, &unknownAuthority) {
 		t.Fatalf("PostEnroll error = %v, want an unknown authority error", err)
@@ -196,7 +318,7 @@ func TestPostEnrollDoesNotFollowRedirects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := PostEnroll(ts.URL, token, kc.CSRDER); err == nil {
+	if _, err := postEnroll(t, token, kc.CSRDER); err == nil {
 		t.Fatal("PostEnroll succeeded through a redirect")
 	}
 	if leaked.Load() {

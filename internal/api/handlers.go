@@ -255,10 +255,7 @@ func (h *handlers) enroll(w http.ResponseWriter, r *http.Request) {
 	slog.Info("client enrolled", "client", name, "token", tokenID)
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	writeJSON(w, http.StatusOK, proto.EnrollResponse{
-		CACert:     string(h.deps.MiniCA.CertPEM()),
-		ClientCert: string(certPEM),
-	})
+	writeJSON(w, http.StatusOK, proto.EnrollResponse{ClientCert: string(certPEM)})
 }
 
 // ---------------------------------------------------------------------------

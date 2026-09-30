@@ -4,11 +4,13 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,8 +23,10 @@ import (
 )
 
 // newSigningEnrollServer enrolls every request, as sigils does a valid token:
-// it signs the CSR with a CA of its own and answers that CA and the
-// certificate. It reuses refusingEnrollServer for its token method.
+// it signs the CSR with a CA of its own and answers the certificate. The CA
+// is its TLS certificate as well, which the token method of
+// refusingEnrollServer pins, so that the token carries the CA that signs the
+// client, as a token of sigils does.
 func newSigningEnrollServer(t *testing.T) *refusingEnrollServer {
 	t.Helper()
 	now := time.Now()
@@ -33,9 +37,10 @@ func newSigningEnrollServer(t *testing.T) *refusingEnrollServer {
 	caTemplate := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
 		Subject:               pkix.Name{CommonName: "test mini-CA"},
+		IPAddresses:           []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
 		NotBefore:             now.Add(-time.Hour),
 		NotAfter:              now.Add(24 * time.Hour),
-		KeyUsage:              x509.KeyUsageCertSign,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 	}
@@ -47,10 +52,9 @@ func newSigningEnrollServer(t *testing.T) *refusingEnrollServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	caPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}))
 
 	s := &refusingEnrollServer{}
-	s.Server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	s.Server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.requests.Add(1)
 		var req proto.EnrollRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -82,10 +86,11 @@ func newSigningEnrollServer(t *testing.T) *refusingEnrollServer {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(proto.EnrollResponse{
-			CACert:     caPEM,
 			ClientCert: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
 		})
 	}))
+	s.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{caDER}, PrivateKey: caKey}}}
+	s.StartTLS()
 	t.Cleanup(s.Close)
 	return s
 }

@@ -350,8 +350,8 @@ func TestEnroll_Success(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.CACert == "" || resp.ClientCert == "" {
-		t.Error("response missing CA or client cert")
+	if resp.ClientCert == "" {
+		t.Error("response missing client cert")
 	}
 }
 
@@ -440,9 +440,6 @@ func TestEnroll_FullPathThroughEnrollServer(t *testing.T) {
 	var resp proto.EnrollResponse
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
-	}
-	if resp.CACert == "" {
-		t.Error("response missing ca_cert")
 	}
 	if resp.ClientCert == "" {
 		t.Error("response missing client_cert")

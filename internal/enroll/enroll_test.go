@@ -19,7 +19,6 @@ import (
 
 	"github.com/Oganneson-Studio/sigil/internal/ca"
 	"github.com/Oganneson-Studio/sigil/internal/store"
-	"github.com/Oganneson-Studio/sigil/pkg/proto"
 )
 
 func mustOpenDB(t *testing.T) *store.DB {
@@ -369,7 +368,7 @@ func TestPostEnrollSaysWhyTheServerRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = PostEnroll(ts.URL, token, kc.CSRDER)
+	_, err = postEnroll(t, token, kc.CSRDER)
 	if want := "server returned 401: enrollment token was already used"; err == nil || err.Error() != want {
 		t.Fatalf("PostEnroll error = %v, want %q", err, want)
 	}
@@ -443,29 +442,6 @@ func TestGenerateKeyAndCSR(t *testing.T) {
 	}
 	if csr.Subject.CommonName != "web-1" {
 		t.Errorf("CN: got %q, want %q", csr.Subject.CommonName, "web-1")
-	}
-}
-
-func TestPostEnroll(t *testing.T) {
-	resp := proto.EnrollResponse{CACert: "ca-pem", ClientCert: "client-pem"}
-	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/enroll" || r.Method != http.MethodPost {
-			http.Error(w, "unexpected", http.StatusBadRequest)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer ts.Close()
-
-	token := encodeTestToken(t, Token{ServerURL: ts.URL, Name: "web-1", CACert: testServerCertPEM(t, ts)})
-	kc, _ := GenerateKeyAndCSR("web-1")
-	got, err := PostEnroll(ts.URL, token, kc.CSRDER)
-	if err != nil {
-		t.Fatalf("PostEnroll: %v", err)
-	}
-	if got.CACert != "ca-pem" || got.ClientCert != "client-pem" {
-		t.Errorf("unexpected response: %+v", got)
 	}
 }
 

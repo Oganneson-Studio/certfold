@@ -14,9 +14,9 @@ type EnrollRequest struct {
 	CSR   string `json:"csr"` // PEM-encoded PKCS#10 CSR
 }
 
-// EnrollResponse is returned on successful POST /v1/enroll.
+// EnrollResponse is returned on successful POST /v1/enroll. The CA that
+// signed ClientCert is the one in the token, which sigilc saves.
 type EnrollResponse struct {
-	CACert     string `json:"ca_cert"`     // PEM
 	ClientCert string `json:"client_cert"` // PEM
 }
 

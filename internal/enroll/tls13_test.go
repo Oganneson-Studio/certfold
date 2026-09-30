@@ -26,7 +26,7 @@ func TestPostEnrollRequiresTLS13(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = PostEnroll(ts.URL, token, kc.CSRDER)
+	_, err = postEnroll(t, token, kc.CSRDER)
 	if err == nil || !strings.Contains(err.Error(), "protocol version") {
 		t.Fatalf("PostEnroll to a TLS 1.2 server: error = %v, want a protocol version error", err)
 	}
