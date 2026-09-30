@@ -9,10 +9,12 @@ import (
 
 // TestSystemdUnitRestartsAfterFiveSeconds guards the unit that replaces the
 // one kardianos writes by default, which waits 120 seconds before restarting
-// a failed daemon.
+// a failed daemon. It also sends the stop's SIGTERM to the daemon alone, so
+// that the exec DNS programs of the issuances sigils waits for at shutdown
+// are not killed before it gives up on them.
 func TestSystemdUnitRestartsAfterFiveSeconds(t *testing.T) {
 	lines := strings.Split(systemdUnit, "\n")
-	for _, want := range []string{"Restart=on-failure", "RestartSec=5"} {
+	for _, want := range []string{"Restart=on-failure", "RestartSec=5", "KillMode=mixed"} {
 		if !slices.Contains(lines, want) {
 			t.Errorf("unit lacks the line %q:\n%s", want, systemdUnit)
 		}
