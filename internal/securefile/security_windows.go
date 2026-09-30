@@ -18,11 +18,12 @@ import (
 
 // CreateTemp creates a new file in dir, named by replacing the last "*" in
 // pattern with a random string as os.CreateTemp does, and opens it for reading
-// and writing. The file is created with a protected DACL that grants full
-// access to the trustees, which include the current user, and read access to
-// readers, and inherits nothing from dir. Windows checks access only when a
-// handle is opened, so tightening the DACL after creation would let another
-// account open the empty file first and read what is written to it later.
+// and writing. The file is created with the security of privateDescriptor,
+// which grants full access to the trustees, which include the current user,
+// and read access to readers, and inherits nothing from dir. Windows checks
+// access only when a handle is opened, so tightening the DACL after creation
+// would let another account open the empty file first and read what is
+// written to it later.
 func CreateTemp(dir, pattern string, readers ...*windows.SID) (*os.File, error) {
 	descriptor, err := privateDescriptor(false, readers...)
 	if err != nil {
@@ -57,10 +58,33 @@ func secureDirectory(path string) error {
 	return applyProtectedDACL(path, true)
 }
 
+// mkdirPrivate creates the directory path with the security of
+// privateDescriptor, so that it is private, and has the owner that the
+// checks require, from the moment it exists.
+func mkdirPrivate(path string) error {
+	descriptor, err := privateDescriptor(true)
+	if err != nil {
+		return err
+	}
+	attributes := windows.SecurityAttributes{SecurityDescriptor: descriptor}
+	attributes.Length = uint32(unsafe.Sizeof(attributes))
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	if err := windows.CreateDirectory(name, &attributes); err != nil {
+		return &os.PathError{Op: "mkdir", Path: path, Err: err}
+	}
+	return nil
+}
+
 func secureFile(path string) error {
 	return applyProtectedDACL(path, false)
 }
 
+// applyProtectedDACL gives the existing file or directory at path the DACL
+// of privateDescriptor. It keeps the owner: making Administrators the owner
+// of a directory another account created would hide who did from the checks.
 func applyProtectedDACL(path string, inherit bool) error {
 	descriptor, err := privateDescriptor(inherit)
 	if err != nil {
@@ -87,8 +111,15 @@ func applyProtectedDACL(path string, inherit bool) error {
 // privateDescriptor builds a protected DACL with full access for the trustees
 // and read access for readers. For a directory, inherit passes every entry on
 // to the files and directories created in it.
+//
+// In a process with Administrators enabled, it also makes Administrators the
+// owner, as ipc.Listen does for its pipe. The owner would otherwise be the
+// default owner of the process token, which is Administrators for an
+// elevated administrator but can be changed by what starts the process:
+// under Git Bash, MSYS makes it the user's own account, which the checks do
+// not trust in such a process.
 func privateDescriptor(inherit bool, readers ...*windows.SID) (*windows.SECURITY_DESCRIPTOR, error) {
-	full, err := trustees()
+	full, admin, err := trustees()
 	if err != nil {
 		return nil, err
 	}
@@ -97,6 +128,9 @@ func privateDescriptor(inherit bool, readers ...*windows.SID) (*windows.SECURITY
 		flags = "OICI"
 	}
 	sddl := "D:P"
+	if admin {
+		sddl = "O:BA" + sddl
+	}
 	for _, trustee := range full {
 		sddl += fmt.Sprintf("(A;%s;FA;;;%s)", flags, trustee.String())
 	}
@@ -116,29 +150,30 @@ func privateDescriptor(inherit bool, readers ...*windows.SID) (*windows.SECURITY
 // files through Administrators. An entry for their own account would give
 // the same access to their programs that run without elevation, and would
 // be an account that the services, which run as LocalSystem, do not trust
-// in the directories an administrator created when installing them.
-func trustees() ([]*windows.SID, error) {
+// in the directories an administrator created when installing them. admin
+// reports whether the process has Administrators enabled.
+func trustees() (sids []*windows.SID, admin bool, err error) {
 	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
 	if err != nil {
-		return nil, fmt.Errorf("build the SID of SYSTEM: %w", err)
+		return nil, false, fmt.Errorf("build the SID of SYSTEM: %w", err)
 	}
 	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
 	if err != nil {
-		return nil, fmt.Errorf("build the SID of Administrators: %w", err)
+		return nil, false, fmt.Errorf("build the SID of Administrators: %w", err)
 	}
 	// A null token checks the token of the calling thread.
-	elevated, err := windows.Token(0).IsMember(admins)
+	admin, err = windows.Token(0).IsMember(admins)
 	if err != nil {
-		return nil, fmt.Errorf("check membership of Administrators: %w", err)
+		return nil, false, fmt.Errorf("check membership of Administrators: %w", err)
 	}
-	if elevated {
-		return []*windows.SID{system, admins}, nil
+	if admin {
+		return []*windows.SID{system, admins}, true, nil
 	}
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
-		return nil, fmt.Errorf("get current user: %w", err)
+		return nil, false, fmt.Errorf("get current user: %w", err)
 	}
-	return []*windows.SID{system, admins, user.User.Sid}, nil
+	return []*windows.SID{system, admins, user.User.Sid}, false, nil
 }
 
 // writeAccess is the access to a directory that lets an account put files or
@@ -170,7 +205,7 @@ func checkAccess(path string, forbidden windows.ACCESS_MASK, what string) error 
 	if err != nil {
 		return fmt.Errorf("read the owner and DACL of %s: %w", path, err)
 	}
-	trusted, err := trustees()
+	trusted, _, err := trustees()
 	if err != nil {
 		return err
 	}

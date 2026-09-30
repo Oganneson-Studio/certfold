@@ -6,8 +6,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -18,7 +20,7 @@ import (
 // CheckPrivateDirectory any access by one, including access its files
 // inherit, since SQLite creates -wal and -shm in data_dir again and again.
 func TestCheckSecurity(t *testing.T) {
-	trusted, err := trustees()
+	trusted, _, err := trustees()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +171,7 @@ func TestCheckDirectoryReadsDirectory(t *testing.T) {
 	if err := EnsurePrivateDirectory(readable); err != nil {
 		t.Fatal(err)
 	}
-	trusted, err := trustees()
+	trusted, _, err := trustees()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,6 +194,82 @@ func TestCheckDirectoryReadsDirectory(t *testing.T) {
 	if err := CheckPrivateDirectory(missing); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("CheckPrivateDirectory of a missing directory: %v, want os.ErrNotExist", err)
 	}
+}
+
+// TestCreatedWithTrustedOwnerWhateverTheDefaultOwner covers a process whose
+// token makes the user's own account the owner of what it creates, as MSYS
+// does for the programs Git Bash starts. What securefile creates must still
+// have an owner that the checks trust, which in an elevated process the user
+// is not: the directories of EnsurePrivateDirectory and WriteFile, and the
+// files of CreateTemp.
+func TestCreatedWithTrustedOwnerWhateverTheDefaultOwner(t *testing.T) {
+	makeUserDefaultOwner(t)
+
+	dir := filepath.Join(t.TempDir(), "private")
+	if err := EnsurePrivateDirectory(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckPrivateDirectory(dir); err != nil {
+		t.Errorf("a directory EnsurePrivateDirectory created: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "etc", "client.yaml")
+	if err := WriteFile(path, []byte("private")); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckPrivateDirectory(filepath.Dir(path)); err != nil {
+		t.Errorf("a directory WriteFile created: %v", err)
+	}
+
+	tmp, err := CreateTemp(dir, ".sigil-private-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tmp.Close()
+	descriptor, err := windows.GetSecurityInfo(windows.Handle(tmp.Fd()), windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := descriptor.Owner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	trusted, _, err := trustees()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(trusted, owner.Equals) {
+		t.Errorf("a file CreateTemp created is owned by %s, which the checks do not trust", accountName(owner))
+	}
+}
+
+// makeUserDefaultOwner makes the user the default owner of the process token
+// until the test ends.
+func makeUserDefaultOwner(t *testing.T) {
+	t.Helper()
+	var token windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY|windows.TOKEN_ADJUST_DEFAULT, &token); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = token.Close() })
+	var size uint32
+	_ = windows.GetTokenInformation(token, windows.TokenOwner, nil, 0, &size)
+	previous := make([]byte, size)
+	if err := windows.GetTokenInformation(token, windows.TokenOwner, &previous[0], size, &size); err != nil {
+		t.Fatal(err)
+	}
+	user, err := token.GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := struct{ Owner *windows.SID }{user.User.Sid}
+	if err := windows.SetTokenInformation(token, windows.TokenOwner, (*byte)(unsafe.Pointer(&owner)), uint32(unsafe.Sizeof(owner))); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := windows.SetTokenInformation(token, windows.TokenOwner, &previous[0], uint32(len(previous))); err != nil {
+			t.Errorf("restore the default owner: %v", err)
+		}
+	})
 }
 
 func setDACL(t *testing.T, path, sddl string) {

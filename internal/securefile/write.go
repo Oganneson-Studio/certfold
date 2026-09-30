@@ -5,6 +5,7 @@ package securefile
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 )
@@ -15,9 +16,18 @@ func ProtectFile(path string) error {
 	return secureFile(path)
 }
 
-// EnsurePrivateDirectory creates path when needed and applies platform-native
-// private access controls. Existing directories are tightened as well.
+// EnsurePrivateDirectory creates path when needed, private from the moment it
+// exists: mode 0700 on Unix; on Windows a protected DACL for the trustees and,
+// in a process with Administrators enabled, Administrators as its owner. An
+// existing directory is tightened as well, but keeps its owner.
 func EnsurePrivateDirectory(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	if err := mkdirPrivate(path); !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	// MkdirAll fails unless what exists is a directory.
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return err
 	}
@@ -61,12 +71,9 @@ func WriteFile(path string, data []byte) error {
 	if statErr != nil && !dirWasMissing {
 		return fmt.Errorf("inspect private directory: %w", statErr)
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create private directory: %w", err)
-	}
-	if dirWasMissing && dir != "." {
-		if err := secureDirectory(dir); err != nil {
-			return fmt.Errorf("secure directory: %w", err)
+	if dirWasMissing {
+		if err := EnsurePrivateDirectory(dir); err != nil {
+			return fmt.Errorf("create private directory: %w", err)
 		}
 	}
 

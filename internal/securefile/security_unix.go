@@ -14,6 +14,14 @@ func CreateTemp(dir, pattern string) (*os.File, error) { return os.CreateTemp(di
 
 func secureDirectory(path string) error { return os.Chmod(path, 0o700) }
 
+// mkdirPrivate creates the directory path with mode 0700, whatever the umask.
+func mkdirPrivate(path string) error {
+	if err := os.Mkdir(path, 0o700); err != nil {
+		return err
+	}
+	return secureDirectory(path)
+}
+
 func secureFile(path string) error { return os.Chmod(path, 0o600) }
 
 func replaceFile(source, destination string) error { return os.Rename(source, destination) }
