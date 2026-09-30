@@ -112,14 +112,16 @@ mv -f "$TMP" "$DEST"
 if [ -z "$UPGRADE" ]; then
   echo "Enrolling..."
   if ! SIGILC_TOKEN="$TOKEN" "$DEST" enroll; then
-    # An enrollment that fails, such as for a token of another name, leaves
-    # client.yaml and its identity as they were: the service goes on.
+    # An enrollment that fails before the server takes the token, such as
+    # for a token of another name, leaves client.yaml and its identity as
+    # they were: the service goes on.
     if [ -n "$INSTALLED" ]; then
       if "$DEST" service start; then
         echo "Enrolling failed. The sigilc service runs again with its earlier client.yaml; fix what the error above says, then run the installer again." >&2
       else
         echo "Enrolling failed, and so did starting the sigilc service again with its earlier client.yaml: see both errors above." >&2
       fi
+      echo "Where the error says that the server took the token, the earlier identity no longer works: create a token with sigils token create --name <name> --replace." >&2
     fi
     exit 1
   fi
@@ -244,15 +246,17 @@ if (-not $Upgrade) {
         & $Dest enroll
         if ($LASTEXITCODE -ne 0) { throw "sigilc enroll failed with exit code $LASTEXITCODE" }
     } catch {
-        # An enrollment that fails, such as for a token of another name,
-        # leaves client.yaml and its identity as they were: the service goes
-        # on.
+        # An enrollment that fails before the server takes the token, such
+        # as for a token of another name, leaves client.yaml and its identity
+        # as they were: the service goes on.
         $EnrollError = $_
         if (-not $Service) { throw }
+        $TokenTaken = 'Where the error says that the server took the token, the earlier identity no longer works: ' +
+            'create a token with sigils token create --name <name> --replace.'
         Write-Host 'Starting the service of the earlier install again...'
         & $Dest service start
-        if ($LASTEXITCODE -ne 0) { throw "$EnrollError; starting the sigilc service again with its earlier client.yaml failed too, with exit code $LASTEXITCODE" }
-        throw "$EnrollError. The sigilc service runs again with its earlier client.yaml; fix what the error says, then run the installer again."
+        if ($LASTEXITCODE -ne 0) { throw "$EnrollError; starting the sigilc service again with its earlier client.yaml failed too, with exit code $LASTEXITCODE. $TokenTaken" }
+        throw "$EnrollError. The sigilc service runs again with its earlier client.yaml; fix what the error says, then run the installer again. $TokenTaken"
     } finally {
         Remove-Item -Path Env:\SIGILC_TOKEN
     }

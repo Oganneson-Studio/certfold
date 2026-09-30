@@ -166,17 +166,21 @@ func TestInstallPs1ReplacesSigilc(t *testing.T) {
 // TestInstallPs1StartsServiceWhenEnrollFails checks that a reinstall whose
 // enrollment fails starts the service it stopped, which goes on with the
 // client.yaml the failed enrollment left, and fails with both errors when
-// that start fails too.
+// that start fails too. Either way it says what an enrollment that failed
+// after the server took the token means.
 func TestInstallPs1StartsServiceWhenEnrollFails(t *testing.T) {
 	script := getInstallScript(t, "/install.ps1").Body.String()
 	inOrder(t, script,
 		"\n        & $Dest enroll\n",
 		"\n    } catch {\n",
 		"\n        $EnrollError = $_\n        if (-not $Service) { throw }\n",
+		"\n        $TokenTaken = 'Where the error says that the server took the token, the earlier identity no longer works: ' +\n"+
+			"            'create a token with sigils token create --name <name> --replace.'\n",
 		"\n        & $Dest service start\n"+
 			"        if ($LASTEXITCODE -ne 0) { throw \"$EnrollError; starting the sigilc service again",
+		" $TokenTaken\" }\n",
 		"\n        throw \"$EnrollError. The sigilc service runs again with its earlier client.yaml; "+
-			"fix what the error says, then run the installer again.\"\n",
+			"fix what the error says, then run the installer again. $TokenTaken\"\n",
 		"\n    } finally {\n",
 	)
 }
@@ -224,7 +228,8 @@ func TestInstallShUsage(t *testing.T) {
 // TestInstallShStartsServiceWhenEnrollFails checks that a reinstall whose
 // enrollment fails starts the service it stopped, which goes on with the
 // client.yaml the failed enrollment left, and says so; when that start fails
-// too, it says that both failed, whose errors sigilc printed.
+// too, it says that both failed, whose errors sigilc printed. Either way it
+// says what an enrollment that failed after the server took the token means.
 func TestInstallShStartsServiceWhenEnrollFails(t *testing.T) {
 	script := getInstallScript(t, "/install.sh").Body.String()
 	inOrder(t, script,
@@ -233,7 +238,9 @@ func TestInstallShStartsServiceWhenEnrollFails(t *testing.T) {
 		"\n        echo \"Enrolling failed. The sigilc service runs again with its earlier client.yaml; "+
 			"fix what the error above says, then run the installer again.\" >&2\n      else\n",
 		"\n        echo \"Enrolling failed, and so did starting the sigilc service again with its earlier client.yaml: "+
-			"see both errors above.\" >&2\n",
+			"see both errors above.\" >&2\n      fi\n",
+		"\n      echo \"Where the error says that the server took the token, the earlier identity no longer works: "+
+			"create a token with sigils token create --name <name> --replace.\" >&2\n    fi\n",
 		"\n    exit 1\n",
 	)
 }
