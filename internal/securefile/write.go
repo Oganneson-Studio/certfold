@@ -24,6 +24,32 @@ func EnsurePrivateDirectory(path string) error {
 	return secureDirectory(path)
 }
 
+// CheckDirectory returns an error when accounts sigil does not trust could
+// put files in the existing directory at path, replace or remove the files in
+// it, or change who may. It changes nothing: the directory may be one like
+// C:\ProgramData, whose permissions are not sigil's to change. A directory
+// that does not exist passes, as sigil creates the directories it needs
+// private.
+//
+// On Windows the owner must be SYSTEM, Administrators or, when the process
+// runs without Administrators enabled, its user, and no other account may
+// write to the directory, delete it or its files, or change its DACL or
+// owner. Any account may create a folder in C:\ProgramData and owns what it
+// creates. On Unix it checks nothing: the directories sigil uses there are
+// under /etc and /var/lib, which only root may write.
+func CheckDirectory(path string) error {
+	return checkDirectory(path)
+}
+
+// CheckPrivateDirectory returns an error unless the directory at path is
+// private: on Windows, no account other than those CheckDirectory trusts may
+// have any access to it, including access that its files and directories
+// inherit; on Unix, the process's effective user owns it and its mode gives
+// the group and others nothing. Like CheckDirectory, it changes nothing.
+func CheckPrivateDirectory(path string) error {
+	return checkPrivateDirectory(path)
+}
+
 // WriteFile atomically replaces path with data. The temporary file gets
 // platform-native private access controls from CreateTemp before any data is
 // written, and keeps them when it replaces path. The errors name path, never
