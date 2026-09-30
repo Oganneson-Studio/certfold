@@ -27,7 +27,7 @@
 
 主会话已定：`cert add`/`cert remove` 改走 IPC；Windows `owner` 只加只读 ACE 不改属主；关停上界 30 秒；mini-CA 根证书不足 1 年时记 WARN；`acme.email` 变化只更新联系人不换 key；签发结果校验叶子公钥和 DNSNames；非 systemd 的 Linux 和 macOS 的部分行为标注为未验证。
 
-前两批修复（S、A、C、D、L 和 P、W、I）及 T（TUI 迁到 Charm v2）已合入。Z（绝对路径与 CI）进行中。各项细节见安全约束、运行时约束和已知未完成项。
+各项细节见安全约束、运行时约束和已知未完成项。
 
 ## 项目快览
 
@@ -38,7 +38,7 @@
 - 客户端使用 mTLS 拉取证书并输出 PEM、DER、PKCS#12。
 - CLI 使用 Cobra，TUI 使用 Charm v2（`charm.land/bubbletea/v2`、`lipgloss/v2`、`bubbles/v2`，基于 `Backend` 接口），本地控制使用 Unix socket / Windows named pipe。v1 与 termenv 已删除；非 TUI 命令不再向终端发查询序列（v1 的 init 会发 OSC 11 和 CSI 6n，经 sudo 时应答成乱码）。
 - 日志使用 slog，最近 500 条事件保存在环形缓冲（`logging.Ring`），经 IPC 和 `events` 命令读取。`internal/renewal` 是叶子包，scheduler、`server/tls.go` 和 client（sigilc）用它，不引入 lego，新增依赖时注意二进制体积。`internal/proc` 也是叶子包，钩子和 exec DNS 共用（有界尾部输出、结束进程树、WaitDelay），只依赖标准库和 `x/sys`。
-- kardianos v1.3.0，自带 systemd 模板（已改写为含 `KillMode=mixed`）。
+- kardianos v1.3.0。systemd 单元用 `SystemdScript` 选项替换 kardianos 的默认模板，含 `KillMode=mixed`。
 - Windows 容器开发和 E2E 使用 WSLC，不使用 Docker Desktop。
 
 ## 仓库布局
@@ -106,11 +106,11 @@ go test -race ./...
 ## 安全约束
 
 1. `server.yaml` 的 `certificates[].subscribers` 是订阅授权的唯一来源；客户端输出配置不能扩大授权。
-2. 注册 token 是一次性的，并绑定 secret、server URL、客户端名和 mini-CA 证书。客户端发送 token 前必须验证 TLS，禁止恢复 `InsecureSkipVerify`。注册请求不跟随重定向（`CheckRedirect` 返回 `ErrUseLastResponse`）。`EnrollResponse` 不再带 `ca_cert`，sigilc 保存令牌里的 CA 证书，并校验返回的客户端证书（CN、链到令牌 CA、ClientAuth EKU、公钥等于 CSR）。CSR 格式有问题回 400、不消耗令牌。
+2. 注册 token 是一次性的，并绑定 secret、server URL、客户端名和 mini-CA 证书。客户端发送 token 前必须验证 TLS，禁止恢复 `InsecureSkipVerify`。注册请求不跟随重定向（`CheckRedirect` 返回 `ErrUseLastResponse`）。`EnrollResponse` 不再带 `ca_cert`，sigilc 保存令牌里的 CA 证书，并校验返回的客户端证书（CN、链到令牌 CA、ClientAuth EKU、公钥等于 CSR）。CSR 格式有问题回 400、不消耗令牌。注册和身份续签校验返回证书时按 NotBefore 校验链，不按本机时钟判断有效期，不许改回按本机时钟校验（证书必须持有本次 CSR 的公钥，旧证书无法重放）。
 3. 已注册客户端每次访问都必须同时通过 mTLS、数据库存在性和证书指纹匹配；挂起的 `/v1/sync` 被唤醒后、返回新清单前要再校验一次。删除客户端即撤销访问；除注册外，任何写路径（包括鉴权中间件刷新 `last_seen` 的条件 UPDATE）都不得创建客户端记录。续签期间同名客户端被重新注册时，旧身份的续签回 401（`StagePendingIdentity` 带出示证书指纹条件）。
 4. `client.yaml` 和客户端本地存储 `<data_dir>/certs.json` 都包含私钥。写入必须经过 `internal/securefile`：Unix 使用私有模式，Windows 使用受保护 DACL，且采用临时文件加原子替换。私有临时文件一律用 `securefile.CreateTemp` 创建：Windows 上在 `CreateFile` 时就带受保护 DACL，不能先建文件再收紧，因为收紧之前别的账户打开的句柄仍能读到之后写入的内容。certs.json 加载时若已存在，先用 `securefile.ProtectFile` 收紧；它的路径不能由服务端下发的证书名派生。`client.data_dir` 和私钥类输出必须放在能存住 Unix 权限位的文件系统上，否则私有模式形同虚设；WSL drvfs/9p（没开 metadata）、没有 unix extensions 的 CIFS、vfat/exfat 和 WSLC 的 bind mount 都存不住。
    - 目录检查在启动时做，reload 不复查。Windows 上配置目录和 sigilc `data_dir` 的属主须为 SYSTEM、Administrators（或非提权时的当前用户），其他主体不得有写入、删除、删子项、改 DACL、改属主权限。sigils `data_dir` 在 Windows 上须完全私有（继承项也算），Unix 上 `mode&077==0` 且属主为运行用户。不合规拒绝启动，报错点名目录并给出 `icacls`/`chmod`/`chown` 命令。`ca\` 子目录的检查在 `ca.Bootstrap` 中。
-   - data_dir 不存在时由 `EnsurePrivateDirectory` 私有创建；已存在的目录只检查不收紧。提权进程写出的文件和目录 DACL 不再带操作者本人 SID，新建对象属主为 Administrators。
+   - data_dir 不存在时由 `EnsurePrivateDirectory` 私有创建；已存在的 data_dir 只检查不收紧。`ca\` 是例外：`ca.Bootstrap` 先 `CheckDirectory` 再 `EnsurePrivateDirectory`，每次启动都重设受保护 DACL。经 `privateDescriptor` 创建的对象（`securefile.CreateTemp` 的文件和 `EnsurePrivateDirectory` 新建的目录）在提权时属主为 Administrators，不带操作者本人 SID。`ProtectFile` 只换 DACL，保留属主。sigils.db 和 -wal/-shm 的属主取进程默认属主：以服务运行时是 SYSTEM，提权交互运行时是本人 SID。
    - 配置目录和 data_dir 的每一级上级目录都不得归其他账户所有，也不得让其他账户删改子项；检查只看最后一级，默认布局满足。输出文件所在目录及其上级也不能让低权限账户可写（`O_NOFOLLOW` 只保护最后一段路径）。
 5. 私钥输出默认权限为 `0600`；公开证书可为 `0644`。不要对所有输出格式使用同一默认权限。对账重写输出时按证书成组暂存：内容、权限位和属主先在临时文件上就位，全部暂存成功才依次改名替换，不能先改名再 chown。Windows 上的私钥类输出（`pem-key`、`pem-bundle`、`pkcs12`）有几条额外规则：
    - 临时文件在 `CreateFile` 时就带受保护 DACL：SYSTEM、Administrators 完全控制（非提权时另加当前用户），配置的 `owner` 只读。`owner` 不改属主，只加只读 ACE。
@@ -120,20 +120,20 @@ go test -race ./...
 7. （已作废：Phase 4 按 B3 将 install.ps1 改为静态脚本。保留编号，避免引用错位。）
 8. 生产一键安装要求公网端点使用操作系统信任的 TLS 证书。通过 `server.tls_cert_file` 与 `server.tls_key_file` 配置；内部 mini-CA 默认证书不能让首次系统 `curl` 自动信任。
 9. （已作废：Phase 3 按 B1 删除了服务端 push 和客户端 push listener。保留编号，避免引用错位。）
-10. 配置解析使用 `yaml.KnownFields(true)`。增加字段时必须同步 schema、验证和测试。`config.ReadServerPaths` 是只给 CLI 定位 IPC、给安装器找 data_dir 用的宽松读取函数，daemon 不得用它加载配置。`config.ReadClientField(path, key)` 是客户端对应的宽松读取函数，CLI 定位 daemon 时使用，不需要服务的环境变量。`${VAR}` 和 `${VAR:-default}` 在 YAML 解析后逐个标量值展开：值原样插入、不 trim；键不展开；`$$` 表示字面 `$`；变量未设置且没有默认值时报错；嵌套默认值 `${A:-${B}}` 报错。四个解析入口（`ParseServer`、`ParseClient`、`ReadServerPaths`、`ReadClientField`）必须得到一致结果。client.yaml 的 `client.name` 和 `certificates` 键按同一命名规则校验。
-11. 服务端只读 IPC 必须使用显式 DTO，不能在线路上返回证书私钥或 enrollment-token secret hash。IPC 上没有写证书的路由，证书只能经签发进入数据库。事件环里不含令牌字符串（只记令牌 ID）、私钥、配置结构体或 panic 栈（Recoverer 只记 `r.URL.Path`）；钩子和 DNS 程序的输出以 `Private` 标记，在事件和 Windows 事件日志中显示为 `(withheld)`，只有服务日志（stderr / journald / launchd 的 `/var/log/<name>.err.log`）保留全文。
+10. 配置解析使用 `yaml.KnownFields(true)`。增加字段时必须同步 schema、验证和测试。`config.ReadServerPaths` 是只给 CLI 定位 IPC、给安装器找 data_dir 用的宽松读取函数，daemon 不得用它加载配置。`config.ReadClientField(path, key)` 是客户端对应的宽松读取函数，CLI 定位 daemon 和 `sigilc enroll` 比对 name/server_url 时使用，不需要服务的环境变量。`${VAR}` 和 `${VAR:-default}` 在 YAML 解析后逐个标量值展开：值原样插入、不 trim；键不展开；`$$` 表示字面 `$`；变量未设置且没有默认值时报错；嵌套默认值 `${A:-${B}}` 报错。四个解析入口（`ParseServer`、`ParseClient`、`ReadServerPaths`、`ReadClientField`）必须得到一致结果。client.yaml 的 `client.name` 和 `certificates` 键按同一命名规则校验。
+11. 服务端只读 IPC 必须使用显式 DTO，不能在线路上返回证书私钥或 enrollment-token secret hash。IPC 上没有写证书的路由，证书只能经签发进入数据库。事件环里不含令牌字符串（只记令牌 ID）、私钥、配置结构体或 panic 栈（Recoverer 记 method、path 和 panic 值，栈以 `Private` 标记）；钩子和 DNS 程序的输出以 `Private` 标记，在事件和 Windows 事件日志中显示为 `(withheld)`，只有服务日志（stderr / journald / launchd 的 `/var/log/<name>.err.log`）保留最后 4 KiB。
 12. 数据库证书记录必须绑定有效配置指纹；CA directory、domains 或 key type 变化后，旧材料不得继续分发。
 13. `exec` DNS provider 只能在 server.yaml 中配置。它以 sigils 服务账户运行、继承其全部环境变量（包括 `${VAR}` 引用的凭据），单次运行 2 分钟超时。
     - 记录名在运行前校验：每个 label 只能是 `[A-Za-z0-9_-]`、非空、不以 `-` 开头，否则报错 `exec: <action>: record name %q is not a host name`，程序不启动。
     - 超时或 ctx 结束时连同它启动的进程一起结束（Unix 进程组，Windows Job Object）；正常退出后留下的进程在两个平台上都继续运行。
     - 错误信息只含动作、记录名和退出状态或超时，启动失败时另带 argv[0]。
     - argv[1:] 和脚本输出永远不进入错误。输出被占按失败处理，错误文本为 `exit status 0, but a process it started still holds its output`。
-    - 脚本输出只在失败时写服务日志（截断到尾部 4 KiB），不进事件。
-    - exec DNS 程序用 daemon 的 ctx，在 `Run` 返回（放弃在途签发）时才被结束，不是关停一开始。
+    - 脚本输出只在失败时写服务日志（尾部 4 KiB），不进事件。
+    - exec DNS 程序用 `acme.NewIssuer` 收到的 programs ctx（`server.Run` 里由 `context.WithoutCancel` 派生），`server.Run` 返回时才取消；它既不是 daemon 的 ctx，也不是 `Issue` 的 ctx。
 14. 来自 ACME CA 和 DNS provider 的错误文本，写入 `issuance_status.last_error` 或经 IPC 返回之前，必须先经 `logging.OneLine` 替换控制字符和非法 UTF-8，再经 `logging.RedactURLQueries` 将 URL 的 query 替换为 `?REDACTED`，最后截断到 1 KiB。事件渲染路径（Ring 和 Windows 事件日志的 Message 与 Attrs）同样做 URL query 脱敏；journald sink 保留原文。ARI 查询的错误文本进事件和 `last_error` 前走同一净化流程。
 15. `on_change` 只能在 client.yaml 配置，argv 形式、argv[0] 为绝对路径、不经 shell。服务端下发的内容（包括证书名）不能影响执行什么、写到哪里。
     - 它以 sigilc 服务账户运行、继承其全部环境，stdin 为空，单次运行 2 分钟超时；超时或 daemon 停止时连同孙进程一起结束（Unix 进程组，Windows Job Object）；正常退出后留下的进程在两个平台上都继续运行。IPC 调用方断开不影响它。
-    - 错误信息只含证书名和退出状态或超时，启动失败时另带 argv[0]；argv[1:] 和钩子输出永远不进入错误。钩子输出是 `on_change failed` 事件的 `Private` 属性，事件和 Windows 事件日志中显示为 `(withheld)`，只有服务日志（stderr / journald / launchd 的 `/var/log/<name>.err.log`）保留全文。Windows 服务下服务日志就是事件日志，`Private` 同样显示为 `(withheld)`，所以哪里都不记录钩子输出，钩子脚本必须自己记日志。
+    - 错误信息只含证书名和退出状态或超时，启动失败时另带 argv[0]；argv[1:] 和钩子输出永远不进入错误。钩子输出是 `on_change failed` 事件的 `Private` 属性，事件和 Windows 事件日志中显示为 `(withheld)`，只有服务日志（stderr / journald / launchd 的 `/var/log/<name>.err.log`）保留最后 4 KiB。Windows 服务下服务日志就是事件日志，`Private` 同样显示为 `(withheld)`，所以哪里都不记录钩子输出，钩子脚本必须自己记日志。
     - 以 0 退出但输出仍被占用时，最多再等 5 秒关闭管道、按成功处理并记 WARN `on_change output held open`（exec DNS provider 在这种情况下按失败处理）。钩子留在后台的进程必须自己重定向 stdout、stderr。
     - 钩子持续失败时，sync 循环退避（5 秒起翻倍、封顶 5 分钟），稳定在约每 5 分钟重试一次。Windows 上每次失败都写一条 Application 事件日志。
 16. sigilc 打印或经 IPC 交出的文本不得携带来自网络的控制字符（与第 14 条对称）。`Printable`/`OneLine` 同时替换 Cf（零宽字符等）、Zl（行分隔符）、Zp（段分隔符）。TLS 握手错误会原样引用对端证书的 DNS 名（`crypto/x509` 先校验主机名后建链，中间人不需要可信证书），服务端的响应和下发的证书名同样不可信。处理方式：
@@ -144,9 +144,9 @@ go test -race ./...
     - 客户端拒绝格式不是 `sha256:` 加 64 位 hex 的 bundle fingerprint。
 17. 命名规则与 `server.public_url`：
     - server.yaml 里所有名字（证书名、`acme.cas` 的键、`dns_providers` 的键）与客户端名同一规则：小写 DNS label，1 到 63 个 `a-z0-9-`，不以 `-` 开头或结尾。`config.ValidateClientName`、`config.ValidateCertificateName` 和 `validateName` 共用实现。
-    - `server.public_url` 只能是纯 ASCII 的 https URL，必须有 host，不能含 userinfo、query、fragment，端口 1–65535，不能含单引号、双引号、反引号、`$`、`\`、空白和控制字符（`config.ValidatePublicURL`）。PowerShell 把 U+2018–U+201B 当作单引号、U+201C–U+201E 当作双引号，只拒绝 ASCII 引号不够。`public_url` 未设置时，`token create` 对由 listen 推出的 URL 做同一检查，不通过则提示设置 `server.public_url`。
-    - `server.listen` 必须是 `host:port` 格式，端口 1–65535。
-18. install.ps1 是静态脚本，不读请求参数。脚本只含 ASCII，不调用 `exit`（在 `& ([scriptblock]::Create(...))` 调用方式下 `exit` 会关掉操作者的 PowerShell 会话），每次调用 native 程序后检查 `$LASTEXITCODE`，下载用 `-UseBasicParsing`。
+    - `server.public_url` 只能是纯 ASCII 的 https URL，必须有 host，不能含 userinfo、query、fragment，有端口时必须 1–65535，不能含单引号、双引号、反引号、`$`、`\`、空白和控制字符（`config.ValidatePublicURL`）。PowerShell 把 U+2018–U+201B 当作单引号、U+201C–U+201E 当作双引号，只拒绝 ASCII 引号不够。`public_url` 未设置时，`token create` 对由 listen 推出的 URL 做同一检查，不通过则提示设置 `server.public_url`。
+    - `server.listen` 必须是 `host:port` 格式，端口 1–65535，主机部分可以为空（`:8443` 合法）。
+18. 安装脚本是静态的，不读请求参数。install.ps1 只含 ASCII，不调用 `exit`（在 `& ([scriptblock]::Create(...))` 调用方式下 `exit` 会关掉操作者的 PowerShell 会话），每次调用 native 程序后检查 `$LASTEXITCODE`，下载用 `-UseBasicParsing`。install.sh 的 curl 带 `-q --proto '=https' --proto-redir '=https'`；令牌经 `SIGILC_TOKEN` 环境变量传给 sigilc（ps1 同样经 `$env:SIGILC_TOKEN`，用完 `Remove-Item`），不进 argv；下载先写临时文件再 `mv -f` 替换。安装脚本的静态反向断言（`install_script_test.go`）守住这些不变量。
 19. 服务端 HTTPS 的最低 TLS 版本为 1.2（`tls.VersionTLS12`），只是为了 PowerShell 5.1 的安装脚本和老系统。sigilc 的注册（`internal/enroll`）和所有 mTLS 请求（`internal/client`）钉死 TLS 1.3，不许放宽，由 `tls13_test.go` 守住。
 20. `acme.RenewalInfo` 用临时密钥拉取 ACME 目录和 renewalInfo，不用账户、不碰数据库；查询期间不持任何锁。只有 ARI 到货即到期防护会写库（`storeGuard`）：在 genMu 读锁下开事务，先比对库里的证书指纹，还是同一张证书才写 `issuance_status`，已经被新证书替换就不写。`replaces` 只在纯续期（存储的材料与当前 spec 匹配）且最近一次尝试没有失败（`Failures == 0`）时带给 lego，lego 遇到 409 `alreadyReplaced` 会自动去掉重发。
 
@@ -195,7 +195,7 @@ go test -race ./...
 - `sigilc fetch` 必须调用真实 IPC 拉取，返回前完成对账和钩子；`--cert` 只强制重新下载目标证书，不强制重写未变化的输出。`reload` 必须先完整解析新配置，失败时保留旧配置；成功后在返回前按新配置从存储对账并运行钩子，同时取消在途 sync，让循环立即做一次完整拉取。reload 的本地对账成功时不清空 `LastError`，由 reload 触发的下一轮用自己的结果覆盖。`client.ipc_socket` 和 `client.data_dir` 变化要求重启。
 - 客户端对账：
   - client.yaml 按证书分组，写成 `certificates.<名字>.outputs` 和 `certificates.<名字>.on_change`；所有输出路径经 `filepath.Clean` 后不得重复，Windows 上不分大小写。
-  - 私有存储保存最近一次 sync 视图里全部证书的材料和 `hook_pending`。视图里消失的证书从存储删除，输出文件不动、不跑钩子。不合规的证书名按安全约束 16 处理。bundle 入库前必须通过 key 与证书配对校验，坏包不能覆盖输出。存储写盘失败时下次对账补写。
+  - 私有存储保存最近一次 sync 视图里全部证书的材料和 `hook_pending`。视图里消失的证书从存储删除，输出文件不动、不跑钩子。不合规的证书名按安全约束 16 处理。bundle 入库前必须通过 key 与证书配对校验，链证书逐个 `x509.ParseCertificate`、任一张失败就整包拒收，坏包不能覆盖输出。存储写盘失败时下次对账补写。
   - 客户端只有一个 sync 循环，没有周期拉取。每一轮（收到 304、收到 200 并应用之后、出错之后），以及启动、reload、IPC fetch 时，都要逐个输出对账，只用本地存储、不联网。
   - 内容不一致（文件缺失、不是普通文件、读不出或内容不同）的输出按证书成组替换。PKCS#12 按解码后的证书链和私钥比较，不按字节比较（编码带随机盐）。
   - 内容一致只差元数据的：Unix 在原文件上先 chmod 再 chown，不再 stat 验证；Windows 只比较内容，不比 DACL、不比 mode、不比 owner。只修元数据不算变化、不触发钩子，因为有的文件系统存不住权限位（drvfs/9p 没开 metadata、CIFS 没有 unix extensions、WSLC bind mount 一律报告 0777），算作变化会每轮重写、每轮跑钩子。
@@ -204,7 +204,7 @@ go test -race ./...
 - `on_change`：
   - 下载到的材料指纹变化（存储里原本没有也算），或者该证书任一输出的内容被重新写入后，置位 `hook_pending` 并持久化；只修权限位、属主不置位。
   - 对账之后在 pullMu 内按名字串行运行；该证书本次对账出错则不跑。
-  - 失败时保留 `hook_pending` 并计为本轮错误，之后每轮重跑，失败期间循环退避。写 `hook_pending` 失败的那一轮不跑钩子。成功的 `sigilc fetch` 会叫醒退避中的循环。钩子的 ctx 来自 Run 的生命周期：Run 启动前用 Background，Run 返回后仍用它已取消的 ctx。certs.json 持续写不进去（磁盘满、只读挂载）时所有钩子暂停，`LastError` 为 `save store`。
+  - 失败时保留 `hook_pending` 并计为本轮错误，之后每轮重跑，失败期间循环退避。写 `hook_pending` 失败的那一轮不跑钩子。成功的 `sigilc fetch` 会叫醒退避中的循环。钩子的 ctx 来自 Run 的生命周期：Run 启动前用 Background，Run 返回后仍用它已取消的 ctx。certs.json 持续写不进去（磁盘满、只读挂载）时所有钩子暂停，`LastError` 以 `save store: ` 开头。
 - `round failed` / `round succeeded again` 只在 LastError 文本变化时各记一次。
 - `/v1/sync`：
   - 不带 `If-None-Match` 时立即返回该客户端的清单；带且相同时最长挂起 `proto.SyncMaxWait`（55 秒）后回 304。每客户端最多 4 个在途请求（`maxSyncsPerClient`），第 5 个回 429 `too many sync requests in progress`。If-None-Match 只做整串精确比较，弱 ETag、`*`、列表（包括分成多行发送的）一律不匹配。ETag 只由该客户端过滤后的清单计算，私钥只经 bundle 端点。
@@ -224,7 +224,7 @@ go test -race ./...
 - 服务端外部 HTTPS 可使用公网证书，但客户端证书仍由内部 mini-CA 验证。客户端验证服务端时同时信任系统根和 mini-CA。
 - 关停上界：从取消起算 30 秒（`issuanceStopTimeout`），超时放弃在途签发，证书和 DNS TXT 清理会丢；WARN `certificate issuance abandoned at shutdown certs=...` 列出名字。HTTP/IPC 服务器的排水超时为 10 秒（`shutdownTimeout`）。
 - 签发结果校验：叶子公钥必须等于订单私钥，叶子 DNSNames 必须覆盖 spec 的全部域名；不符按签发失败处理。
-- 鉴权读库出错回 500（不再 401）。所有 500 记 ERROR 事件（`look up client failed`、`promote client identity failed`、`read certificate failed`、`read certificate view failed`、`encode certificate view failed`、`client identity renewal failed`、`enrollment failed`、`open sigilc binary failed`）。注册被拒时，已用、过期回 401 并写明原因，记 WARN `enrollment refused client=... token=<ID> error=...`；secret 不符仍是 401 `invalid token`，不记事件。
+- 鉴权读库出错回 500（不再 401）。所有 500 记 ERROR 事件（`look up client failed`、`promote client identity failed`、`read certificate failed`、`read certificate view failed`、`encode certificate view failed`、`client identity renewal failed`、`enrollment failed`、`open sigilc binary failed`、`panic serving request`）。注册被拒时，已用、过期回 401 并写明原因，记 WARN `enrollment refused client=... token=<ID> error=...`；secret 不符仍是 401 `invalid token`，不记事件。
 - mini-CA 只剩一半文件时拒绝启动，报错写明两条路径。mini-CA 根证书剩余不足 1 年时，在启动时和每次服务端证书重签时记 WARN `mini-CA root certificate expires within a year`。
 - `SaveIdentity` 用 `yaml.Node` 只替换或追加 `identity`，保留注释、键序和原文本，空行会丢。
 - SQLite 和 WAL 包含私钥材料，创建与重开时都必须保持私有权限。schema 迁移只进不退：v5 删除了 clients 表的 push 两列，升级后的数据库不能再用旧版 sigils 打开。库版本比程序新时拒绝打开并写明两个版本。`store.Open` 只接受路径（可带 `?` 参数）或 `:memory:`。
@@ -243,19 +243,19 @@ go test -race ./...
   - `service uninstall` 会一并删除事件日志源。之后 `Get-WinEvent -FilterHashtable @{ProviderName='sigils'}` 会报参数错误，要改用 LogName 过滤再 `Where-Object ProviderName`。
   - 事件写入后有时要过几秒才查得到，脚本不能查一次为空就下结论。
   - 带引号的属性值里 Windows 路径的反斜杠会显示成双写（slog 的引号转义）。
-- Windows 管道名被抢注时 daemon 启动失败，错误写明管道名和属主 SID。
+- Windows 管道名被抢注时 daemon 启动失败。属主能读出时错误写明属主 SID；读不出时报 `another process holds the pipe name, and its owner cannot be read`。
 - systemd：
   - `service install` 生成的单元包含 `Restart=on-failure`、`RestartSec=5`、`KillMode=mixed`。`KillMode=mixed` 使 stop 先只给主进程 SIGTERM，主进程退出后剩余进程 SIGKILL，exec DNS 程序才能用满关停宽限。持续失败时每 5 秒重启一次、永不放弃（systemd 默认 `StartLimitBurst=5/10s` 碰不到）。已装好的旧单元要先 `service uninstall` 再 `service install`（kardianos 遇到已存在的服务会报错）。
   - 环境变量放 `/etc/sysconfig/<name>`（Ubuntu 上没有这个目录，放凭据前先建）。
   - stderr 在 systemd 下进 journald。
-- Linux 一键安装（2026-09-29 Ubuntu 25.04 / systemd 257 实测）写入的路径：`/usr/local/bin/sigilc`、`/etc/sigil/client.yaml`（文件 0600、目录 0700）、`/var/lib/sigilc`（首次落证书时创建）、`/var/run/sigil/sigilc.sock`（0660、属主 root，`sigilc status` 要加 sudo）、`/etc/systemd/system/sigilc.service` 及 multi-user.target.wants 链接。Ubuntu 上撤临时测试根要 `update-ca-certificates --fresh` 再 `keytool -delete -cacerts`，否则留悬空链接和 Java 库条目。
+- Linux 一键安装（2026-09-29 Ubuntu 25.04 / systemd 257 实测）写入的路径：`/usr/local/bin/sigilc`、`/etc/sigil/client.yaml`（文件 0600、目录 0700）、`/var/lib/sigilc`（sigilc 首次启动时私有创建，0700）、`/var/run/sigil/sigilc.sock`（0660、属主 root，`sigilc status` 要加 sudo）、`/etc/systemd/system/sigilc.service` 及 multi-user.target.wants 链接。Ubuntu 上撤临时测试根要 `update-ca-certificates --fresh` 再 `keytool -delete -cacerts`，否则留悬空链接和 Java 库条目。
 - launchd：系统级 LaunchDaemon 的 stderr 日志写到 `/var/log/<name>.err.log`。
 - PowerShell 5.1 的已知问题：
   - `ServerCertificateValidationCallback = {$true}` 这种 scriptblock 回调不可用，要用 C# 的 `ICertificatePolicy`。
   - 下载必须加 `-UseBasicParsing`，否则在没有 IE 引擎的 Server Core 上失败。
   - `exit` 在 `& ([scriptblock]::Create(...))` 调用方式下会关掉调用者的会话。
   - `SecurityProtocol` 为 `SystemDefault` 时，`-bor 3072` 的结果只剩 TLS 1.2，所以安装命令的前缀和服务端 TLS 下限必须一起决定。
-- 东亚系统区域的经典 conhost 把 `\u00B7 \u2026 \u2191 \u2193 \u25CF \u2014 \u00D7` 等字符画成两格宽，lipgloss 按一格算，超出窗口宽度的行会溢出换行并留残影。TUI 只能画 `shared.WideGlyph` 放行的字符（`\u2500 \u2502 \u256D \u256E \u2570 \u256F \u2022 \u203A` 实测为一格宽）。数据本身带宽字符的行仍会错位。2026-10-01 用 Charm v2 渲染器在经典 conhost（cp936、新宋体）复查通过；比窗口宽的行被截断、不换行。
+- 东亚系统区域的经典 conhost 把 `\u00B7 \u2026 \u2191 \u2193 \u25CF \u2014 \u00D7` 等字符画成两格宽，lipgloss 按一格算，Charm v2 渲染器截断超宽行，不换行。TUI 只能画 `shared.WideGlyph` 放行的字符（`\u2500 \u2502 \u256D \u256E \u2570 \u256F \u2022 \u203A` 实测为一格宽）。数据本身带宽字符的行仍会错位（2026-10-01 Charm v2 + cp936 新宋体复查通过）。
 - WSLC 2.9.4 每个会话最多挂载 15 个不同的主机路径（2026-09-27 实测）：
   - 按会话存活期间出现过的不同路径计数，与容器数无关，同一路径重复挂载不另计。
   - 同一会话里，多个 agent 可以同时跑 E2E（资源名互不相同）；核对残留时只看本轮自己的资源名。
@@ -270,10 +270,10 @@ go test -race ./...
   - `wslc build` 走 BuildKit：构建时拉取的基础镜像只在 BuildKit 存储里，`wslc images` 看不到；构建缓存在 `rmi` 之后仍然有效；没有 builder prune 命令。
   - 构建上下文的大小不影响耗时，开销在 `COPY . .` 的缓存失效：上下文里任何文件变了，sigils 和 sigilc 各要重编约 12–15 秒。
 - WSLC bind mount（2026-09-28 实测）：
-  - 挂载里的文件一律报告为 0777，chmod 静默无效。E2E 因此把客户端输出放在客户端容器自己的文件系统里。
+  - 挂载里的文件一律报告为 0777，chmod 静默无效。E2E 因此把客户端输出和 sigils 的 data_dir 都放在容器自己的文件系统里。
   - 宿主进程打开着挂载里的某个文件时（Go 的 os.Open/ReadFile 不带 FILE_SHARE_DELETE），容器里 rename 覆盖这个文件会报 Permission denied。容器可能替换某个文件时，宿主不要打开它。
   - 宿主改写挂载里的文件，容器里立即可见（变长、变短、等长都实测过），所以 E2E 可以在容器运行期间从宿主改 server.yaml。
-- E2E 在 Linux Docker（rootful）下给 sigils、sigilc 两个容器加 `--user <uid>:<gid>`。sigils 镜像把 `/var/run/sigil` 设为 1777；sigilc 镜像把 `/var/run/sigil` 和 `/cert-output` 设为 1777。WSLC 不需要加：容器写进挂载目录的文件属主本来就是 Windows 用户。rootless Docker 没有验证过。
+- E2E 在 Linux Docker（rootful）下给 sigils、sigilc 两个容器加 `--user <uid>:<gid>`。sigils 镜像把 `/var/run/sigil` 和 `/var/lib/sigils` 设为 1777，data_dir 是容器内的 `/var/lib/sigils/data`；sigilc 镜像把 `/var/run/sigil` 和 `/cert-output` 设为 1777。WSLC 不需要加：容器写进挂载目录的文件属主本来就是 Windows 用户。rootless Docker 没有验证过。
 - Pebble v2.10.1 的 ARI 特性：
   - 目录公布 `renewalInfo`，窗口默认为 NotAfter - 有效期/3 前后各 24 小时，`Retry-After` 固定为 6 小时。已吊销的证书返回已过去的窗口。
   - 管理端口提供 `POST /set-renewal-info/`，可以按 serial 覆盖返回内容。
@@ -292,7 +292,7 @@ Z 路进行中：
 - 非 systemd 的 Linux 上，重启语义不同（未验证）。
 - modernc sqlite 在 ctx 取消后连接 `IsValid()=false`，`store.Open` 用 Exec 设的 `PRAGMA foreign_keys=ON` 按连接生效、换连接就丢；schema 目前没有外键。以后要加按连接生效的 pragma 一律写进 DSN。
 - `sh -s -- --token` 形式令牌仍在 sh 的命令行里，`-Token '...'` 会进 PowerShell 历史文件。Windows 自动化只能用 `-Token`。交互输入（不带 `--token`/`-Token`）不进命令行。macOS 终端单行输入上限 1024 字符（令牌约 1.05K）。
-- Windows 上改 `owner` 或从配置删掉 `owner` 要等内容变化（续期）或删掉输出文件才生效。Windows `owner` 只对私钥类输出生效，其他格式忽略且不报错。
+- Windows 上改 `owner` 或从配置删掉 `owner` 要等内容变化（续期）或删掉输出文件才生效（见约束 5）。
 - Windows 上 sigils 正在响应下载时，替换 `data_dir/binaries` 里的文件会失败（Go 的 `os.Open` 不带 `FILE_SHARE_DELETE`），换二进制要等下载结束或停服务。
 - setsid 另开会话的进程、由计划任务或服务管理器代为启动的进程不会被结束进程树杀死。非 systemd 的 Unix 和 macOS（launchd 按进程组清理，`Setpgid` 后钩子脱离该组）上，放弃签发时 exec 程序可能残留（未验证）。Windows 容器（server silo）未验证。Windows 上每次运行多约 100 ms（线程快照）。`.bat` 超时时 cmd.exe 和子进程一并被杀。
 - 持有已用完整令牌的人可以反复请求注册刷 WARN（同 lego INFO 挤占事件环那条）。
@@ -301,8 +301,6 @@ Z 路进行中：
 - install.ps1 不自己建 `C:\ProgramData\Sigil`（由 enroll 私有创建）。
 - bubbletea v2 在 TUI 第一次渲染时发 `ESC[?u`（kitty 键盘协议查询，无法单独关闭），支持该协议的终端若在启动后立即按 q，应答可能落到提示符上；DECRQM 2026/2027 在无 `SSH_TTY` 时也会发。
 - Windows 上第一次 `cert add`/`cert remove` 之后 server.yaml 变成私有 DACL（SYSTEM、Administrators），原先授给其他账户的访问会被去掉。
-- 注册和身份续签校验返回证书时不按本机时钟判断有效期（按 NotBefore 校验链），客户端时钟偏慢不影响注册和续签。
-
 ARI 简化：
 - ARI 对 5xx 不做短间隔指数退避，按 6 小时后重查（lego 拿不到 HTTP 状态码）。
 - ARI 的 `pick` 不持久化，重启后时点在同一窗口内重新随机。
@@ -316,7 +314,7 @@ ARI 简化：
 - reload 被拒时，yaml.v3 的类型错误会带出最多约 10 个字符的配置值（例如把凭据误写进数字字段），会进服务日志和事件。
 - 数据本身带的东亚宽字符仍会让 TUI 里那一行错位。
 - TUI 里的 `(ari)` 显示只有单测覆盖；E2E 只在 `cert list --json` 的 `renew_source` 这一层覆盖到。
-- 注册令牌内嵌整张 mini-CA 证书，长约 1.2–1.4K 字符，TUI 里无法整段复制；可以考虑改成携带 CA 指纹。
+- 注册令牌内嵌整张 mini-CA 证书，长约 1.05K 字符，TUI 里无法整段复制；可以考虑改成携带 CA 指纹。
 - 视图或 bundle 超过 1 MiB 时报的是 JSON 解码错误，看不出是超限。
 
 升级期间：
