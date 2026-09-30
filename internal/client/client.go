@@ -122,8 +122,9 @@ type RuntimeStatus struct {
 	Certs []CertStatus
 }
 
-// CertStatus describes a stored certificate. NotAfter is that of its first
-// certificate, or zero if it cannot be parsed. RenewAt is when that
+// CertStatus describes a stored certificate. NotAfter is that of its leaf,
+// the one leafPEM returns and the outputs hold, or zero if it cannot be
+// parsed. RenewAt is when that
 // certificate is due for renewal under the ratio rule of internal/renewal, or
 // zero if renewal.RenewAt fails for it; sigils renews it later when its CA
 // suggests a later renewal window through ARI. Outputs is the number of
@@ -677,16 +678,17 @@ func certStatuses(certs map[string]storedCert, cfg *config.ClientConfig) []CertS
 	out := make([]CertStatus, 0, len(certs))
 	for _, name := range slices.Sorted(maps.Keys(certs)) {
 		cert := certs[name]
+		leaf := leafPEM(cert)
 		configured := cfg.Certificates[name]
 		status := CertStatus{
 			Name:        name,
 			Fingerprint: cert.Fingerprint,
-			NotAfter:    leafNotAfter(cert.FullchainPEM),
+			NotAfter:    leafNotAfter(leaf),
 			Outputs:     len(configured.Outputs),
 			OnChange:    len(configured.OnChange) > 0,
 			HookPending: cert.HookPending,
 		}
-		if renewAt, err := renewal.RenewAt(cert.FullchainPEM); err == nil {
+		if renewAt, err := renewal.RenewAt(leaf); err == nil {
 			status.RenewAt = renewAt
 		}
 		out = append(out, status)
@@ -694,10 +696,10 @@ func certStatuses(certs map[string]storedCert, cfg *config.ClientConfig) []CertS
 	return out
 }
 
-// leafNotAfter returns the NotAfter of the first certificate in
-// fullchainPEM, or the zero time if it cannot be parsed.
-func leafNotAfter(fullchainPEM string) time.Time {
-	block, _ := pem.Decode([]byte(fullchainPEM))
+// leafNotAfter returns the NotAfter of the certificate in the first PEM block
+// of certPEM, or the zero time if it cannot be parsed.
+func leafNotAfter(certPEM string) time.Time {
+	block, _ := pem.Decode([]byte(certPEM))
 	if block == nil {
 		return time.Time{}
 	}
@@ -706,6 +708,33 @@ func leafNotAfter(fullchainPEM string) time.Time {
 		return time.Time{}
 	}
 	return leaf.NotAfter
+}
+
+// certificateBlocks returns the CERTIFICATE blocks of fullchainPEM in order,
+// each encoded again without PEM headers.
+func certificateBlocks(fullchainPEM string) [][]byte {
+	var certs [][]byte
+	rest := []byte(fullchainPEM)
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			return certs
+		}
+		if block.Type == "CERTIFICATE" {
+			certs = append(certs, pem.EncodeToMemory(&pem.Block{Type: block.Type, Bytes: block.Bytes}))
+		}
+	}
+}
+
+// leafPEM returns the leaf of cert that the outputs hold, the first
+// CERTIFICATE block of its fullchain, or "" if it has none.
+func leafPEM(cert storedCert) string {
+	certs := certificateBlocks(cert.FullchainPEM)
+	if len(certs) == 0 {
+		return ""
+	}
+	return string(certs[0])
 }
 
 // splitBundle returns what the outputs of cert hold: the CERTIFICATE blocks
@@ -717,22 +746,11 @@ func leafNotAfter(fullchainPEM string) time.Time {
 // readable by everyone, hold the key. checkBundle has refused the material
 // unless the key belongs to this leaf.
 func splitBundle(cert storedCert) (*output.CertBundle, error) {
-	var certs [][]byte
-	rest := []byte(cert.FullchainPEM)
-	for {
-		var block *pem.Block
-		block, rest = pem.Decode(rest)
-		if block == nil {
-			break
-		}
-		if block.Type == "CERTIFICATE" {
-			certs = append(certs, pem.EncodeToMemory(&pem.Block{Type: block.Type, Bytes: block.Bytes}))
-		}
-	}
+	certs := certificateBlocks(cert.FullchainPEM)
 	if len(certs) == 0 {
 		return nil, errors.New("no certificate in the fullchain")
 	}
-	rest = []byte(cert.KeyPEM)
+	rest := []byte(cert.KeyPEM)
 	for {
 		var block *pem.Block
 		block, rest = pem.Decode(rest)

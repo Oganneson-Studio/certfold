@@ -1,10 +1,12 @@
 package client
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -38,6 +40,37 @@ func bundleNotAfter(t *testing.T, bundle *proto.CertBundle) time.Time {
 		t.Fatal(err)
 	}
 	return leaf.NotAfter
+}
+
+// TestStatusDescribesTheLeafTheOutputsHold covers a fullchain that sigils
+// sent with another block before the leaf. The outputs hold the first
+// CERTIFICATE block, and the status and the event "certificate updated" must
+// describe that certificate, not report no not_after and no renew_at.
+func TestStatusDescribesTheLeafTheOutputsHold(t *testing.T) {
+	bundle := newTestBundle(t, "api-prod")
+	sent := *bundle
+	sent.FullchainPEM = bundle.KeyPEM + bundle.FullchainPEM
+	ts := httptest.NewServer(newFakeServer(&sent).handler())
+	t.Cleanup(ts.Close)
+	c := newTestClient(t, buildTestCfg(t, ts.URL))
+	ring, _ := captureEvents(t)
+
+	if err := c.Fetch(context.Background(), ""); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	certs := c.Status().Certs
+	if len(certs) != 1 {
+		t.Fatalf("status certificates = %+v, want api-prod", certs)
+	}
+	if want := bundleNotAfter(t, bundle); !certs[0].NotAfter.Equal(want) {
+		t.Errorf("status not_after = %v, want the leaf's %v", certs[0].NotAfter, want)
+	}
+	if certs[0].RenewAt.IsZero() {
+		t.Error("status renew_at is zero for a valid leaf")
+	}
+	if got, want := eventLines(ring), updatedEvent(t, bundle); !slices.Contains(got, want) {
+		t.Errorf("events = %q, want %q", got, want)
+	}
 }
 
 func TestStatusDescribesStoredCertificates(t *testing.T) {

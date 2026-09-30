@@ -240,7 +240,7 @@ func (c *Client) applyViewLocked(ctx context.Context, result *syncResult, force 
 				cert := next[name]
 				if stored, ok := c.store[name]; !ok || stored.Fingerprint != cert.Fingerprint {
 					slog.Info("certificate updated", "cert", name,
-						"fingerprint", cert.Fingerprint, "not_after", leafNotAfter(cert.FullchainPEM))
+						"fingerprint", cert.Fingerprint, "not_after", leafNotAfter(leafPEM(cert)))
 				}
 			}
 			for _, name := range slices.Sorted(maps.Keys(c.store)) {
