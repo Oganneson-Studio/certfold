@@ -2,6 +2,8 @@ package commands
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,6 +112,37 @@ func TestEnrollSaysTheTokenIsSpentWhenSavingFails(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("enroll error = %v, want one that says %q", err, want)
 		}
+	}
+}
+
+// TestEnrollSaysTheTokenIsSpentWhenTheAnswerIsBad checks the error of an
+// enrollment that the server answered with 200, and so took the token for,
+// but whose answer sigilc cannot use: the earlier identity no longer works,
+// as when saving fails. A refused enrollment spends nothing, and says
+// nothing of it.
+func TestEnrollSaysTheTokenIsSpentWhenTheAnswerIsBad(t *testing.T) {
+	for _, answer := range []string{`{"client_cert":"not a certificate"}`, `not JSON`} {
+		t.Run(answer, func(t *testing.T) {
+			srv := &refusingEnrollServer{}
+			srv.Server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				srv.requests.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(answer))
+			}))
+			t.Cleanup(srv.Close)
+			_, err := runSigilcErr(t, "--config", privateConfigPath(t), "enroll", "--token", srv.token(t, "web-1"))
+			for _, want := range []string{"enroll: ", "the server took the token", "sigils token create --name web-1 --replace"} {
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("enroll error = %v, want one that says %q", err, want)
+				}
+			}
+		})
+	}
+
+	refusing := newRefusingEnrollServer(t)
+	_, err := runSigilcErr(t, "--config", privateConfigPath(t), "enroll", "--token", refusing.token(t, "web-1"))
+	if err == nil || strings.Contains(err.Error(), "took the token") {
+		t.Errorf("refused enrollment error = %v, want one that does not say the token was taken", err)
 	}
 }
 

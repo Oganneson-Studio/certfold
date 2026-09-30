@@ -97,15 +97,15 @@ func runEnroll(cmd *cobra.Command, _ []string) (err error) {
 		// The error can quote the network, such as the DNS names in the
 		// certificate of a man in the middle: a newline there must not start
 		// a line under the one main prints, which keeps newlines.
-		return fmt.Errorf("enroll: %s", logging.OneLine(err.Error()))
+		msg := "enroll: " + logging.OneLine(err.Error())
+		if errors.Is(err, enroll.ErrUnusableAnswer) {
+			return fmt.Errorf("%s; %s", msg, tokenTaken(clientName))
+		}
+		return errors.New(msg)
 	}
 
 	if err := enroll.SaveIdentity(cfgPath, payload.CACert, clientCert, string(kc.KeyPEM)); err != nil {
-		// The server took the token and now accepts only the identity that
-		// was not saved: enrolling again needs a new token.
-		return fmt.Errorf("save identity: %w; the server took the token and replaced the identity of %q, so the earlier "+
-			"identity no longer works: once this is fixed, create a token with `sigils token create --name %s --replace` "+
-			"and enroll again", err, clientName, clientName)
+		return fmt.Errorf("save identity: %w; %s", err, tokenTaken(clientName))
 	}
 
 	fmt.Printf("enrolled as %q — identity written to %s\n", clientName, cfgPath)
@@ -117,6 +117,14 @@ func runEnroll(cmd *cobra.Command, _ []string) (err error) {
 			"until `sigilc reload` or a restart of the sigilc service")
 	}
 	return nil
+}
+
+// tokenTaken says what an enrollment of name that failed once the server had
+// taken the token means: the server now accepts only the identity it issued,
+// which sigilc has not saved, and enrolling again needs a new token.
+func tokenTaken(name string) string {
+	return fmt.Sprintf("the server took the token and replaced the identity of %q, so the earlier identity no longer works: "+
+		"once this is fixed, create a token with `sigils token create --name %s --replace` and enroll again", name, name)
 }
 
 // ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -69,6 +70,11 @@ func ServerRoots(caCertPEM string) (*x509.CertPool, error) {
 	return roots, nil
 }
 
+// ErrUnusableAnswer marks the errors of PostEnroll that come after the server
+// answered the enrollment: it has taken the token and now accepts only the
+// identity it issued, which sigilc could not use.
+var ErrUnusableAnswer = errors.New("the server's answer cannot be used")
+
 // PostEnroll sends the enroll request for tokenStr, which DecodeToken read as
 // token, to the server the token names, and returns the client certificate,
 // in PEM, that the server issued for csrDER, the raw CSR.
@@ -121,9 +127,13 @@ func PostEnroll(token *Token, tokenStr string, csrDER []byte) (string, error) {
 	}
 	var out proto.EnrollResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", fmt.Errorf("decode response: %w", err)
+		return "", fmt.Errorf("%w: decode response: %w", ErrUnusableAnswer, err)
 	}
-	return checkIssued(token, out.ClientCert, csr)
+	cert, err := checkIssued(token, out.ClientCert, csr)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrUnusableAnswer, err)
+	}
+	return cert, nil
 }
 
 // checkIssued checks the client certificate certPEM that the server issued at
