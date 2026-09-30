@@ -87,8 +87,9 @@ func TestInstallPs1Script(t *testing.T) {
 			t.Errorf("%q is not followed by a check of $LASTEXITCODE", line)
 		}
 	}
-	if calls != 5 {
-		t.Errorf("script runs sigilc %d times, want 5: version, enroll, service uninstall, install and start", calls)
+	if calls != 6 {
+		t.Errorf("script runs sigilc %d times, want 6: version, enroll, service start after a failed enrollment, "+
+			"service uninstall, install and start", calls)
 	}
 
 	_, withToken := InstallCommands(installTestURL, "<TOKEN>")
@@ -154,6 +155,24 @@ func TestInstallPs1ReplacesSigilc(t *testing.T) {
 	)
 }
 
+// TestInstallPs1StartsServiceWhenEnrollFails checks that a reinstall whose
+// enrollment fails starts the service it stopped, which goes on with the
+// client.yaml the failed enrollment left, and fails with both errors when
+// that start fails too.
+func TestInstallPs1StartsServiceWhenEnrollFails(t *testing.T) {
+	script := getInstallScript(t, "/install.ps1").Body.String()
+	inOrder(t, script,
+		"\n        & $Dest enroll\n",
+		"\n    } catch {\n",
+		"\n        $EnrollError = $_\n        if (-not $Service) { throw }\n",
+		"\n        & $Dest service start\n"+
+			"        if ($LASTEXITCODE -ne 0) { throw \"$EnrollError; starting the sigilc service again",
+		"\n        throw \"$EnrollError. The sigilc service runs again with its earlier client.yaml; "+
+			"fix what the error says, then run the installer again.\"\n",
+		"\n    } finally {\n",
+	)
+}
+
 // TestInstallShUsage checks the commands that the comment of install.sh
 // gives: with a token, as sigils token create prints it; asking for the
 // token; and to upgrade. It names --replace, which the token for a reinstall
@@ -172,6 +191,23 @@ func TestInstallShUsage(t *testing.T) {
 			t.Errorf("script lacks %q:\n%s", want, script)
 		}
 	}
+}
+
+// TestInstallShStartsServiceWhenEnrollFails checks that a reinstall whose
+// enrollment fails starts the service it stopped, which goes on with the
+// client.yaml the failed enrollment left, and says so; when that start fails
+// too, it says that both failed, whose errors sigilc printed.
+func TestInstallShStartsServiceWhenEnrollFails(t *testing.T) {
+	script := getInstallScript(t, "/install.sh").Body.String()
+	inOrder(t, script,
+		"\n  if ! SIGILC_TOKEN=\"$TOKEN\" \"$DEST\" enroll; then\n",
+		"\n    if [ -n \"$INSTALLED\" ]; then\n      if \"$DEST\" service start; then\n",
+		"\n        echo \"Enrolling failed. The sigilc service runs again with its earlier client.yaml; "+
+			"fix what the error above says, then run the installer again.\" >&2\n      else\n",
+		"\n        echo \"Enrolling failed, and so did starting the sigilc service again with its earlier client.yaml: "+
+			"see both errors above.\" >&2\n",
+		"\n    exit 1\n",
+	)
 }
 
 // inOrder checks that script holds each of parts after the one before it.
@@ -200,7 +236,7 @@ func inOrder(t *testing.T, script string, parts ...string) {
 // echo goes off, and the trap for signals makes them run it.
 func TestInstallShKeepsTokenOffCommandLines(t *testing.T) {
 	script := getInstallScript(t, "/install.sh").Body.String()
-	if !strings.Contains(script, "\n  SIGILC_TOKEN=\"$TOKEN\" \"$DEST\" enroll\n") {
+	if !strings.Contains(script, "\n  if ! SIGILC_TOKEN=\"$TOKEN\" \"$DEST\" enroll; then\n") {
 		t.Errorf("script does not pass the token to sigilc enroll as SIGILC_TOKEN:\n%s", script)
 	}
 	if strings.Contains(script, "enroll --token") {
@@ -241,7 +277,8 @@ func TestInstallShReplacesSigilc(t *testing.T) {
 		"\n  \"$TMP\" service stop\n",
 		"\nmv -f \"$TMP\" \"$DEST\"\n",
 		"\nif [ -z \"$UPGRADE\" ]; then\n",
-		"\" enroll\n",
+		"\" enroll; then\n",
+		"\n    exit 1\n  fi\n",
 		"\n    \"$DEST\" service uninstall\n",
 		"\n  \"$DEST\" service install\n",
 		"\nfi\n",

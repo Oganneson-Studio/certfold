@@ -109,7 +109,18 @@ mv -f "$TMP" "$DEST"
 
 if [ -z "$UPGRADE" ]; then
   echo "Enrolling..."
-  SIGILC_TOKEN="$TOKEN" "$DEST" enroll
+  if ! SIGILC_TOKEN="$TOKEN" "$DEST" enroll; then
+    # An enrollment that fails, such as for a token of another name, leaves
+    # client.yaml and its identity as they were: the service goes on.
+    if [ -n "$INSTALLED" ]; then
+      if "$DEST" service start; then
+        echo "Enrolling failed. The sigilc service runs again with its earlier client.yaml; fix what the error above says, then run the installer again." >&2
+      else
+        echo "Enrolling failed, and so did starting the sigilc service again with its earlier client.yaml: see both errors above." >&2
+      fi
+    fi
+    exit 1
+  fi
   if [ -n "$INSTALLED" ]; then
     echo "Uninstalling the service of the earlier install..."
     "$DEST" service uninstall
@@ -202,6 +213,16 @@ if (-not $Upgrade) {
     try {
         & $Dest enroll
         if ($LASTEXITCODE -ne 0) { throw "sigilc enroll failed with exit code $LASTEXITCODE" }
+    } catch {
+        # An enrollment that fails, such as for a token of another name,
+        # leaves client.yaml and its identity as they were: the service goes
+        # on.
+        $EnrollError = $_
+        if (-not $Service) { throw }
+        Write-Host 'Starting the service of the earlier install again...'
+        & $Dest service start
+        if ($LASTEXITCODE -ne 0) { throw "$EnrollError; starting the sigilc service again with its earlier client.yaml failed too, with exit code $LASTEXITCODE" }
+        throw "$EnrollError. The sigilc service runs again with its earlier client.yaml; fix what the error says, then run the installer again."
     } finally {
         Remove-Item -Path Env:\SIGILC_TOKEN
     }
