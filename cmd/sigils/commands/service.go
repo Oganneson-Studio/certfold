@@ -32,6 +32,9 @@ func newServiceCmd() *cobra.Command {
 		&cobra.Command{Use: "restart", Short: "Restart the system service", RunE: runServerServiceControl("restart")},
 		&cobra.Command{Use: "status", Short: "Show system service status", RunE: runServerServiceStatus},
 	)
+	for _, sub := range cmd.Commands() {
+		withoutJSON(sub)
+	}
 	return cmd
 }
 

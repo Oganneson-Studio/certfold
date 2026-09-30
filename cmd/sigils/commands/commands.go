@@ -47,8 +47,20 @@ func newConfigCmd() *cobra.Command {
 		Short: "Validate server.yaml",
 	}
 	cmd.AddCommand(
-		&cobra.Command{Use: "validate", Short: "Parse and validate server.yaml without starting the daemon", RunE: runConfigValidate},
+		withoutJSON(&cobra.Command{Use: "validate", Short: "Parse and validate server.yaml without starting the daemon", RunE: runConfigValidate}),
 	)
+	return cmd
+}
+
+// withoutJSON makes cmd, which prints nothing for --json to shape, fail
+// when --json is set, rather than hand a script text it cannot parse.
+func withoutJSON(cmd *cobra.Command) *cobra.Command {
+	cmd.PreRunE = func(c *cobra.Command, _ []string) error {
+		if asJSON, _ := c.Root().PersistentFlags().GetBool("json"); asJSON {
+			return fmt.Errorf("--json is not supported by %s", c.CommandPath())
+		}
+		return nil
+	}
 	return cmd
 }
 
@@ -90,7 +102,7 @@ func newClientCmd() *cobra.Command {
 	cmd.AddCommand(
 		&cobra.Command{Use: "list", Short: "List all enrolled clients", RunE: runClientList},
 		&cobra.Command{Use: "show <name>", Short: "Show client details", Args: cobra.ExactArgs(1), RunE: runClientShow},
-		&cobra.Command{Use: "remove <name>", Short: "Remove a client and revoke its mTLS certificate", Args: cobra.ExactArgs(1), RunE: runClientRemove},
+		withoutJSON(&cobra.Command{Use: "remove <name>", Short: "Remove a client and revoke its mTLS certificate", Args: cobra.ExactArgs(1), RunE: runClientRemove}),
 	)
 	return cmd
 }
@@ -115,7 +127,7 @@ func newTokenCmd() *cobra.Command {
 	cmd.AddCommand(
 		create,
 		&cobra.Command{Use: "list", Short: "List enrollment tokens: unused, used or expired", RunE: runTokenList},
-		&cobra.Command{Use: "revoke <id>", Short: "Revoke an unused enrollment token", Args: cobra.ExactArgs(1), RunE: runTokenRevoke},
+		withoutJSON(&cobra.Command{Use: "revoke <id>", Short: "Revoke an unused enrollment token", Args: cobra.ExactArgs(1), RunE: runTokenRevoke}),
 	)
 	return cmd
 }
