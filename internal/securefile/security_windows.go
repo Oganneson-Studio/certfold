@@ -19,11 +19,11 @@ import (
 // CreateTemp creates a new file in dir, named by replacing the last "*" in
 // pattern with a random string as os.CreateTemp does, and opens it for reading
 // and writing. The file is created with the security of privateDescriptor,
-// which grants full access to the trustees, which include the current user,
-// and read access to readers, and inherits nothing from dir. Windows checks
-// access only when a handle is opened, so tightening the DACL after creation
-// would let another account open the empty file first and read what is
-// written to it later.
+// which grants full access to the trustees, which include the current user
+// only when it runs without Administrators enabled, and read access to
+// readers, and inherits nothing from dir. Windows checks access only when a
+// handle is opened, so tightening the DACL after creation would let another
+// account open the empty file first and read what is written to it later.
 func CreateTemp(dir, pattern string, readers ...*windows.SID) (*os.File, error) {
 	descriptor, err := privateDescriptor(false, readers...)
 	if err != nil {
