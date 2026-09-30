@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -187,10 +188,32 @@ func runClientRemove(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
-	if err := c.DeleteClient(commandContext(cmd), args[0]); err != nil {
+	name := args[0]
+	if err := c.DeleteClient(commandContext(cmd), name); err != nil {
 		return err
 	}
-	fmt.Printf("client %q removed\n", args[0])
+	fmt.Printf("client %q removed\n", name)
+
+	// The host keeps the private keys of the certificates it fetched. When
+	// it is removed because it may be compromised, only new certificates
+	// take them from it. The removal stands whether or not they are listed.
+	certs, err := c.ListCerts(commandContext(cmd))
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: cannot list the certificates %q subscribes to: %v\n", name, err)
+		return nil
+	}
+	var subscribed []string
+	for _, cert := range certs {
+		if slices.Contains(cert.Subscribers, name) {
+			subscribed = append(subscribed, cert.Name)
+		}
+	}
+	if len(subscribed) > 0 {
+		fmt.Printf("its host keeps the private keys of the certificates it subscribes to; if it may be compromised, renew them:\n")
+		for _, cert := range subscribed {
+			fmt.Printf("  sigils cert renew %s\n", cert)
+		}
+	}
 	return nil
 }
 
