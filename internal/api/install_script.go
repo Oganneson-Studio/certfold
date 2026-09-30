@@ -39,6 +39,15 @@ usage() {
   exit 2
 }
 
+# sigilc is enrolled when this runs, and running the installer again would
+# need a new token: the rest of the reinstall is left to do by hand.
+service_failed() {
+  echo "sigilc is enrolled, but its service is not installed anew. Once the error above is fixed, run" >&2
+  echo "  sudo $DEST service uninstall    (if the service of the earlier install is still there)" >&2
+  echo "  sudo $DEST service install && sudo $DEST service start" >&2
+  exit 1
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --token)
@@ -127,10 +136,10 @@ if [ -z "$UPGRADE" ]; then
   fi
   if [ -n "$INSTALLED" ]; then
     echo "Uninstalling the service of the earlier install..."
-    "$DEST" service uninstall
+    "$DEST" service uninstall || service_failed
   fi
   echo "Installing system service..."
-  "$DEST" service install
+  "$DEST" service install || service_failed
 fi
 
 echo "Starting service..."
@@ -260,14 +269,16 @@ if (-not $Upgrade) {
     } finally {
         Remove-Item -Path Env:\SIGILC_TOKEN
     }
+    # sigilc is enrolled by now, and running the installer again would need a
+    # new token: the rest of the reinstall is left to do by hand.
     if ($Service) {
         Write-Host 'Uninstalling the service of the earlier install...'
         & $Dest service uninstall
-        if ($LASTEXITCODE -ne 0) { throw "sigilc service uninstall failed with exit code $LASTEXITCODE" }
+        if ($LASTEXITCODE -ne 0) { throw "sigilc service uninstall failed with exit code $LASTEXITCODE. sigilc is enrolled: once that is fixed, run & '$Dest' service uninstall, then & '$Dest' service install and & '$Dest' service start." }
     }
     Write-Host 'Installing system service...'
     & $Dest service install
-    if ($LASTEXITCODE -ne 0) { throw "sigilc service install failed with exit code $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 0) { throw "sigilc service install failed with exit code $LASTEXITCODE. sigilc is enrolled: once that is fixed, run & '$Dest' service install, then & '$Dest' service start." }
 }
 
 Write-Host 'Starting service...'

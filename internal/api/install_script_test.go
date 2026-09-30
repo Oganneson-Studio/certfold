@@ -185,6 +185,19 @@ func TestInstallPs1StartsServiceWhenEnrollFails(t *testing.T) {
 	)
 }
 
+// TestInstallPs1FinishesByHand checks that a reinstall that enrolled and then
+// failed to install the service anew says how to finish by hand: running the
+// installer again would need a new token.
+func TestInstallPs1FinishesByHand(t *testing.T) {
+	script := getInstallScript(t, "/install.ps1").Body.String()
+	inOrder(t, script,
+		"\n        & $Dest service uninstall\n",
+		"sigilc is enrolled: once that is fixed, run & '$Dest' service uninstall, then & '$Dest' service install and & '$Dest' service start.\" }\n",
+		"\n    & $Dest service install\n",
+		"sigilc is enrolled: once that is fixed, run & '$Dest' service install, then & '$Dest' service start.\" }\n",
+	)
+}
+
 // TestInstallPs1WaitsForTheDaemon checks that install.ps1 does not report a
 // service whose daemon does not run as done: the SCM starts one that fails
 // as well. It waits up to 15 seconds for sigilc status to succeed, prints
@@ -242,6 +255,20 @@ func TestInstallShStartsServiceWhenEnrollFails(t *testing.T) {
 		"\n      echo \"Where the error says that the server took the token, the earlier identity no longer works: "+
 			"create a token with sigils token create --name <name> --replace.\" >&2\n    fi\n",
 		"\n    exit 1\n",
+	)
+}
+
+// TestInstallShFinishesByHand checks that a reinstall that enrolled and then
+// failed to install the service anew says how to finish by hand: running the
+// installer again would need a new token.
+func TestInstallShFinishesByHand(t *testing.T) {
+	script := getInstallScript(t, "/install.sh").Body.String()
+	inOrder(t, script,
+		"\nservice_failed() {\n",
+		"\n  echo \"  sudo $DEST service uninstall    (if the service of the earlier install is still there)\" >&2\n"+
+			"  echo \"  sudo $DEST service install && sudo $DEST service start\" >&2\n  exit 1\n}\n",
+		"\n    \"$DEST\" service uninstall || service_failed\n",
+		"\n  \"$DEST\" service install || service_failed\n",
 	)
 }
 
@@ -332,8 +359,8 @@ func TestInstallShReplacesSigilc(t *testing.T) {
 		"\nif [ -z \"$UPGRADE\" ]; then\n",
 		"\" enroll; then\n",
 		"\n    exit 1\n  fi\n",
-		"\n    \"$DEST\" service uninstall\n",
-		"\n  \"$DEST\" service install\n",
+		"\n    \"$DEST\" service uninstall || service_failed\n",
+		"\n  \"$DEST\" service install || service_failed\n",
 		"\nfi\n",
 		"\n\"$DEST\" service start\n",
 	)
