@@ -125,7 +125,7 @@ On Linux, `sigils` and `sigilc` management commands need root because the IPC so
 
 `sigilc enroll` writes `client.yaml` before sending the token; if enrollment fails, the file it created is removed (an existing file is not touched). A token whose name or server URL does not pass the naming rules is rejected before any network request. Without `--token`, `sigilc enroll` reads the `SIGILC_TOKEN` environment variable.
 
-`client remove` and `token revoke` report an error (exit code 1) when the name or ID does not exist, instead of silently claiming success.
+`client remove` and `token revoke` report an error (exit code 1) when the name or ID does not exist, instead of silently claiming success. After removing a client, `client remove` lists the certificates it subscribed to and suggests `sigils cert renew` for each. The old certificates and private keys the client holds remain valid until they expire; renewing issues new ones but does not revoke the old.
 
 On Linux, the install script writes:
 
@@ -222,7 +222,7 @@ This is a declarative model: manual edits to outputs are undone within a round. 
 - Values in `client.yaml` go through `${VAR}` expansion, so a literal `$` in an argument is written `$$`.
 - When `certs.json` starts empty, for example on the first start after an upgrade, each certificate with an `on_change` program runs it once, even if its outputs were already up to date.
 
-On Windows, run a PowerShell script through its full path, not a `.bat` or `.cmd` file, whose arguments `cmd.exe` would parse:
+On Windows, run a PowerShell script through its full path, not a `.bat` or `.cmd` file: `cmd.exe` re-parses the arguments, and values that contain special characters are mangled. Use `powershell.exe -File`:
 
 ```yaml
 certificates:
@@ -365,6 +365,21 @@ certificates:
 
 On Windows, run a PowerShell script through its full path, for example `command: ['C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', 'C:\sigil\hook.ps1']`.
 
+On Windows, run a `.bat` or `.cmd` file through `powershell.exe -File` instead, because `cmd.exe` re-parses the arguments. To suppress lego's CNAME lookups when you do not use CNAME delegation, set `LEGO_DISABLE_CNAME_SUPPORT=true` in the service environment.
+
+Each built-in provider type accepts only these keys (an unknown key or a non-string value is an error):
+
+| Type | Keys |
+|---|---|
+| `cloudflare` | `api_token`, `zone_api_token`, `auth_email`, `auth_key` |
+| `aliyun` | `access_key`, `access_secret` |
+| `tencentcloud` | `secret_id`, `secret_key` |
+| `route53` | `access_key`, `secret_key`, `region` |
+| `gcloud` | `project`, `service_account_file` |
+| `exec` | *(none; uses `command` and `skip_propagation_check`)* |
+
+A bare number like `12345` is parsed as an integer by YAML; quote it as `"12345"`. `${VAR:-}` expands to an empty string, which counts as unset for required keys.
+
 Other DNS-01 settings:
 
 - `skip_propagation_check: true` on a provider skips lego's check that the TXT record is visible on the zone's authoritative nameservers. Use it with DNS servers that cannot answer that check; lego still waits one 4-second polling interval.
@@ -441,6 +456,10 @@ On Linux, if the data directory was created with mode `0755`:
 
 The simplest fix in both cases is to remove the directory and let the daemon recreate it. After that, run `service install` if the service was uninstalled.
 
+Each parent directory of the configuration directory and data_dir must not be owned by an untrusted account and must not let untrusted accounts delete or replace entries in it. The check looks only at the directory itself, not its parents; the default layout (`/etc/sigil`, `/var/lib`, `C:\ProgramData`) satisfies this requirement.
+
+Output file directories and their parents should not be writable by low-privilege accounts either: `O_NOFOLLOW` protects only the last path component, and a writable parent lets an attacker replace an earlier component with a symbolic link.
+
 ## Enrollment troubleshooting
 
 When `sigilc enroll` fails after a network error, retry with the same token. If the server says `invalid token`, the server consumed the token before the response reached the client. Create a new token with `sigils token create --name <name> --replace` and try again.
@@ -451,6 +470,14 @@ Two situations can leave the client unable to tell whether its enrollment succee
 2. The server marked the token as used but the database write for the new identity failed (500). The token is consumed; the old identity still works. Create a replacement token.
 
 In both cases the error message says that the server may have taken the token, and suggests `sigils token create --name <name> --replace`.
+
+## Service status
+
+`service status` probes the daemon over its IPC socket and reports one of three results:
+
+- **Running** --- the daemon answered on the socket.
+- **Running (not answering on ...: ...; see ...)** --- the service manager says the daemon is running, but the IPC endpoint does not exist, refuses connections, or times out. The message includes the log location (`journalctl -u <name>`, the Application event log, or `/var/log/<name>.err.log`).
+- **Running (cannot check the daemon on ...: ...; checking it needs root or an elevated administrator)** --- a permission error when opening the socket. On Linux, run with `sudo`; on Windows, use an elevated prompt.
 
 ## Upgrade notes
 
