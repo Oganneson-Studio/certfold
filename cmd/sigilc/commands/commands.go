@@ -29,7 +29,7 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print version information",
 		RunE: func(_ *cobra.Command, _ []string) error {
-			fmt.Printf("sigilc %s (commit %s, built %s)\n", version.Version, version.Commit, version.BuildDate)
+			fmt.Println("sigilc " + version.String())
 			return nil
 		},
 	}
@@ -53,7 +53,6 @@ func newStatusCmd() *cobra.Command {
 		RunE:  runStatus,
 	}
 	cmd.Flags().Bool("json", false, "emit machine-readable JSON")
-	cmd.Flags().Bool("plain", false, "emit plain text without color")
 	return cmd
 }
 

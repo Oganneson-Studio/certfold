@@ -14,11 +14,11 @@ Run without arguments to open the TUI management panel.
 Use subcommands to manage certificates, clients, and enrollment tokens.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE:          runDefaultTUI,
+		RunE:          runServerTUI,
 	}
 
-	cmd.PersistentFlags().String("config", "", "path to server.yaml (default: platform-specific)")
-	cmd.PersistentFlags().String("ipc", "", "IPC socket path (default: platform-specific)")
+	cmd.PersistentFlags().String("config", "", "path to server.yaml (default: $SIGILS_CONFIG, else platform-specific)")
+	cmd.PersistentFlags().String("ipc", "", "IPC socket path (default: server.ipc_socket in the config, else platform-specific)")
 	cmd.PersistentFlags().Bool("json", false, "emit machine-readable JSON output")
 
 	cmd.AddCommand(
@@ -32,6 +32,20 @@ Use subcommands to manage certificates, clients, and enrollment tokens.`,
 		newTokenCmd(),
 		newEventsCmd(),
 	)
+	failOnUnknownSubcommand(cmd)
 
 	return cmd
+}
+
+// failOnUnknownSubcommand makes each command group of root, which runs
+// nothing itself, fail on an argument that names none of its subcommands.
+// Cobra would answer a mistyped one, such as `sigils service instal` in a
+// provisioning script, with the help of the group and exit status 0.
+func failOnUnknownSubcommand(root *cobra.Command) {
+	for _, group := range root.Commands() {
+		if group.HasSubCommands() && group.RunE == nil {
+			group.Args = cobra.NoArgs
+			group.RunE = func(c *cobra.Command, _ []string) error { return c.Help() }
+		}
+	}
 }

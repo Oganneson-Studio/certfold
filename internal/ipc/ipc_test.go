@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -260,7 +261,7 @@ func TestCertificatesCannotBeWrittenOverIPC(t *testing.T) {
 func TestRequestBodyIsLimited(t *testing.T) {
 	created := false
 	router := buildIPCRouter(&ipcHandlers{deps: ServerDeps{Tokens: &TokenControlDeps{
-		Create: func(context.Context, string, time.Duration) (CreateTokenResponse, error) {
+		Create: func(context.Context, CreateTokenRequest) (CreateTokenResponse, error) {
 			created = true
 			return CreateTokenResponse{}, nil
 		},
@@ -392,31 +393,31 @@ func TestListClients(t *testing.T) {
 }
 
 func TestCreateToken(t *testing.T) {
-	var gotName string
-	var gotTTL time.Duration
+	var got CreateTokenRequest
 	want := CreateTokenResponse{
 		Token:               "opaque-token",
+		TokenID:             "0123456789abcdef0123456789abcdef",
+		ExpiresAt:           time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC),
+		Revoked:             1,
 		ServerURL:           "https://sigil.example.com",
 		PublicURLConfigured: true,
 	}
 	h := &ipcHandlers{deps: ServerDeps{Tokens: &TokenControlDeps{
-		Create: func(_ context.Context, name string, ttl time.Duration) (CreateTokenResponse, error) {
-			gotName, gotTTL = name, ttl
+		Create: func(_ context.Context, req CreateTokenRequest) (CreateTokenResponse, error) {
+			got = req
 			return want, nil
 		},
 	}}}
 	ts := httptest.NewServer(buildIPCRouter(h))
 	defer ts.Close()
 
-	created, err := newTestClient(ts).CreateToken(context.Background(), CreateTokenRequest{
-		Name: "web-1",
-		TTL:  10 * time.Minute,
-	})
+	sent := CreateTokenRequest{Name: "web-1", TTL: 10 * time.Minute, Replace: true}
+	created, err := newTestClient(ts).CreateToken(context.Background(), sent)
 	if err != nil {
 		t.Fatalf("CreateToken: %v", err)
 	}
-	if gotName != "web-1" || gotTTL != 10*time.Minute {
-		t.Fatalf("daemon received name %q and ttl %s", gotName, gotTTL)
+	if got != sent {
+		t.Fatalf("daemon received %+v, want %+v", got, sent)
 	}
 	if *created != want {
 		t.Fatalf("response = %+v, want %+v", *created, want)
@@ -425,7 +426,7 @@ func TestCreateToken(t *testing.T) {
 
 func TestCreateTokenReportsDaemonRejection(t *testing.T) {
 	h := &ipcHandlers{deps: ServerDeps{Tokens: &TokenControlDeps{
-		Create: func(context.Context, string, time.Duration) (CreateTokenResponse, error) {
+		Create: func(context.Context, CreateTokenRequest) (CreateTokenResponse, error) {
 			return CreateTokenResponse{}, errors.New(`invalid client name "Web 1"`)
 		},
 	}}}
@@ -435,6 +436,59 @@ func TestCreateTokenReportsDaemonRejection(t *testing.T) {
 	_, err := newTestClient(ts).CreateToken(context.Background(), CreateTokenRequest{Name: "Web 1", TTL: time.Hour})
 	if err == nil || !strings.Contains(err.Error(), `invalid client name "Web 1"`) || !strings.Contains(err.Error(), "422") {
 		t.Fatalf("CreateToken error = %v, want the daemon's reason with status 422", err)
+	}
+	if errors.Is(err, ErrReplaceRequired) {
+		t.Errorf("CreateToken error %v is ErrReplaceRequired", err)
+	}
+}
+
+// A daemon started before its binary was upgraded answers with a bare token
+// ID, or, before --replace, without the token ID; that one creates tokens for
+// names that need a replacement without asking. Neither answer is a token,
+// for the CLI or the TUI.
+func TestCreateTokenRefusesAnswerOfOutdatedDaemon(t *testing.T) {
+	for _, answer := range []string{
+		`{"token":"0123456789abcdef"}`,
+		`{"token":"token","server_url":"https://sigil.example.com","public_url_configured":true}`,
+	} {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, answer)
+		}))
+		created, err := newTestClient(ts).CreateToken(context.Background(), CreateTokenRequest{Name: "web-1", TTL: time.Hour})
+		ts.Close()
+		if err == nil || !strings.Contains(err.Error(), "restart the sigils service") {
+			t.Errorf("answer %s: token %+v, error %v; want a request to restart the daemon", answer, created, err)
+		}
+	}
+}
+
+// The daemon's refusal of a name that needs a replacement reaches the caller
+// as ErrReplaceRequired, with the daemon's reason, so that the CLI and the
+// TUI can each say how to replace.
+func TestCreateTokenReportsReplaceRequired(t *testing.T) {
+	const reason = `client "web-1" is already enrolled`
+	h := &ipcHandlers{deps: ServerDeps{Tokens: &TokenControlDeps{
+		Create: func(context.Context, CreateTokenRequest) (CreateTokenResponse, error) {
+			return CreateTokenResponse{}, fmt.Errorf("%s; %w", reason, ErrReplaceRequired)
+		},
+	}}}
+	ts := httptest.NewServer(buildIPCRouter(h))
+	defer ts.Close()
+
+	_, err := newTestClient(ts).CreateToken(context.Background(), CreateTokenRequest{Name: "web-1", TTL: time.Hour})
+	if !errors.Is(err, ErrReplaceRequired) || !strings.Contains(err.Error(), reason) || !strings.Contains(err.Error(), "409") {
+		t.Fatalf("CreateToken error = %v, want ErrReplaceRequired with the daemon's reason and status 409", err)
+	}
+
+	// Status 409 from another route is not a refusal of a token.
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "conflict", http.StatusConflict)
+	}))
+	defer other.Close()
+	if err := newTestClient(other).ReloadServer(context.Background()); err == nil || errors.Is(err, ErrReplaceRequired) {
+		t.Errorf("reload answered 409: error = %v, want one that is not ErrReplaceRequired", err)
 	}
 }
 

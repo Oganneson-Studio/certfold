@@ -22,7 +22,7 @@ func TestSystemdUnitRestartsAfterFiveSeconds(t *testing.T) {
 	}
 	// The option only reaches kardianos on Linux.
 	if runtime.GOOS == "linux" {
-		if got := buildServiceConfig(Config{Role: RoleServer}).Option["SystemdScript"]; got != systemdUnit {
+		if got := mustBuildServiceConfig(t, Config{Role: RoleServer}).Option["SystemdScript"]; got != systemdUnit {
 			t.Errorf("SystemdScript option = %q, want the unit", got)
 		}
 	}

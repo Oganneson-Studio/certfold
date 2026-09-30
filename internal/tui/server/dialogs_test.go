@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -43,6 +45,29 @@ func TestConfirmationActsOnlyOnY(t *testing.T) {
 				t.Error("the confirmation stayed open after y")
 			}
 		})
+	}
+}
+
+// A token refused because a client or token newer than the lists of the TUI
+// has its name: the status line says how to replace in the TUI, not with the
+// flag of the CLI, and the lists are refreshed, so the next try asks.
+func TestTokenRefusedForReplacementSaysHowInTheTUI(t *testing.T) {
+	fake := newFake(3)
+	fake.setActionErr(fmt.Errorf("client %q is already enrolled; %w", "web-9", ipc.ErrReplaceRequired))
+	m, _ := press(t, onTab(t, fake, tabTokens), "n", "web-9", "enter")
+	if !shows(m, "create the token again to confirm the replacement") || shows(m, "--replace") {
+		t.Errorf("status after the refusal: %q", m.View())
+	}
+}
+
+// A renewal that the IPC client gave up waiting for, after five minutes, may
+// still finish in the daemon, and the status line says so.
+func TestRenewalNotWaitedForMayStillFinish(t *testing.T) {
+	fake := newFake(3)
+	fake.setActionErr(fmt.Errorf("ipc request: %w", context.DeadlineExceeded))
+	m, _ := press(t, onTab(t, fake, tabCertificates), "R", "y")
+	if !shows(m, "the renewal may still finish in the daemon: see `sigils events` or `sigils cert show mail`") {
+		t.Errorf("status after a renewal that timed out: %q", m.View())
 	}
 }
 
@@ -89,6 +114,63 @@ func TestTokenFormTakesTheKeysOfOtherCommands(t *testing.T) {
 	}
 }
 
+// TestTokenForEnrolledNameAsksFirst covers a new token for the name of an
+// enrolled client: the host that redeems it replaces the client, so the TUI
+// asks before it creates the token, and then asks the daemon to replace.
+func TestTokenForEnrolledNameAsksFirst(t *testing.T) {
+	fake := newFake(3)
+	m, _ := press(t, onTab(t, fake, tabTokens), "n", "web-2", "enter")
+	if m.confirm == nil || !shows(m, `Client "web-2" is enrolled.`) || len(fake.changes()) != 0 {
+		t.Fatalf("token for enrolled web-2: confirmation %v, calls %q; want a confirmation and no call", m.confirm, fake.changes())
+	}
+	m, _ = press(t, m, "n")
+	if m.confirm != nil || len(fake.changes()) != 0 {
+		t.Fatalf("n: confirmation %v, calls %q; want it closed and no call", m.confirm, fake.changes())
+	}
+
+	m, _ = press(t, m, "n", "web-2", "enter", "y")
+	if calls := fake.changes(); !slices.Equal(calls, []string{"CreateToken web-2 1h0m0s replace"}) {
+		t.Errorf("y: backend calls %q, want the token created to replace web-2", calls)
+	}
+	if m.confirm != nil || m.created == nil {
+		t.Error("confirming did not show the new token")
+	}
+
+	// A name no client has needs no confirmation.
+	fake = newFake(3)
+	m, _ = press(t, onTab(t, fake, tabTokens), "n", "web-9", "enter")
+	if calls := fake.changes(); m.confirm != nil || !slices.Equal(calls, []string{"CreateToken web-9 1h0m0s"}) {
+		t.Errorf("token for web-9: confirmation %v, calls %q; want the token created at once", m.confirm, calls)
+	}
+}
+
+// TestTokenForNameWithUnusedTokenAsksFirst covers a new token for a name
+// with an unused token: of the two hosts that enroll with them, the second
+// replaces the first, so the TUI asks as for an enrolled client. A token
+// that was used or has expired enrolls no host.
+func TestTokenForNameWithUnusedTokenAsksFirst(t *testing.T) {
+	fake := newFake(3)
+	m, _ := press(t, onTab(t, fake, tabTokens), "n", "web-6", "enter")
+	if m.confirm == nil || !shows(m, `An enrollment token for "web-6" is unused.`) || len(fake.changes()) != 0 {
+		t.Fatalf("token for web-6, whose token is unused: confirmation %v, calls %q; want a confirmation and no call", m.confirm, fake.changes())
+	}
+	m, _ = press(t, m, "y")
+	if calls := fake.changes(); !slices.Equal(calls, []string{"CreateToken web-6 1h0m0s replace"}) {
+		t.Errorf("y: backend calls %q, want the token created as a replacement", calls)
+	}
+	if m.created == nil || !strings.Contains(m.created.content(m.created.view.Width), `Revoked   1 unused token(s) for "web-6"`) {
+		t.Error("the box of the replacing token does not say that it revoked the unused token")
+	}
+
+	for _, name := range []string{"web-5", "web-4"} { // used, expired
+		fake := newFake(3)
+		m, _ := press(t, onTab(t, fake, tabTokens), "n", name, "enter")
+		if calls := fake.changes(); m.confirm != nil || !slices.Equal(calls, []string{"CreateToken " + name + " 1h0m0s"}) {
+			t.Errorf("token for %s: confirmation %v, calls %q; want the token created at once", name, m.confirm, calls)
+		}
+	}
+}
+
 func TestNewTokenShownOnlyInItsBox(t *testing.T) {
 	fake := newFake(3)
 	m, _ := press(t, onTab(t, fake, tabTokens), "n", "web-9", "enter")
@@ -98,10 +180,15 @@ func TestNewTokenShownOnlyInItsBox(t *testing.T) {
 	// The lines are cut to the width of the box and joined again here.
 	content := strings.ReplaceAll(m.created.content(m.created.view.Width), "\n", "")
 	sh, ps1 := api.InstallCommands(testServerURL, testToken)
-	for _, want := range []string{testToken, sh, ps1} {
+	// The ID names the token on the Tokens tab, as the time it expires does.
+	id, expires := m.created.token.TokenID, m.created.token.ExpiresAt.Local().Format("2006-01-02 15:04:05 -07:00")
+	for _, want := range []string{testToken, sh, ps1, "Token ID  " + id, "Expires   " + expires} {
 		if !strings.Contains(content, want) {
 			t.Errorf("the box lacks %q", want)
 		}
+	}
+	if id == "" || strings.Contains(content, "Revoked") {
+		t.Errorf("the box of a token that replaces nothing: ID %q, content %q", id, content)
 	}
 	if !holds(reflect.ValueOf(m), testToken, map[uintptr]bool{}) {
 		t.Fatal("holds does not find the token in the open box")

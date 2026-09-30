@@ -3,6 +3,7 @@ package ipc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -76,16 +77,31 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		detail := strings.TrimSpace(string(message))
-		if detail != "" {
-			return fmt.Errorf("ipc %s %s: server returned %d: %s", method, path, resp.StatusCode, detail)
+		text := fmt.Sprintf("ipc %s %s: server returned %d", method, path, resp.StatusCode)
+		if detail := strings.TrimSpace(string(message)); detail != "" {
+			text += ": " + detail
 		}
-		return fmt.Errorf("ipc %s %s: server returned %d", method, path, resp.StatusCode)
+		return &statusError{code: resp.StatusCode, text: text}
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
 	}
 	return nil
+}
+
+// statusError is an answer of the daemon with an error status. replace
+// marks the refusal of a token that must be created as a replacement.
+type statusError struct {
+	code    int
+	text    string
+	replace bool
+}
+
+func (e *statusError) Error() string { return e.text }
+
+// Is reports a refusal marked replace as ErrReplaceRequired.
+func (e *statusError) Is(target error) bool {
+	return target == ErrReplaceRequired && e.replace
 }
 
 // ListCerts returns the configured certificates and their issuance state.
@@ -144,7 +160,18 @@ func (c *Client) DeleteClient(ctx context.Context, name string) error {
 func (c *Client) CreateToken(ctx context.Context, req CreateTokenRequest) (*CreateTokenResponse, error) {
 	var out CreateTokenResponse
 	if err := c.do(ctx, http.MethodPost, "/ipc/v1/tokens", req, &out); err != nil {
+		// The daemon refuses a name that needs a replacement with 409.
+		var status *statusError
+		if errors.As(err, &status) && status.code == http.StatusConflict {
+			status.replace = true
+		}
 		return nil, err
+	}
+	// A daemon started before its binary was upgraded answers without the
+	// token ID, or with a bare token ID that can never be redeemed. It does
+	// not refuse the names that need a replacement either.
+	if out.Token == "" || out.TokenID == "" || out.ServerURL == "" {
+		return nil, errors.New("the running sigils daemon returned no usable token; it is older than this program, so restart the sigils service and try again")
 	}
 	return &out, nil
 }

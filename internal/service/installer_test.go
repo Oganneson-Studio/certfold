@@ -6,17 +6,29 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	ksvc "github.com/kardianos/service"
 )
 
 // ---------------------------------------------------------------------------
 // buildServiceConfig
 // ---------------------------------------------------------------------------
 
+func mustBuildServiceConfig(t *testing.T, cfg Config) *ksvc.Config {
+	t.Helper()
+	sc, err := buildServiceConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sc
+}
+
 func TestBuildServiceConfig_Server(t *testing.T) {
-	cfg := buildServiceConfig(Config{Role: RoleServer})
+	cfg := mustBuildServiceConfig(t, Config{Role: RoleServer})
 	if cfg.Name != "sigils" {
 		t.Errorf("Name: got %q, want %q", cfg.Name, "sigils")
 	}
@@ -32,7 +44,7 @@ func TestBuildServiceConfig_WindowsRestartsOnFailure(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("recovery actions are a Windows service option")
 	}
-	opts := buildServiceConfig(Config{Role: RoleServer}).Option
+	opts := mustBuildServiceConfig(t, Config{Role: RoleServer}).Option
 	if got := opts["OnFailure"]; got != "restart" {
 		t.Errorf("OnFailure: got %v, want restart", got)
 	}
@@ -47,7 +59,7 @@ func TestBuildServiceConfig_WindowsRestartsOnFailure(t *testing.T) {
 }
 
 func TestBuildServiceConfig_Client(t *testing.T) {
-	cfg := buildServiceConfig(Config{Role: RoleClient})
+	cfg := mustBuildServiceConfig(t, Config{Role: RoleClient})
 	if cfg.Name != "sigilc" {
 		t.Errorf("Name: got %q, want %q", cfg.Name, "sigilc")
 	}
@@ -57,22 +69,38 @@ func TestBuildServiceConfig_Client(t *testing.T) {
 }
 
 func TestBuildServiceConfig_ExplicitConfigPath(t *testing.T) {
-	custom := "/custom/path/server.yaml"
-	cfg := buildServiceConfig(Config{Role: RoleServer, ConfigPath: custom})
-	found := false
-	for _, a := range cfg.Arguments {
-		if a == custom {
-			found = true
-		}
+	custom := filepath.Join(t.TempDir(), "server.yaml")
+	args := mustBuildServiceConfig(t, Config{Role: RoleServer, ConfigPath: custom}).Arguments
+	if want := []string{"serve", "--config", custom}; !slices.Equal(args, want) {
+		t.Errorf("Arguments = %q, want %q", args, want)
 	}
-	if !found {
-		t.Errorf("expected %q in Arguments %v", custom, cfg.Arguments)
+}
+
+// TestBuildServiceConfigRegistersAbsoluteConfigPath covers
+// `sigils --config server.yaml service install` run from the directory that
+// holds server.yaml. The service manager starts the daemon in another working
+// directory (/ under systemd, System32 under the SCM), so a relative path
+// registered as is names a file the daemon cannot find: it fails at start and
+// is restarted every 5 or 10 seconds without end.
+func TestBuildServiceConfigRegistersAbsoluteConfigPath(t *testing.T) {
+	want, err := filepath.Abs("server.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []Role{RoleServer, RoleClient} {
+		args := mustBuildServiceConfig(t, Config{Role: role, ConfigPath: "server.yaml"}).Arguments
+		if len(args) != 3 || args[0] != "serve" || args[1] != "--config" {
+			t.Fatalf("role %d: arguments = %q, want serve --config <path>", role, args)
+		}
+		if args[2] != want {
+			t.Errorf("role %d: service registered with the config path %q, want %q", role, args[2], want)
+		}
 	}
 }
 
 func TestBuildServiceConfig_DefaultConfigPath(t *testing.T) {
 	// When ConfigPath is empty the platform default should appear in Arguments.
-	cfg := buildServiceConfig(Config{Role: RoleServer})
+	cfg := mustBuildServiceConfig(t, Config{Role: RoleServer})
 	joined := strings.Join(cfg.Arguments, " ")
 	want := defaultServerConfigPath()
 	if !strings.Contains(joined, want) {
@@ -122,8 +150,10 @@ func TestUnpackClients_EmptyFS(t *testing.T) {
 	if n != 0 {
 		t.Errorf("expected 0 binaries, got %d", n)
 	}
-	if !strings.Contains(buf.String(), "warning") {
-		t.Errorf("expected warning in output, got: %q", buf.String())
+	// The warning says where to put the binaries, and names no setting
+	// that server.yaml does not have.
+	if got := buf.String(); !strings.Contains(got, "warning") || !strings.Contains(got, filepath.Join(dir, "binaries")) || strings.Contains(got, "binary_source") {
+		t.Errorf("output = %q, want a warning that names %s", got, filepath.Join(dir, "binaries"))
 	}
 }
 

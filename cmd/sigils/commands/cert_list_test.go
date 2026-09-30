@@ -47,8 +47,8 @@ func TestCertListAlignsLongNames(t *testing.T) {
 	rows := [][]string{
 		{"NAME", "CA", "DOMAINS", "STATE", "NOT AFTER", "RENEW AT"},
 		{"api", "le", "api.example.com", "pending", "-", "-"},
-		{long.Name, "le", "long.example.com", "valid", notAfter.Format("2006-01-02"),
-			notAfter.Add(-20*24*time.Hour).Format("2006-01-02") + " (ari)"},
+		{long.Name, "le", "long.example.com", "valid", notAfter.Local().Format("2006-01-02"),
+			notAfter.Add(-20*24*time.Hour).Local().Format("2006-01-02") + " (ari)"},
 	}
 	lines := strings.Split(strings.TrimSuffix(table, "\n"), "\n")
 	if len(lines) != len(rows) {

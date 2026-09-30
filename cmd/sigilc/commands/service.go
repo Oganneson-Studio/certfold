@@ -24,11 +24,12 @@ func newServiceCmd() *cobra.Command {
 	return cmd
 }
 
+// clientSvcConfig returns the service of sigilc started with the
+// configuration file the other commands read.
 func clientSvcConfig(cmd *cobra.Command) internalsvc.Config {
-	cfgPath, _ := cmd.Root().PersistentFlags().GetString("config")
 	return internalsvc.Config{
 		Role:       internalsvc.RoleClient,
-		ConfigPath: cfgPath,
+		ConfigPath: clientConfigPath(cmd),
 	}
 }
 
@@ -59,7 +60,7 @@ func runClientServiceControl(action string) func(*cobra.Command, []string) error
 
 func runClientServiceStatus(cmd *cobra.Command, _ []string) error {
 	cfg := clientSvcConfig(cmd)
-	status, err := internalsvc.StatusText(internalsvc.NoopDaemon(), cfg)
+	status, err := internalsvc.StatusText(internalsvc.NoopDaemon(), cfg, clientIPCSocket(cmd))
 	if err != nil {
 		return err
 	}
