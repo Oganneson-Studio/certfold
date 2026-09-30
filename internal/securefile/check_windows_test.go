@@ -100,6 +100,31 @@ func TestCheckSecurity(t *testing.T) {
 			private: []string{users + " access it"},
 		},
 		{
+			name:    "owner changeable by Users",
+			sddl:    "O:BAD:P" + trustedACEs + "(A;;WO;;;BU)",
+			write:   []string{users + " write to it"},
+			private: []string{users + " access it"},
+		},
+		{
+			name:    "all access for Users",
+			sddl:    "O:BAD:P" + trustedACEs + "(A;;GA;;;BU)",
+			write:   []string{users + " write to it"},
+			private: []string{users + " access it"},
+		},
+		{
+			name:    "files and folders writable by Users",
+			sddl:    "O:BAD:P" + trustedACEs + "(A;OICIIO;GW;;;BU)",
+			write:   []string{users + " write to it"},
+			private: []string{users + " access it"},
+		},
+		{
+			// 0x4 is FILE_APPEND_DATA, FILE_ADD_SUBDIRECTORY on a directory.
+			name:    "folders addable by Users",
+			sddl:    "O:BAD:P" + trustedACEs + "(A;;0x4;;;BU)",
+			write:   []string{users + " write to it"},
+			private: []string{users + " access it"},
+		},
+		{
 			name:    "every account listed once",
 			sddl:    "O:BAD:P" + trustedACEs + "(A;;FA;;;BU)(A;OICI;FA;;;BU)(A;;FA;;;WD)",
 			write:   []string{users + ", " + everyone + " write", "/remove:g *S-1-5-32-545 *S-1-1-0"},
