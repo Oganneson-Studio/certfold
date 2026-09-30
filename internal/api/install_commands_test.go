@@ -6,7 +6,7 @@ import "testing"
 // the usage comments of both install scripts repeat.
 func TestInstallCommands(t *testing.T) {
 	sh, ps1 := InstallCommands("https://sigil.example.com:8443", "tok_EN-123")
-	if want := "curl -fsSL 'https://sigil.example.com:8443/install.sh' | sudo sh -s -- --token 'tok_EN-123'"; sh != want {
+	if want := "curl -fsSL --proto '=https' --proto-redir '=https' 'https://sigil.example.com:8443/install.sh' | sudo sh -s -- --token 'tok_EN-123'"; sh != want {
 		t.Errorf("sh command:\n got %s\nwant %s", sh, want)
 	}
 	want := "[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; " +

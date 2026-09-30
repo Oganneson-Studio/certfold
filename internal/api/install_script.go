@@ -86,7 +86,7 @@ esac
 TMP=$(mktemp "$DEST.XXXXXX")
 trap 'rm -f "$TMP"' EXIT
 echo "Downloading sigilc for $OS/$ARCH..."
-curl -fsSL "$SERVER_URL/download/sigilc?os=$OS&arch=$ARCH" -o "$TMP"
+curl -fsSL --proto '=https' --proto-redir '=https' "$SERVER_URL/download/sigilc?os=$OS&arch=$ARCH" -o "$TMP"
 chmod 0755 "$TMP"
 # A sigilc that does not run fails here, before anything changes.
 "$TMP" version

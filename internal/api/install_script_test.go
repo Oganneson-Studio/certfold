@@ -186,8 +186,8 @@ func TestInstallShUsage(t *testing.T) {
 	withToken, _ := InstallCommands(installTestURL, "<TOKEN>")
 	for _, want := range []string{
 		"\n#   " + withToken + "\n",
-		"\n#   curl -fsSL '" + installTestURL + "/install.sh' | sudo sh\n",
-		"\n#   curl -fsSL '" + installTestURL + "/install.sh' | sudo sh -s -- --upgrade\n",
+		"\n#   curl -fsSL --proto '=https' --proto-redir '=https' '" + installTestURL + "/install.sh' | sudo sh\n",
+		"\n#   curl -fsSL --proto '=https' --proto-redir '=https' '" + installTestURL + "/install.sh' | sudo sh -s -- --upgrade\n",
 		"\n#   sigils token create --name <name> --replace\n",
 		`echo "client, create the token with: sigils token create --name <name> --replace" >&2`,
 	} {
@@ -274,7 +274,7 @@ func TestInstallShReplacesSigilc(t *testing.T) {
 	inOrder(t, script,
 		"\n    --upgrade) UPGRADE=1; shift ;;\n",
 		"\nTMP=$(mktemp \"$DEST.XXXXXX\")\ntrap 'rm -f \"$TMP\"' EXIT\n",
-		` -o "$TMP"`,
+		`curl -fsSL --proto '=https' --proto-redir '=https' "$SERVER_URL/download/sigilc?os=$OS&arch=$ARCH" -o "$TMP"`,
 		"\n\"$TMP\" version\n",
 		"\nfor f in /etc/systemd/system/sigilc.service /Library/LaunchDaemons/sigilc.plist; do\n"+
 			"  if [ -e \"$f\" ]; then INSTALLED=1; fi\ndone\n",
