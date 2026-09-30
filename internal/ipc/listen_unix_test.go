@@ -3,12 +3,14 @@
 package ipc
 
 import (
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func testSocketPath(t *testing.T) string {
@@ -93,32 +95,40 @@ func TestListenSocketModeIs0660(t *testing.T) {
 }
 
 // Dial trusts a socket that root or the caller owns: a daemon runs as root,
-// or as the user who runs the CLI.
+// or as the user who runs the CLI. The owners are made up, so the test covers
+// every case whoever runs it.
 func TestCheckSocketOwner(t *testing.T) {
-	path := testSocketPath(t)
-	l, err := Listen(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	info, err := os.Lstat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	owner := int(info.Sys().(*syscall.Stat_t).Uid)
-	if err := checkSocketOwner(info, owner); err != nil {
-		t.Fatalf("socket of the caller refused: %v", err)
-	}
-	if owner == 0 {
-		if err := checkSocketOwner(info, 1000); err != nil {
-			t.Fatalf("socket of root refused: %v", err)
+	for _, tc := range []struct {
+		owner uint32
+		euid  int
+		ok    bool
+	}{
+		{owner: 0, euid: 1000, ok: true},
+		{owner: 0, euid: 0, ok: true},
+		{owner: 1000, euid: 1000, ok: true},
+		{owner: 1001, euid: 1000},
+		{owner: 1000, euid: 0},
+	} {
+		err := checkSocketOwner(ownedBy(tc.owner), tc.euid)
+		if (err == nil) != tc.ok {
+			t.Errorf("socket of uid %d for uid %d: error = %v, want accepted %t", tc.owner, tc.euid, err, tc.ok)
 		}
-		return
-	}
-	if err := checkSocketOwner(info, owner+1); err == nil || !strings.Contains(err.Error(), "rather than root") {
-		t.Fatalf("socket of uid %d accepted for uid %d: %v", owner, owner+1, err)
+		if err != nil && !strings.Contains(err.Error(), "rather than root") {
+			t.Errorf("socket of uid %d for uid %d: error = %v, want an owner error", tc.owner, tc.euid, err)
+		}
 	}
 }
+
+// ownedBy is the FileInfo of a file that uid owns; checkSocketOwner reads
+// only Sys.
+type ownedBy uint32
+
+func (uid ownedBy) Sys() any       { return &syscall.Stat_t{Uid: uint32(uid)} }
+func (ownedBy) Name() string       { return "s.sock" }
+func (ownedBy) Size() int64        { return 0 }
+func (ownedBy) Mode() fs.FileMode  { return fs.ModeSocket | 0o660 }
+func (ownedBy) ModTime() time.Time { return time.Time{} }
+func (ownedBy) IsDir() bool        { return false }
 
 // Only root can give a socket to another user, so this test runs as root
 // only: on the Linux verification server with sudo.
