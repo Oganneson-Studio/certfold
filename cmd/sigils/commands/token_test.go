@@ -151,7 +151,7 @@ func TestTokenCreateIssuesTokenThroughDaemon(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dataDir := t.TempDir()
+			dataDir := filepath.Join(t.TempDir(), "data")
 			socket, listen, stop := startDaemon(t, dataDir, tt.publicURL)
 			wantURL := tt.publicURL
 			if wantURL == "" {

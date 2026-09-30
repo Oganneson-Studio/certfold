@@ -12,7 +12,7 @@ import (
 // loosened in the meantime. New files are created 0600, so only a reopen
 // shows that Open protects the files it finds.
 func TestOpenTightensLoosenedFilesOnReopen(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sigils.db")
+	path := filepath.Join(privateDirectory(t), "sigils.db")
 	db, err := Open(path)
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
@@ -72,4 +72,14 @@ func assertPrivateSQLiteDirectory(t *testing.T, path string) {
 	if got := info.Mode().Perm(); got != 0o700 {
 		t.Fatalf("mode for %s = %#o, want 0700", path, got)
 	}
+}
+
+// directorySecurity describes the mode of the directory at path.
+func directorySecurity(t *testing.T, path string) string {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Mode().String()
 }

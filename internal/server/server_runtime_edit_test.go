@@ -213,7 +213,7 @@ func TestCertificateEditFollowsASymbolicLink(t *testing.T) {
 
 // The daemon serves the certificate edits of its server.yaml over IPC.
 func TestRunEditsItsConfigurationOverIPC(t *testing.T) {
-	dataDir := t.TempDir()
+	dataDir := privateDir(t)
 	miniCA, err := ca.Bootstrap(dataDir)
 	if err != nil {
 		t.Fatal(err)

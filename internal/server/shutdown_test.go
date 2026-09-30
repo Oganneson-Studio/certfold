@@ -58,7 +58,7 @@ certificates:
     domains: ["api.example.com"]
     ca: "stalled"
     dns_provider: "cf"
-`, freeTCPPort(t), t.TempDir(), testIPCSocket(t), stalled.URL+"/dir")
+`, freeTCPPort(t), privateDir(t), testIPCSocket(t), stalled.URL+"/dir")
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
 	}
