@@ -65,7 +65,7 @@ func TestOpenRefusesDirectoryOthersMayAccess(t *testing.T) {
 		_ = db.Close()
 		t.Fatal("Open used a directory that other accounts may access")
 	}
-	for _, want := range []string{dir, "remove it for sigils to create it again"} {
+	for _, want := range []string{dir, "then run:"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %v, want it to contain %q", err, want)
 		}

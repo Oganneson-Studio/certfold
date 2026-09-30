@@ -26,6 +26,10 @@ func TestCheckSecurity(t *testing.T) {
 	}
 	const path = `C:\ProgramData\Sigil`
 	const trustedACEs = "(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	// What the errors advise: an owner sigil does not trust may have put
+	// anything in the directory.
+	const remove, check = "remove it, so that it is created again", "Check the files in it, then run:"
+	grant := `"*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F"`
 	// Windows translates the names of these accounts.
 	users, everyone := accountOf(t, "S-1-5-32-545"), accountOf(t, "S-1-1-0")
 	authenticated := accountOf(t, "S-1-5-11")
@@ -43,8 +47,16 @@ func TestCheckSecurity(t *testing.T) {
 		{
 			name:    "owned by Users",
 			sddl:    "O:BUD:P" + trustedACEs,
-			write:   []string{path, "is owned by " + users, `icacls "` + path + `" /setowner *S-1-5-32-544`},
-			private: []string{path, "is owned by " + users},
+			write:   []string{path, "is owned by " + users, remove, `icacls "` + path + `" /setowner *S-1-5-32-544`},
+			private: []string{path, "is owned by " + users, remove},
+		},
+		{
+			// Both at once, each fix on a line of its own.
+			name: "owned and writable by Users",
+			sddl: "O:BUD:P" + trustedACEs + "(A;OICI;FA;;;BU)",
+			write: []string{"is owned by " + users, "; it lets " + users + " write to it", remove,
+				"/setowner *S-1-5-32-544\n  icacls \"" + path + "\" /inheritance:r /grant:r " + grant},
+			private: []string{"is owned by " + users, "; it lets " + users + " access it", remove},
 		},
 		{
 			// The ACL a folder that an administrator creates in
@@ -52,10 +64,9 @@ func TestCheckSecurity(t *testing.T) {
 			name: "created in ProgramData",
 			sddl: "O:BAD:AI(A;OICIIOID;GA;;;CO)(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)" +
 				"(A;OICIID;0x1200a9;;;BU)(A;CIID;0x116;;;BU)",
-			write: []string{path, users + " write to it or change its permissions",
-				`icacls "` + path + `" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F`,
-				"/remove:g *S-1-5-32-545"},
-			private: []string{path, users + " access it"},
+			write: []string{path, users + " write to it or change its permissions", check,
+				`icacls "` + path + `" /inheritance:r /grant:r ` + grant, "/remove:g *S-1-5-32-545"},
+			private: []string{path, users + " access it", check},
 		},
 		{
 			name:    "readable by Users",

@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ProtectFile applies platform-native private access controls to an existing
@@ -58,6 +59,19 @@ func CheckDirectory(path string) error {
 // the group and others nothing. Like CheckDirectory, it changes nothing.
 func CheckPrivateDirectory(path string) error {
 	return checkPrivateDirectory(path)
+}
+
+// directoryError reports every problem that the checks found with the
+// directory at path, and the commands that fix them, one to a line. An
+// owner that sigil does not trust may have put anything in it, which the
+// commands would keep: removing it comes first then.
+func directoryError(path string, problems []string, untrustedOwner bool, commands []string) error {
+	advice := "Check the files in it, then run:"
+	if untrustedOwner {
+		advice = "Its owner may have put files in it and may change who can write to it: remove it, so that it is created again. " +
+			"To keep it instead, check every file in it, then run:"
+	}
+	return fmt.Errorf("%s %s. %s\n  %s", path, strings.Join(problems, "; it "), advice, strings.Join(commands, "\n  "))
 }
 
 // WriteFile atomically replaces path with data. The temporary file gets

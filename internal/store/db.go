@@ -103,10 +103,7 @@ func prepareSQLiteDirectory(databasePath string) error {
 		return fmt.Errorf("inspect sqlite directory %s: %w", dir, err)
 	}
 	// Also after creating it: another account may have created it first.
-	if err := securefile.CheckPrivateDirectory(dir); err != nil {
-		return fmt.Errorf("%w. Or remove it for sigils to create it again", err)
-	}
-	return nil
+	return securefile.CheckPrivateDirectory(dir)
 }
 
 // protectSQLiteFiles protects the database at databasePath, and those of its

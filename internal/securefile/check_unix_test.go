@@ -42,22 +42,44 @@ func TestCheckPrivateDirectory(t *testing.T) {
 }
 
 // TestCheckPrivateDirectoryRefusesAnotherOwner covers a directory that another
-// user owns, even with mode 0700: its owner may have put files in it. As root,
-// the test gives a directory to nobody; otherwise / stands for one.
+// user owns: its owner may have put files in it, so the error says to remove
+// it first. With mode 0700 the owner is the only problem; with 0755 the error
+// reports both at once. As root, the test gives a directory to nobody;
+// otherwise /, root's with mode 0755, stands for one with both problems.
 func TestCheckPrivateDirectoryRefusesAnotherOwner(t *testing.T) {
-	dir := "/"
-	if os.Geteuid() == 0 {
-		dir = t.TempDir()
-		if err := os.Chmod(dir, 0o700); err != nil {
+	const remove = "remove it, so that it is created again"
+	if os.Geteuid() != 0 {
+		checkErrorContains(t, "/", remove, fmt.Sprintf(`chown %d "/"`, os.Geteuid()), `chmod 700 "/"`)
+		return
+	}
+	dir := t.TempDir()
+	if err := os.Chown(dir, 65534, 65534); err != nil {
+		t.Fatal(err)
+	}
+	chown := fmt.Sprintf(`chown 0 "%s"`, dir)
+	for _, mode := range []os.FileMode{0o700, 0o755} {
+		if err := os.Chmod(dir, mode); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Chown(dir, 65534, 65534); err != nil {
-			t.Fatal(err)
+		if mode == 0o700 {
+			checkErrorContains(t, dir, remove, chown)
+		} else {
+			checkErrorContains(t, dir, remove, chown+"\n  "+`chmod 700 "`+dir+`"`)
 		}
 	}
+}
+
+// checkErrorContains fails unless CheckPrivateDirectory refuses dir with an
+// error that contains every one of wants.
+func checkErrorContains(t *testing.T, dir string, wants ...string) {
+	t.Helper()
 	err := CheckPrivateDirectory(dir)
-	want := fmt.Sprintf(`chown %d "%s"`, os.Geteuid(), dir)
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("%v, want an error that says to run %s", err, want)
+	if err == nil {
+		t.Fatalf("%s passed", dir)
+	}
+	for _, want := range wants {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("%v\nwant it to contain %q", err, want)
+		}
 	}
 }

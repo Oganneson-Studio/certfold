@@ -221,10 +221,6 @@ func checkSecurity(path string, descriptor *windows.SECURITY_DESCRIPTOR, trusted
 	if err != nil {
 		return fmt.Errorf("read the owner of %s: %w", path, err)
 	}
-	if !slices.ContainsFunc(trusted, owner.Equals) {
-		return fmt.Errorf("%s is owned by %s, but only %s may own it: its owner may have put files in it and may change who can write to it. Check the files in it, then run: icacls \"%s\" /setowner *S-1-5-32-544",
-			path, accountName(owner), accountNames(trusted), path)
-	}
 	dacl, _, err := descriptor.DACL()
 	if err != nil {
 		return fmt.Errorf("read the DACL of %s: %w", path, err)
@@ -263,21 +259,31 @@ func checkSecurity(path string, descriptor *windows.SECURITY_DESCRIPTOR, trusted
 			others = append(others, sid)
 		}
 	}
-	if len(others) == 0 {
+	ownerTrusted := slices.ContainsFunc(trusted, owner.Equals)
+	if ownerTrusted && len(others) == 0 {
 		return nil
 	}
-	names := make([]string, len(others))
-	fix := fmt.Sprintf("icacls \"%s\" /inheritance:r /grant:r", path)
-	for _, trustee := range trusted {
-		fix += fmt.Sprintf(" *%s:(OI)(CI)F", trustee)
+	var problems, commands []string
+	if !ownerTrusted {
+		problems = append(problems, fmt.Sprintf("is owned by %s, and only %s may own it", accountName(owner), accountNames(trusted)))
+		commands = append(commands, fmt.Sprintf(`icacls "%s" /setowner *S-1-5-32-544`, path))
 	}
-	fix += " /remove:g"
-	for i, other := range others {
-		names[i] = accountName(other)
-		fix += " *" + other.String()
+	if len(others) > 0 {
+		names := make([]string, len(others))
+		// Quoted, as PowerShell reads (OI) as an expression.
+		fix := fmt.Sprintf(`icacls "%s" /inheritance:r /grant:r`, path)
+		for _, trustee := range trusted {
+			fix += fmt.Sprintf(` "*%s:(OI)(CI)F"`, trustee)
+		}
+		fix += " /remove:g"
+		for i, other := range others {
+			names[i] = accountName(other)
+			fix += " *" + other.String()
+		}
+		problems = append(problems, fmt.Sprintf("lets %s %s, and only %s may", strings.Join(names, ", "), what, accountNames(trusted)))
+		commands = append(commands, fix)
 	}
-	return fmt.Errorf("%s lets %s %s, but only %s may. Check the files in it, then run: %s",
-		path, strings.Join(names, ", "), what, accountNames(trusted), fix)
+	return directoryError(path, problems, !ownerTrusted, commands)
 }
 
 // accountName returns the name of the account sid stands for, or the SID when

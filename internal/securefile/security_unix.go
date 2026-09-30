@@ -33,14 +33,19 @@ func checkPrivateDirectory(path string) error {
 	if err != nil {
 		return err
 	}
+	var problems, commands []string
 	euid := os.Geteuid()
-	if owner := info.Sys().(*syscall.Stat_t).Uid; owner != uint32(euid) {
-		return fmt.Errorf("%s is owned by uid %d, not by uid %d, the user of this process; check the files in it, then run: chown %d \"%s\"",
-			path, owner, euid, euid, path)
+	owner := info.Sys().(*syscall.Stat_t).Uid
+	if owner != uint32(euid) {
+		problems = append(problems, fmt.Sprintf("is owned by uid %d, and only uid %d, the user of this process, may own it", owner, euid))
+		commands = append(commands, fmt.Sprintf(`chown %d "%s"`, euid, path))
 	}
 	if mode := info.Mode().Perm(); mode&0o077 != 0 {
-		return fmt.Errorf("%s has mode %#o, and only its owner may have access to it; run: chmod 700 \"%s\"",
-			path, mode, path)
+		problems = append(problems, fmt.Sprintf("has mode %#o, and only its owner may have access to it", mode))
+		commands = append(commands, fmt.Sprintf(`chmod 700 "%s"`, path))
 	}
-	return nil
+	if len(problems) == 0 {
+		return nil
+	}
+	return directoryError(path, problems, owner != uint32(euid), commands)
 }
