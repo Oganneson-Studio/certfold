@@ -33,12 +33,32 @@ func runTestProgram(mode string) int {
 	switch mode {
 	case "spawn", "spawn-exit":
 		// Start a child that outlives this program unless it is killed; its
-		// output is not this program's. Then sleep, or exit 0 at once.
+		// output is not this program's. Then sleep, or exit 0 once the child
+		// runs.
 		if err := startTestProgram("child", nil); err != nil {
 			return 1
 		}
 		if mode == "spawn" {
 			time.Sleep(20 * time.Second)
+			return 0
+		}
+		if !heartbeat(os.Getenv(testDirEnv)).started() {
+			return 1
+		}
+		return 0
+	case "exit-during-run":
+		// Run the "spawn" program, and exit without ending the run once the
+		// program's child runs.
+		exe, err := os.Executable()
+		if err != nil {
+			return 1
+		}
+		if err := os.Setenv(testModeEnv, "spawn"); err != nil {
+			return 1
+		}
+		go func() { _, _ = Run(context.Background(), []string{exe}, time.Minute, time.Second) }()
+		if !heartbeat(os.Getenv(testDirEnv)).started() {
+			return 1
 		}
 		return 0
 	case "child":
@@ -170,11 +190,9 @@ func TestRunKillsTheProcessesItsProgramStarted(t *testing.T) {
 func TestRunLeavesTheProcessesOfAProgramThatExited(t *testing.T) {
 	child := newHeartbeat(t)
 
+	// The program exits once its child runs.
 	if _, err := Run(context.Background(), testArgv(t, "spawn-exit"), time.Minute, 100*time.Millisecond); err != nil {
 		t.Fatalf("Run: %v", err)
-	}
-	if !child.started() {
-		t.Fatal("the program's child never ran")
 	}
 	if !child.alive() {
 		t.Fatal("Run killed a process that its program left behind when it exited 0")
