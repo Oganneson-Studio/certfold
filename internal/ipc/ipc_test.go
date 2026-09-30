@@ -481,6 +481,15 @@ func TestCreateTokenReportsReplaceRequired(t *testing.T) {
 	if !errors.Is(err, ErrReplaceRequired) || !strings.Contains(err.Error(), reason) || !strings.Contains(err.Error(), "409") {
 		t.Fatalf("CreateToken error = %v, want ErrReplaceRequired with the daemon's reason and status 409", err)
 	}
+
+	// Status 409 from another route is not a refusal of a token.
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "conflict", http.StatusConflict)
+	}))
+	defer other.Close()
+	if err := newTestClient(other).ReloadServer(context.Background()); err == nil || errors.Is(err, ErrReplaceRequired) {
+		t.Errorf("reload answered 409: error = %v, want one that is not ErrReplaceRequired", err)
+	}
 }
 
 func TestDeleteToken(t *testing.T) {

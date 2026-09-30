@@ -89,18 +89,19 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	return nil
 }
 
-// statusError is an answer of the daemon with an error status.
+// statusError is an answer of the daemon with an error status. replace
+// marks the refusal of a token that must be created as a replacement.
 type statusError struct {
-	code int
-	text string
+	code    int
+	text    string
+	replace bool
 }
 
 func (e *statusError) Error() string { return e.text }
 
-// Is reports status 409 as ErrReplaceRequired, the only error the daemon
-// answers with it.
+// Is reports a refusal marked replace as ErrReplaceRequired.
 func (e *statusError) Is(target error) bool {
-	return target == ErrReplaceRequired && e.code == http.StatusConflict
+	return target == ErrReplaceRequired && e.replace
 }
 
 // ListCerts returns the configured certificates and their issuance state.
@@ -159,6 +160,11 @@ func (c *Client) DeleteClient(ctx context.Context, name string) error {
 func (c *Client) CreateToken(ctx context.Context, req CreateTokenRequest) (*CreateTokenResponse, error) {
 	var out CreateTokenResponse
 	if err := c.do(ctx, http.MethodPost, "/ipc/v1/tokens", req, &out); err != nil {
+		// The daemon refuses a name that needs a replacement with 409.
+		var status *statusError
+		if errors.As(err, &status) && status.code == http.StatusConflict {
+			status.replace = true
+		}
 		return nil, err
 	}
 	// A daemon started before its binary was upgraded answers without the
