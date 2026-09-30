@@ -218,6 +218,52 @@ func TestInstallPs1WaitsForTheDaemon(t *testing.T) {
 	)
 }
 
+// TestInstallPs1LeavesTheTokenAlone checks what install.ps1 must not do: turn
+// off the checks of TLS, or use $Token anywhere but where it takes, asks for
+// and hands on the token. PowerShell names variables regardless of case.
+func TestInstallPs1LeavesTheTokenAlone(t *testing.T) {
+	script := getInstallScript(t, "/install.ps1").Body.String()
+	for _, bad := range []string{"ServerCertificateValidationCallback", "SkipCertificateCheck"} {
+		if strings.Contains(script, bad) {
+			t.Errorf("script contains %q:\n%s", bad, script)
+		}
+	}
+	onlyOn(t, script, regexp.MustCompile(`(?i)\$\{?token\b`),
+		"param([string]$Token, [switch]$Upgrade)",
+		"if ($Upgrade -and $Token) {",
+		"if (-not $Upgrade -and -not $Token) {",
+		"    $Token = [Net.NetworkCredential]::new('', $SecureToken).Password",
+		"    if (-not $Token) { throw 'No enrollment token given.' }",
+		"    $env:SIGILC_TOKEN = $Token",
+	)
+}
+
+// onlyOn checks that ref matches script once on each of lines and nowhere
+// else.
+func onlyOn(t *testing.T, script string, ref *regexp.Regexp, lines ...string) {
+	t.Helper()
+	allowed := make(map[string]bool)
+	for _, line := range lines {
+		allowed[line] = true
+	}
+	seen := make(map[string]int)
+	for _, line := range strings.Split(script, "\n") {
+		n := len(ref.FindAllString(line, -1))
+		if n == 0 {
+			continue
+		}
+		if !allowed[line] {
+			t.Errorf("%s on a line where it has no business: %q", ref, line)
+		}
+		seen[line] += n
+	}
+	for _, line := range lines {
+		if seen[line] != 1 {
+			t.Errorf("%s %d times on %q, want once", ref, seen[line], line)
+		}
+	}
+}
+
 // TestInstallShUsage checks the commands that the comment of install.sh
 // gives: with a token, as sigils token create prints it; asking for the
 // token; and to upgrade. It names --replace, which the token for a reinstall
@@ -286,6 +332,38 @@ func TestInstallShWaitsForTheDaemon(t *testing.T) {
 			"    exit 1\n",
 		"\n  sleep 1\ndone\necho \"$STATUS\"\n",
 		"\necho \"Done.\"\n",
+	)
+}
+
+// TestInstallShLeavesTheTokenAlone checks what install.sh must not do: trace
+// its commands, export variables to every program it runs, run curl in any
+// other way than the one download over https, or use $TOKEN anywhere but
+// where it takes and hands on the token.
+func TestInstallShLeavesTheTokenAlone(t *testing.T) {
+	script := getInstallScript(t, "/install.sh").Body.String()
+	for _, bad := range []string{"set -x", "--insecure", "export"} {
+		if strings.Contains(script, bad) {
+			t.Errorf("script contains %q:\n%s", bad, script)
+		}
+	}
+	if k := regexp.MustCompile(`(^|\s)-k\b`).FindString(script); k != "" {
+		t.Errorf("script contains %q:\n%s", k, script)
+	}
+	// Outside comments, curl runs only to download sigilc.
+	const download = `curl -fsSL --proto '=https' --proto-redir '=https' "$SERVER_URL/download/sigilc?os=$OS&arch=$ARCH" -o "$TMP"`
+	for _, line := range strings.Split(script, "\n") {
+		if strings.Contains(line, "curl") && !strings.HasPrefix(line, "#") && line != download {
+			t.Errorf("curl line %q, want only\n%s", line, download)
+		}
+	}
+	if !strings.Contains(script, "\n"+download+"\n") {
+		t.Errorf("script lacks the download\n%s\n%s", download, script)
+	}
+	onlyOn(t, script, regexp.MustCompile(`\$\{?TOKEN\b`),
+		`if [ -n "$UPGRADE" ] && [ -n "$TOKEN" ]; then usage; fi`,
+		`if [ -z "$UPGRADE" ] && [ -z "$TOKEN" ]; then`,
+		`  if [ -z "$TOKEN" ]; then usage; fi`,
+		`  if ! SIGILC_TOKEN="$TOKEN" "$DEST" enroll; then`,
 	)
 }
 
