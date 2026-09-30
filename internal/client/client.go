@@ -335,7 +335,7 @@ func (c *Client) renewIdentityLocked(ctx context.Context) error {
 	updated := cfgSnapshot
 	updated.Identity.ClientCert = renewal.ClientCert
 	updated.Identity.ClientKey = string(keyAndCSR.KeyPEM)
-	newHTTPClient, err := validateRenewedIdentity(&updated, c.now())
+	newHTTPClient, err := validateRenewedIdentity(&updated)
 	if err != nil {
 		return err
 	}
@@ -359,7 +359,7 @@ func (c *Client) renewIdentityLocked(ctx context.Context) error {
 	return nil
 }
 
-func validateRenewedIdentity(cfg *config.ClientConfig, now time.Time) (*http.Client, error) {
+func validateRenewedIdentity(cfg *config.ClientConfig) (*http.Client, error) {
 	client, err := buildHTTPClient(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("validate renewed key pair: %w", err)
@@ -379,9 +379,15 @@ func validateRenewedIdentity(cfg *config.ClientConfig, now time.Time) (*http.Cli
 	if !roots.AppendCertsFromPEM([]byte(cfg.Identity.CACert)) {
 		return nil, fmt.Errorf("parse identity CA certificate")
 	}
+	// Checked at its own NotBefore, not by this host's clock: the mini-CA
+	// backdates by a minute, so a clock behind the server's by more than that
+	// would fail every renewal until the current identity expires. The
+	// validity says nothing here: buildHTTPClient made sure the certificate
+	// holds the key made for this request, so it cannot be an old one
+	// replayed.
 	if _, err := leaf.Verify(x509.VerifyOptions{
 		Roots:       roots,
-		CurrentTime: now,
+		CurrentTime: leaf.NotBefore,
 		KeyUsages:   []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}); err != nil {
 		return nil, fmt.Errorf("verify renewed certificate: %w", err)

@@ -804,6 +804,74 @@ func TestRenewIdentityPersistsBeforeRuntimeSwitch(t *testing.T) {
 	}
 }
 
+// renewalTransport answers POST /v1/identity/renew with the certificate that
+// issue signs for the public key of the CSR.
+func renewalTransport(issue func(publicKey any) (string, error)) http.RoundTripper {
+	return roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body proto.RenewIdentityRequest
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			return nil, err
+		}
+		block, _ := pem.Decode([]byte(body.CSR))
+		if block == nil {
+			return nil, errors.New("no CSR")
+		}
+		csr, err := x509.ParseCertificateRequest(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		certPEM, err := issue(csr.PublicKey)
+		if err != nil {
+			return nil, err
+		}
+		data, err := json.Marshal(proto.RenewIdentityResponse{ClientCert: certPEM})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(bytes.NewReader(data)), Request: req}, nil
+	})
+}
+
+// TestRenewalAcceptsIdentityFromServerAhead covers a client whose clock is
+// behind the server's by more than the minute the mini-CA backdates: the
+// renewed certificate is not yet valid by the client's clock, and the
+// renewal must succeed all the same, or it fails until the current identity
+// expires.
+func TestRenewalAcceptsIdentityFromServerAhead(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	authority := newTestIdentityCA(t, now)
+	cfg := buildTestCfg(t, "https://sigil.example.test")
+	cfg.Client.IdentityRenewBefore = 30 * 24 * time.Hour
+	withIdentity(t, cfg, authority, now, now.Add(24*time.Hour))
+	c, err := New(cfg, WithIdentitySaver(func(string, string, string) error { return nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.now = func() time.Time { return now }
+	// The server's clock is 10 minutes ahead: NotBefore is 9 minutes from now.
+	serverNow := now.Add(10 * time.Minute)
+	var issued string
+	c.http = &http.Client{Transport: renewalTransport(func(k any) (string, error) {
+		certPEM, err := authority.sign("web-1", k, serverNow, serverNow.Add(90*24*time.Hour), 3)
+		issued = certPEM
+		return certPEM, err
+	})}
+
+	c.pullMu.Lock()
+	err = c.renewIdentityLocked(context.Background())
+	c.pullMu.Unlock()
+	if err != nil {
+		t.Fatalf("renewal of an identity not yet valid by the local clock: %v", err)
+	}
+	c.cfgMu.RLock()
+	running := c.cfg.Identity.ClientCert
+	c.cfgMu.RUnlock()
+	if running != issued {
+		t.Fatal("the running identity is not the renewed one")
+	}
+}
+
 // TestRenewalKeepsCurrentIdentityWhenRenewedOneIsRefused covers renewed
 // identities that sigils would not accept, and one that did not reach
 // client.yaml: the running identity must stay as it was, and only a renewed
@@ -858,30 +926,7 @@ func TestRenewalKeepsCurrentIdentityWhenRenewedOneIsRefused(t *testing.T) {
 				t.Fatal(err)
 			}
 			c.now = func() time.Time { return now }
-			c.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				var body proto.RenewIdentityRequest
-				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
-					return nil, err
-				}
-				block, _ := pem.Decode([]byte(body.CSR))
-				if block == nil {
-					return nil, errors.New("no CSR")
-				}
-				csr, err := x509.ParseCertificateRequest(block.Bytes)
-				if err != nil {
-					return nil, err
-				}
-				certPEM, err := tc.issue(csr.PublicKey)
-				if err != nil {
-					return nil, err
-				}
-				data, err := json.Marshal(proto.RenewIdentityResponse{ClientCert: certPEM})
-				if err != nil {
-					return nil, err
-				}
-				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header),
-					Body: io.NopCloser(bytes.NewReader(data)), Request: req}, nil
-			})}
+			c.http = &http.Client{Transport: renewalTransport(tc.issue)}
 
 			c.pullMu.Lock()
 			err = c.renewIdentityLocked(context.Background())
