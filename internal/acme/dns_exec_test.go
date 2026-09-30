@@ -2,6 +2,7 @@ package acme
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -147,7 +148,7 @@ func hookProvider(t *testing.T, mode string, args ...string) *execProvider {
 	// what a concurrent run appended.
 	argv := make([]string, 0, 16)
 	argv = append(argv, exe)
-	return &execProvider{argv: append(argv, args...)}
+	return &execProvider{ctx: context.Background(), argv: append(argv, args...)}
 }
 
 // setHookBounds overrides the bounds on one run for the duration of t.
@@ -206,7 +207,7 @@ func recordedRuns(t *testing.T, dir string) []string {
 }
 
 func TestBuildDNSProviderExec(t *testing.T) {
-	provider, err := buildDNSProvider(config.DNSProvider{
+	provider, err := buildDNSProvider(context.Background(), config.DNSProvider{
 		Type:    "exec",
 		Command: []string{"/usr/local/bin/dns-hook", "--zone", "example.com"},
 	})
@@ -302,6 +303,29 @@ func TestExecProviderKillsProgramAfterTimeout(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "timed out after 100ms") {
 		t.Fatalf("Present error = %v, want a timeout", err)
+	}
+}
+
+// TestExecProviderKillsProgramWhenItsContextEnds covers sigils giving up on an
+// issuance at shutdown: the ctx the provider was built with ends, and its
+// running program is killed, not waited for.
+func TestExecProviderKillsProgramWhenItsContextEnds(t *testing.T) {
+	captureLog(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	provider, err := buildDNSProvider(ctx, config.DNSProvider{Type: "exec", Command: hookProvider(t, "sleep").argv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.AfterFunc(200*time.Millisecond, cancel)
+
+	start := time.Now()
+	err = provider.Present("example.com", "token", "token.thumbprint")
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("Present returned after %v, want it soon after ctx ended", elapsed)
+	}
+	if err == nil || !strings.Contains(err.Error(), context.Canceled.Error()) {
+		t.Fatalf("Present error = %v, want the cancellation", err)
 	}
 }
 

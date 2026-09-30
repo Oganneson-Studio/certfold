@@ -33,7 +33,8 @@ const shutdownTimeout = 10 * time.Second
 // waiting for a DNS provider can take tens of minutes, or hang on a provider
 // whose API client has no overall timeout. Past the bound, shutdown abandons
 // the issuances, with the certificates they would store and the DNS records
-// they would clean up. Tests shorten it.
+// they would clean up, and kills the programs of exec DNS providers they
+// still run. Tests shorten it.
 var issuanceStopTimeout = 30 * time.Second
 
 // Run loads server.yaml from configPath and runs the sigils daemon until ctx
@@ -97,7 +98,12 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 	// Stored certificates and published reloads wake the clients waiting in
 	// GET /v1/sync.
 	changes := api.NewChanges()
-	r := scheduler.New(acme.NewIssuer(db.Accounts), db, changes.Notify, nil)
+	// The programs of exec DNS providers are killed when Run returns, not
+	// when ctx ends: the issuances that shutdown waits for below may still
+	// need them, to clean up their records.
+	programs, killPrograms := context.WithCancel(context.WithoutCancel(ctx))
+	defer killPrograms()
+	r := scheduler.New(acme.NewIssuer(programs, db.Accounts), db, changes.Notify, nil)
 	runtimeConfig := newServerConfigRuntime(configPath, cfg, changes.Notify, r)
 	schedulerDone := make(chan struct{})
 	go func() {

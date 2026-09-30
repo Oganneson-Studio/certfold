@@ -43,6 +43,10 @@ var (
 // wait between the domains of a certificate. Runs for different certificates
 // may overlap: the program must cope with concurrent runs.
 type execProvider struct {
+	// ctx is the Issuer's: when it ends, a program still running is killed
+	// along with the processes it started. It is not the ctx of Issue,
+	// which for a manual renewal is that of an IPC request.
+	ctx  context.Context
 	argv []string
 }
 
@@ -58,9 +62,9 @@ func (p *execProvider) Timeout() (timeout, interval time.Duration) {
 	return dnsPropagationTimeout, dnsPollingInterval
 }
 
-// run runs the program for action, through proc.Run: a run that times out is
-// killed along with the processes the program started, so that none of them
-// changes the record after lego has moved on. The error it returns names only
+// run runs the program for action, through proc.Run: a run that times out,
+// or whose ctx ends, is killed along with the processes the program started,
+// so that none of them changes the record after lego has moved on. The error it returns names only
 // the action, the record and the exit status or timeout: it becomes the
 // certificate's last error, which IPC shows, while the arguments may hold
 // credentials and the output may repeat them. The last 4 KiB of the output
@@ -80,7 +84,7 @@ func (p *execProvider) run(action, domain, keyAuth string) error {
 	// Clone first: appending to the shared argv in place would let concurrent
 	// runs overwrite each other's arguments in its spare capacity.
 	argv := append(slices.Clone(p.argv), action, info.EffectiveFQDN, info.Value)
-	out, err := proc.Run(context.Background(), argv, dnsHookTimeout, dnsHookWaitDelay)
+	out, err := proc.Run(p.ctx, argv, dnsHookTimeout, dnsHookWaitDelay)
 	if err == nil {
 		return nil
 	}
