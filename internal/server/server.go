@@ -20,6 +20,7 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 	"github.com/Oganneson-Studio/sigil/internal/logging"
 	"github.com/Oganneson-Studio/sigil/internal/scheduler"
+	"github.com/Oganneson-Studio/sigil/internal/securefile"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 	"github.com/Oganneson-Studio/sigil/internal/version"
 )
@@ -45,6 +46,10 @@ var issuanceStopTimeout = 30 * time.Second
 // its events, and the errors of the HTTPS and IPC servers go to its sink
 // alone.
 func Run(ctx context.Context, configPath string, logs logging.Logs) error {
+	// server.yaml names the programs sigils runs and where it keeps its keys.
+	if err := securefile.CheckDirectory(filepath.Dir(configPath)); err != nil {
+		return fmt.Errorf("configuration directory: %w", err)
+	}
 	cfg, err := config.LoadServer(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)

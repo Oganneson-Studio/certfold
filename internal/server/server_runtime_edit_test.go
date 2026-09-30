@@ -219,7 +219,7 @@ func TestRunEditsItsConfigurationOverIPC(t *testing.T) {
 		t.Fatal(err)
 	}
 	port, socket := freeTCPPort(t), testIPCSocket(t)
-	path := filepath.Join(t.TempDir(), "server.yaml")
+	path := filepath.Join(privateDir(t), "server.yaml")
 	// Nothing listens on the CA's port, so the issuance of the certificate
 	// added fails at once.
 	writeRuntimeConfig(t, path, fmt.Sprintf(`server:

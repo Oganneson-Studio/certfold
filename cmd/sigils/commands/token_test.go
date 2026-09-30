@@ -21,6 +21,7 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/enroll"
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/sigil/internal/securefile"
 	"github.com/Oganneson-Studio/sigil/internal/server"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
@@ -78,7 +79,10 @@ func startDaemon(t *testing.T, dataDir, publicURL string) (socket, listen string
 	if publicURL != "" {
 		publicURLLine = fmt.Sprintf("  public_url: %q\n", publicURL)
 	}
-	cfgPath := filepath.Join(t.TempDir(), "server.yaml")
+	// The daemon refuses a directory of server.yaml that accounts it does
+	// not trust may write to, as the temporary directory may be:
+	// securefile creates this one private.
+	cfgPath := filepath.Join(t.TempDir(), "etc", "server.yaml")
 	raw := fmt.Sprintf(`server:
   listen: %q
   data_dir: %q
@@ -91,7 +95,7 @@ func startDaemon(t *testing.T, dataDir, publicURL string) (socket, listen string
       directory: "https://acme.example.com/directory"
 certificates: []
 `, listen, dataDir, socket, publicURLLine)
-	if err := os.WriteFile(cfgPath, []byte(raw), 0o600); err != nil {
+	if err := securefile.WriteFile(cfgPath, []byte(raw)); err != nil {
 		t.Fatal(err)
 	}
 

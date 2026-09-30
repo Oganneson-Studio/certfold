@@ -45,9 +45,9 @@ func testIPCSocket(t *testing.T) string {
 }
 
 // privateDir returns a new directory that no account but the trustees of
-// securefile may access, as Run requires of data_dir. The temporary directory
-// is not one on Windows, where it inherits an entry for the user, which an
-// elevated process does not trust.
+// securefile may access, as Run requires of data_dir and of the directory of
+// server.yaml. The temporary directory is not one on Windows, where it
+// inherits an entry for the user, which an elevated process does not trust.
 func privateDir(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "private")
@@ -71,7 +71,7 @@ func freeTCPPort(t *testing.T) int {
 // contacts the ACME directory.
 func writeServerConfig(t *testing.T, listen, dataDir, ipcSocket string, dnsResolvers ...string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "server.yaml")
+	path := filepath.Join(privateDir(t), "server.yaml")
 	var resolvers string
 	if len(dnsResolvers) > 0 {
 		list, err := json.Marshal(dnsResolvers)
