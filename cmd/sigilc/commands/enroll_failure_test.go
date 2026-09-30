@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Oganneson-Studio/sigil/internal/securefile"
 )
 
 // refusingEnrollServer refuses every enrollment, as sigils does a token that
@@ -67,7 +69,10 @@ func runEnrollCommand(cfgPath, token string) error {
 // a corrected server.public_url.
 func TestEnrollFailureLeavesNoConfig(t *testing.T) {
 	first := newRefusingEnrollServer(t)
-	cfgPath := filepath.Join(t.TempDir(), "client.yaml")
+	// Enrollment refuses a directory that accounts it does not trust may
+	// write to, as the temporary directory may be: securefile creates this
+	// one private.
+	cfgPath := filepath.Join(t.TempDir(), "etc", "client.yaml")
 	if err := runEnrollCommand(cfgPath, first.token(t, "web-1")); err == nil {
 		t.Fatal("enrolled with a token the server refuses")
 	}
@@ -90,9 +95,12 @@ func TestEnrollFailureLeavesNoConfig(t *testing.T) {
 // leaves a client.yaml that was there before as it was.
 func TestEnrollFailureKeepsExistingConfig(t *testing.T) {
 	srv := newRefusingEnrollServer(t)
-	cfgPath := filepath.Join(t.TempDir(), "client.yaml")
+	// Enrollment refuses a directory that accounts it does not trust may
+	// write to, as the temporary directory may be: securefile creates this
+	// one private.
+	cfgPath := filepath.Join(t.TempDir(), "etc", "client.yaml")
 	existing := fmt.Appendf(nil, "client:\n  name: web-1\n  server_url: %q\n  data_dir: %q\n", srv.URL, t.TempDir())
-	if err := os.WriteFile(cfgPath, existing, 0o600); err != nil {
+	if err := securefile.WriteFile(cfgPath, existing); err != nil {
 		t.Fatal(err)
 	}
 	if err := runEnrollCommand(cfgPath, srv.token(t, "web-1")); err == nil {
@@ -115,7 +123,12 @@ func TestEnrollFailureKeepsExistingConfig(t *testing.T) {
 // missing, a dangling symbolic link.
 func TestEnrollKeepsTokenWhenConfigCannotBeWritten(t *testing.T) {
 	srv := newRefusingEnrollServer(t)
-	blocker := filepath.Join(t.TempDir(), "sigil")
+	// In a private directory, so that enrollment goes on to write client.yaml.
+	dir := filepath.Join(t.TempDir(), "etc")
+	if err := securefile.EnsurePrivateDirectory(dir); err != nil {
+		t.Fatal(err)
+	}
+	blocker := filepath.Join(dir, "sigil")
 	if runtime.GOOS == "windows" {
 		if err := os.WriteFile(blocker, nil, 0o600); err != nil {
 			t.Fatal(err)

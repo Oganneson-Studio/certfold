@@ -12,9 +12,10 @@ import (
 // createTemp creates the temporary file for an output in dir. os.Chmod(0600)
 // cannot restrict access on Windows, so a format that carries the private key
 // is created by securefile.CreateTemp, whose protected DACL grants only
-// SYSTEM, Administrators, the current user and, for reading, spec.Owner: the
-// owner consumes the key and sigilc does every write. Other formats inherit
-// the directory's ACL, and ignore spec.Owner.
+// SYSTEM, Administrators, the current user when it runs without Administrators
+// enabled, and, for reading, spec.Owner: the owner consumes the key and sigilc
+// does every write. Other formats inherit the directory's ACL, and ignore
+// spec.Owner.
 //
 // spec.Owner does not become the owner of the file. Setting another account as
 // owner needs SeRestorePrivilege, which LocalSystem and an elevated
