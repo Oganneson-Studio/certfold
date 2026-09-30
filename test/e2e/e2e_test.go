@@ -756,11 +756,11 @@ func TestInstallScriptUsesNetworkAlias(t *testing.T) {
 	}
 
 	// install.ps1 is the same for every request: the token is the -Token
-	// argument of the command that runs it.
+	// argument of the command that runs it, or PowerShell asks for it.
 	ps1 := getInstallScript(t, "/install.ps1")
 	for _, want := range []string{
 		`$ServerURL = 'https://sigils:18443'`,
-		`param([Parameter(Mandatory = $true)][string]$Token)`,
+		`[Parameter(Mandatory = $true, ParameterSetName = 'Install')][string]$Token,`,
 	} {
 		if !strings.Contains(ps1, want) {
 			t.Errorf("install.ps1 lacks %s:\n%s", want, ps1)

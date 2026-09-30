@@ -53,15 +53,21 @@ func TestInstallPs1Script(t *testing.T) {
 		}
 	}
 
-	// Only comments may come before the param block.
-	for _, line := range lines {
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if want := `param([Parameter(Mandatory = $true)][string]$Token)`; line != want {
-			t.Errorf("first statement = %q, want %q", line, want)
-		}
-		break
+	// Only comments may come before the param block. Its parameter sets make
+	// PowerShell ask for the token, which -Upgrade does not take.
+	first := 0
+	for first < len(lines) && (lines[first] == "" || strings.HasPrefix(lines[first], "#")) {
+		first++
+	}
+	params := strings.Join([]string{
+		`[CmdletBinding(DefaultParameterSetName = 'Install')]`,
+		`param(`,
+		`    [Parameter(Mandatory = $true, ParameterSetName = 'Install')][string]$Token,`,
+		`    [Parameter(Mandatory = $true, ParameterSetName = 'Upgrade')][switch]$Upgrade`,
+		`)`,
+	}, "\n") + "\n"
+	if rest := strings.Join(lines[first:], "\n"); !strings.HasPrefix(rest, params) {
+		t.Errorf("script does not start with the param block\n%s\nbut with\n%s", params, rest)
 	}
 
 	// exit would close the operator's session.
@@ -73,21 +79,26 @@ func TestInstallPs1Script(t *testing.T) {
 	// followed by a check of its exit code.
 	calls := 0
 	for i, line := range lines {
-		if !strings.HasPrefix(line, "& ") {
+		if !strings.HasPrefix(strings.TrimLeft(line, " "), "& ") {
 			continue
 		}
 		calls++
-		if i+1 == len(lines) || !strings.HasPrefix(lines[i+1], "if ($LASTEXITCODE -ne 0) { throw ") {
+		if i+1 == len(lines) || !strings.HasPrefix(strings.TrimLeft(lines[i+1], " "), "if ($LASTEXITCODE -ne 0) { throw ") {
 			t.Errorf("%q is not followed by a check of $LASTEXITCODE", line)
 		}
 	}
-	if calls != 3 {
-		t.Errorf("script runs sigilc %d times, want 3: enroll, service install and service start", calls)
+	if calls != 5 {
+		t.Errorf("script runs sigilc %d times, want 5: version, enroll, service uninstall, install and start", calls)
 	}
 
-	_, usage := InstallCommands(installTestURL, "<TOKEN>")
+	_, withToken := InstallCommands(installTestURL, "<TOKEN>")
 	for _, want := range []string{
-		"#   " + usage + "\n",
+		"#   " + withToken + "\n",
+		"#   [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; " +
+			"& ([scriptblock]::Create((irm '" + installTestURL + "/install.ps1')))\n",
+		"#   [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; " +
+			"& ([scriptblock]::Create((irm '" + installTestURL + "/install.ps1'))) -Upgrade\n",
+		"#   sigils token create --name <name> --replace\n",
 		"$ServerURL = '" + installTestURL + "'\n",
 		// Server Core has no Internet Explorer engine for Invoke-WebRequest
 		// to parse with.
@@ -100,6 +111,47 @@ func TestInstallPs1Script(t *testing.T) {
 			t.Errorf("script lacks %q:\n%s", want, script)
 		}
 	}
+}
+
+// TestInstallPs1KeepsTokenOffCommandLines checks that install.ps1 hands the
+// token to sigilc through its environment, and takes it out of the
+// operator's session again, whether enroll fails or not.
+func TestInstallPs1KeepsTokenOffCommandLines(t *testing.T) {
+	script := getInstallScript(t, "/install.ps1").Body.String()
+	if strings.Contains(script, "enroll --token") {
+		t.Errorf("script passes the token to sigilc as an argument:\n%s", script)
+	}
+	inOrder(t, script,
+		"\n    $env:SIGILC_TOKEN = $Token\n    try {\n        & $Dest enroll\n",
+		"\n    } finally {\n        Remove-Item -Path Env:\\SIGILC_TOKEN\n    }\n",
+	)
+}
+
+// TestInstallPs1ReplacesSigilc checks the steps of install.ps1, which are
+// those of install.sh (TestInstallShReplacesSigilc). Windows does not let a
+// sigilc.exe that runs be replaced, so the service stops first.
+func TestInstallPs1ReplacesSigilc(t *testing.T) {
+	script := getInstallScript(t, "/install.ps1").Body.String()
+	if strings.Contains(script, "-OutFile $Dest") {
+		t.Errorf("script downloads over sigilc.exe:\n%s", script)
+	}
+	inOrder(t, script,
+		"\n$Download = 'C:\\Program Files\\Sigil\\sigilc.download.exe'\n",
+		"\n$Service = Get-Service -Name sigilc -ErrorAction SilentlyContinue\n",
+		"\nif ($Upgrade -and -not $Service) {\n    throw ",
+		"\nNew-Item ",
+		" -OutFile $Download\n",
+		"\n& $Download version\n",
+		"\nif ($Service) {\n    Write-Host 'Stopping service...'\n    Stop-Service -Name sigilc\n}\n",
+		"\nMove-Item -Force -LiteralPath $Download -Destination $Dest\n",
+		"\nif (-not $Upgrade) {\n",
+		"\n        & $Dest enroll\n",
+		"\n    if ($Service) {\n",
+		"\n        & $Dest service uninstall\n",
+		"\n    & $Dest service install\n",
+		"\n}\n",
+		"\n& $Dest service start\n",
+	)
 }
 
 // TestInstallShUsage checks the commands that the comment of install.sh
