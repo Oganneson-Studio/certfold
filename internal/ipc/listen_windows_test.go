@@ -14,7 +14,7 @@ import (
 )
 
 func testPipeName() string {
-	return fmt.Sprintf(`\\.\pipe\sigil-ipc-test-%d`, time.Now().UnixNano())
+	return fmt.Sprintf(`\\.\pipe\sigil-ipc-test-%d-%d`, os.Getpid(), time.Now().UnixNano())
 }
 
 // acceptAll accepts connections on l until the test ends, because a pipe

@@ -31,7 +31,7 @@ import (
 func testIPCSocket(t *testing.T) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		return fmt.Sprintf(`\\.\pipe\sigils-cli-test-%d`, time.Now().UnixNano())
+		return fmt.Sprintf(`\\.\pipe\sigils-cli-test-%d-%d`, os.Getpid(), time.Now().UnixNano())
 	}
 	// Unix socket paths are length-limited; keep this one short.
 	dir, err := os.MkdirTemp("", "sigil")

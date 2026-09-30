@@ -94,7 +94,7 @@ func assertPrintable(t *testing.T, what, text string) {
 // either: a terminal user interface shows the same texts.
 func TestStatusAndFetchShowManInTheMiddleErrorsPrintable(t *testing.T) {
 	serverURL := manInTheMiddle(t)
-	socket := fmt.Sprintf(`\\.\pipe\sigilc-terminal-test-%d`, time.Now().UnixNano())
+	socket := fmt.Sprintf(`\\.\pipe\sigilc-terminal-test-%d-%d`, os.Getpid(), time.Now().UnixNano())
 	if runtime.GOOS != "windows" {
 		// Unix socket paths are length-limited; keep this one short.
 		dir, err := os.MkdirTemp("", "sigil")

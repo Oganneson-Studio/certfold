@@ -147,7 +147,7 @@ func TestClientIPCSocketExplicitFlagWins(t *testing.T) {
 func missingIPCSocket(t *testing.T) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		return fmt.Sprintf(`\\.\pipe\sigil-client-missing-%d`, time.Now().UnixNano())
+		return fmt.Sprintf(`\\.\pipe\sigil-client-missing-%d-%d`, os.Getpid(), time.Now().UnixNano())
 	}
 	return filepath.Join(t.TempDir(), "missing.sock")
 }

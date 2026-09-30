@@ -58,7 +58,7 @@ func runSigilcErr(t *testing.T, args ...string) (string, error) {
 // test ends, and returns its endpoint.
 func serveEvents(t *testing.T, ring *logging.Ring) string {
 	t.Helper()
-	socket := fmt.Sprintf(`\\.\pipe\sigilc-events-test-%d`, time.Now().UnixNano())
+	socket := fmt.Sprintf(`\\.\pipe\sigilc-events-test-%d-%d`, os.Getpid(), time.Now().UnixNano())
 	if runtime.GOOS != "windows" {
 		// Unix socket paths are length-limited; keep this one short.
 		dir, err := os.MkdirTemp("", "sigil")
