@@ -48,8 +48,15 @@ type MiniCA struct {
 // If neither exists, a new root CA is generated and written to disk; if only
 // one does, it fails and leaves that one alone. Returns the loaded or newly
 // created *MiniCA.
+//
+// It refuses a dataDir/ca/ that accounts sigils does not trust may write to,
+// before it tightens the directory: one of them may have put a key of its
+// own there.
 func Bootstrap(dataDir string) (*MiniCA, error) {
 	dir := filepath.Join(dataDir, caSubDir)
+	if err := securefile.CheckDirectory(dir); err != nil {
+		return nil, fmt.Errorf("ca dir: %w", err)
+	}
 	if err := securefile.EnsurePrivateDirectory(dir); err != nil {
 		return nil, fmt.Errorf("protect ca dir: %w", err)
 	}
