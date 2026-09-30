@@ -182,7 +182,7 @@ func TestTokenCreateIssuesTokenThroughDaemon(t *testing.T) {
 			}
 			for _, want := range []string{
 				"Install (Linux/macOS):\n" +
-					"  curl -fsSL '" + wantURL + "/install.sh' | sudo sh -s -- --token '" + token + "'\n",
+					"  curl -fsSL --proto '=https' --proto-redir '=https' '" + wantURL + "/install.sh' | sudo sh -s -- --token '" + token + "'\n",
 				// The Windows command passes the token as an argument of the
 				// script, which the server no longer writes into it.
 				"Install (Windows, elevated PowerShell):\n" +

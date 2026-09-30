@@ -7,25 +7,26 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ReadClientIPCSocket reads client.ipc_socket from the client.yaml at path so
-// CLI commands can locate the daemon, as ReadServerPaths does for sigils. It
-// expands ${VAR} only in this value and does not validate the file, so the
-// variables other values reference, such as a PKCS#12 password that only the
-// service's environment sets, need not be set in the caller's environment.
-// The value is expanded exactly as LoadClient expands it. An empty result
-// means the field is not set.
-func ReadClientIPCSocket(path string) (string, error) {
+// ReadClientField reads the value of key in the client section of the
+// client.yaml at path, as ReadServerPaths does the paths of server.yaml:
+// sigilc enroll compares name and server_url with its token, and CLI
+// commands locate the daemon with ipc_socket. It expands ${VAR} only in this
+// value and does not validate the file, so the variables other values
+// reference, such as a PKCS#12 password that only the service's environment
+// sets, need not be set in the caller's environment, which sudo does not
+// pass on. The value is expanded exactly as LoadClient expands it. An empty
+// value means the key is not set.
+func ReadClientField(path, key string) (string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", path, err)
 	}
 	var doc struct {
-		Client struct {
-			IPCSocket yaml.Node `yaml:"ipc_socket"`
-		} `yaml:"client"`
+		Client map[string]yaml.Node `yaml:"client"`
 	}
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return "", fmt.Errorf("parse %s: %w", path, err)
 	}
-	return expandedString(&doc.Client.IPCSocket, "client.ipc_socket")
+	n := doc.Client[key]
+	return expandedString(&n, "client."+key)
 }

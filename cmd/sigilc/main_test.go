@@ -131,7 +131,8 @@ func TestErrorQuotingClientYAMLIsPrintable(t *testing.T) {
 	// one private.
 	cfgPath := filepath.Join(t.TempDir(), "etc", "client.yaml")
 	// A YAML escape: a raw control character would fail the YAML parser.
-	if err := securefile.WriteFile(cfgPath, []byte("identity: \"\\e]0;pwned\\a\"\n")); err != nil {
+	// enroll reads the client section alone, so the value stands for it.
+	if err := securefile.WriteFile(cfgPath, []byte("client: \"\\e]0;pwned\\a\"\n")); err != nil {
 		t.Fatal(err)
 	}
 	token := enrollmentToken(t, map[string]string{"server_url": "https://sigil.example.com", "name": "web-1"})

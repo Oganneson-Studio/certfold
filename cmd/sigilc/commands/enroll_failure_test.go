@@ -25,6 +25,9 @@ import (
 type refusingEnrollServer struct {
 	*httptest.Server
 	requests atomic.Int32
+	// signed, when set, runs in the server of newSigningEnrollServer once it
+	// has signed the certificate, before it answers.
+	signed func()
 }
 
 func newRefusingEnrollServer(t *testing.T) *refusingEnrollServer {

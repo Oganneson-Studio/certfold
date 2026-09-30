@@ -272,6 +272,10 @@ func TestPostEnrollRejectsUntrustedServer(t *testing.T) {
 	if !errors.As(err, &unknownAuthority) {
 		t.Fatalf("PostEnroll error = %v, want an unknown authority error", err)
 	}
+	// The token never reached a server, which cannot have taken it.
+	if errors.Is(err, ErrUnusableAnswer) {
+		t.Errorf("PostEnroll error = %v, which says that the server answered", err)
+	}
 	if reached.Load() {
 		t.Fatal("enrollment request reached an untrusted server")
 	}

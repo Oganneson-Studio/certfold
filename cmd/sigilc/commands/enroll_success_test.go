@@ -85,6 +85,9 @@ func newSigningEnrollServer(t *testing.T) *refusingEnrollServer {
 			http.Error(w, "sign error", http.StatusInternalServerError)
 			return
 		}
+		if s.signed != nil {
+			s.signed()
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(proto.EnrollResponse{
 			ClientCert: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),

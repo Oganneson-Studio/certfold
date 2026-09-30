@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
@@ -22,6 +23,7 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/securefile"
 	internalsvc "github.com/Oganneson-Studio/sigil/internal/service"
 	tuiclient "github.com/Oganneson-Studio/sigil/internal/tui/client"
+	"github.com/Oganneson-Studio/sigil/internal/tui/shared"
 )
 
 // ---------------------------------------------------------------------------
@@ -57,10 +59,15 @@ func runReload(cmd *cobra.Command, _ []string) error {
 
 func runEnroll(cmd *cobra.Command, _ []string) (err error) {
 	tokenStr, _ := cmd.Flags().GetString("token")
-	cfgPath, _ := cmd.Root().PersistentFlags().GetString("config")
-	if cfgPath == "" {
-		cfgPath = defaultClientCfgPath()
+	if tokenStr == "" {
+		// Any user may read the command line of a process, but not its
+		// environment: the install scripts hand the token over this way.
+		tokenStr = os.Getenv("SIGILC_TOKEN")
 	}
+	if tokenStr == "" {
+		return errors.New("no enrollment token: set SIGILC_TOKEN, or pass --token")
+	}
+	cfgPath := clientConfigPath(cmd)
 
 	// Decode the opaque token to get the server URL.
 	payload, err := enroll.DecodeToken(tokenStr)
@@ -92,15 +99,35 @@ func runEnroll(cmd *cobra.Command, _ []string) (err error) {
 		// The error can quote the network, such as the DNS names in the
 		// certificate of a man in the middle: a newline there must not start
 		// a line under the one main prints, which keeps newlines.
-		return fmt.Errorf("enroll: %s", logging.OneLine(err.Error()))
+		msg := "enroll: " + logging.OneLine(err.Error())
+		if errors.Is(err, enroll.ErrUnusableAnswer) {
+			return fmt.Errorf("%s; %s", msg, tokenTaken(clientName))
+		}
+		return errors.New(msg)
 	}
 
 	if err := enroll.SaveIdentity(cfgPath, payload.CACert, clientCert, string(kc.KeyPEM)); err != nil {
-		return fmt.Errorf("save identity: %w", err)
+		return fmt.Errorf("save identity: %w; %s", err, tokenTaken(clientName))
 	}
 
 	fmt.Printf("enrolled as %q — identity written to %s\n", clientName, cfgPath)
+	if !created {
+		// The server now accepts only the new identity, and a daemon that
+		// runs goes on with the one it loaded until it reads client.yaml
+		// again.
+		fmt.Println("a running sigilc daemon keeps its old identity, which the server no longer accepts, " +
+			"until `sigilc reload` or a restart of the sigilc service")
+	}
 	return nil
+}
+
+// tokenTaken says what an enrollment of name that failed once the server had
+// taken the token means: the server now accepts only the identity it issued,
+// which sigilc has not saved, and enrolling again needs a new token. The
+// name may have had no identity before.
+func tokenTaken(name string) string {
+	return fmt.Sprintf("the server took the token, so any earlier identity of %q no longer works: "+
+		"once this is fixed, create a token with `sigils token create --name %s --replace` and enroll again", name, name)
 }
 
 // ---------------------------------------------------------------------------
@@ -134,13 +161,19 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+// statusTimeout bounds the state request of sigilc status, as it bounds each
+// IPC call of a refresh of the TUI. A daemon that accepts the connection but
+// never answers would otherwise hold it for the 5 minutes of the IPC client,
+// and install.sh, which runs it until the daemon answers, for over an hour.
+const statusTimeout = 10 * time.Second
+
 // clientState asks the daemon for its state.
 func clientState(cmd *cobra.Command) (*ipc.ClientState, error) {
 	c, err := dialDaemon(cmd)
 	if err != nil {
 		return nil, err
 	}
-	return c.GetClientState(context.Background())
+	return shared.Within(statusTimeout, c.GetClientState)
 }
 
 // ---------------------------------------------------------------------------
@@ -227,7 +260,7 @@ func clientIPCSocket(cmd *cobra.Command) string {
 	}
 	// Locating the daemon must not require the variables client.yaml takes
 	// from the service's environment.
-	if socket, err := config.ReadClientIPCSocket(clientConfigPath(cmd)); err == nil && socket != "" {
+	if socket, err := config.ReadClientField(clientConfigPath(cmd), "ipc_socket"); err == nil && socket != "" {
 		return socket
 	}
 	return ipc.DefaultClientSocket()
@@ -237,7 +270,10 @@ func clientIPCSocket(cmd *cobra.Command) string {
 // cfgPath must name the client and server URL of the token; without one, it
 // writes one that does, and reports that it created it. Writing it before
 // the token is sent stops an enrollment that could not save its identity
-// before the server spends the token.
+// before the server spends the token. The client.yaml of an earlier install
+// may take values from variables that only the service's environment sets,
+// which a reinstall under sudo does not have: only the name and server URL
+// are read.
 func ensureEnrollmentConfig(cfgPath, tokenName, serverURL string) (name string, created bool, err error) {
 	// An account sigilc does not trust that may write to the directory could
 	// have put a client.yaml there that names this host and runs its own
@@ -245,15 +281,21 @@ func ensureEnrollmentConfig(cfgPath, tokenName, serverURL string) (name string, 
 	if err := securefile.CheckDirectory(filepath.Dir(cfgPath)); err != nil {
 		return "", false, fmt.Errorf("configuration directory: %w", err)
 	}
-	cfg, err := config.LoadClient(cfgPath)
+	name, err = config.ReadClientField(cfgPath, "name")
 	if err == nil {
-		if cfg.Client.Name != tokenName {
-			return "", false, fmt.Errorf("client name %q in %s does not match token name %q", cfg.Client.Name, cfgPath, tokenName)
+		if name != tokenName {
+			return "", false, fmt.Errorf("client name %q in %s does not match token name %q; to enroll as %q, remove %s and try again",
+				name, cfgPath, tokenName, tokenName, cfgPath)
 		}
-		if cfg.Client.ServerURL != serverURL {
-			return "", false, fmt.Errorf("server URL %q in %s does not match token server URL %q", cfg.Client.ServerURL, cfgPath, serverURL)
+		url, err := config.ReadClientField(cfgPath, "server_url")
+		if err != nil {
+			return "", false, fmt.Errorf("load config: %w", err)
 		}
-		return cfg.Client.Name, false, nil
+		if url != serverURL {
+			return "", false, fmt.Errorf("server URL %q in %s does not match token server URL %q; to enroll with %s, remove %s and try again",
+				url, cfgPath, serverURL, serverURL, cfgPath)
+		}
+		return name, false, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return "", false, fmt.Errorf("load config: %w", err)
