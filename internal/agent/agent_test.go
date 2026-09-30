@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/Oganneson-Studio/sigil/internal/securefile"
 )
 
 func testIPCSocket(t *testing.T) string {
@@ -34,10 +36,12 @@ func TestRunReturnsNilWhenCancelled(t *testing.T) {
 	}
 	defer upstream.Close()
 
-	path := filepath.Join(t.TempDir(), "client.yaml")
+	// Run refuses directories that accounts it does not trust may write to,
+	// as the temporary directory may be: securefile creates these two private.
+	path := filepath.Join(t.TempDir(), "etc", "client.yaml")
 	raw := fmt.Sprintf("client:\n  name: web-1\n  server_url: %q\n  data_dir: %q\n  ipc_socket: %q\n",
-		"https://"+upstream.Addr().String(), t.TempDir(), testIPCSocket(t))
-	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		"https://"+upstream.Addr().String(), filepath.Join(t.TempDir(), "data"), testIPCSocket(t))
+	if err := securefile.WriteFile(path, []byte(raw)); err != nil {
 		t.Fatal(err)
 	}
 
