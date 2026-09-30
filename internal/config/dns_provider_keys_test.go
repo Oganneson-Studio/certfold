@@ -84,9 +84,13 @@ func TestDNSProviderStringsAndNullValues(t *testing.T) {
 		t.Fatalf("cloudflare config = %#v", cf)
 	}
 
-	// A null required value is missing.
-	src := strings.Replace(validServerYAML, `access_key: "k"`, "access_key: ${SIGIL_TEST_UNSET:-}", 1)
-	if _, err := ParseServer([]byte(src)); err == nil || !strings.Contains(err.Error(), `dns_providers.aliyun-a.access_key: required for provider type "aliyun"`) {
-		t.Fatalf("error = %v, want access_key reported as missing", err)
+	// A required value that is null, or an empty string, such as a quoted
+	// ${VAR} whose variable is set but empty, is missing.
+	t.Setenv("SIGIL_TEST_EMPTY", "")
+	for _, value := range []string{"${SIGIL_TEST_UNSET:-}", `"${SIGIL_TEST_EMPTY}"`} {
+		src := strings.Replace(validServerYAML, `access_key: "k"`, "access_key: "+value, 1)
+		if _, err := ParseServer([]byte(src)); err == nil || !strings.Contains(err.Error(), `dns_providers.aliyun-a.access_key: required for provider type "aliyun"`) {
+			t.Errorf("access_key: %s: error = %v, want access_key reported as missing", value, err)
+		}
 	}
 }
