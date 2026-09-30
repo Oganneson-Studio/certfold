@@ -717,6 +717,30 @@ func TestRenewIdentityDoesNotStageOnReenrolledClient(t *testing.T) {
 	}
 }
 
+// A renewal that fails still counts for the interval, as the last_seen claim
+// does: a client that sent a bad request waits out the interval like one that
+// renewed.
+func TestRenewIdentityFailureKeepsTheInterval(t *testing.T) {
+	deps := buildDeps(t)
+	identity := makeEnrolledClientCert(t, deps, "web-1")
+	handler := newHandler(deps)
+
+	body, err := json.Marshal(proto.RenewIdentityRequest{CSR: "not pem"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, simulateMTLS(httptest.NewRequest(http.MethodPost, "/v1/identity/renew", bytes.NewReader(body)), identity))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("renewal with a bad CSR: status = %d, want 400", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, renewRequest(t, identity))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("renewal within the interval of a failed one: status = %d, want 429", rec.Code)
+	}
+}
+
 // Each renewal syncs the CA's serial file and logs an event, so a client
 // renews at most once per renewInterval; other clients are not held up.
 func TestRenewIdentityAtMostOncePerInterval(t *testing.T) {
