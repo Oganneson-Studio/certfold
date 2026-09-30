@@ -111,6 +111,7 @@ go test -race ./...
 4. `client.yaml` 和客户端本地存储 `<data_dir>/certs.json` 都包含私钥。写入必须经过 `internal/securefile`：Unix 使用私有模式，Windows 使用受保护 DACL，且采用临时文件加原子替换。私有临时文件一律用 `securefile.CreateTemp` 创建：Windows 上在 `CreateFile` 时就带受保护 DACL，不能先建文件再收紧，因为收紧之前别的账户打开的句柄仍能读到之后写入的内容。certs.json 加载时若已存在，先用 `securefile.ProtectFile` 收紧；它的路径不能由服务端下发的证书名派生。`client.data_dir` 和私钥类输出必须放在能存住 Unix 权限位的文件系统上，否则私有模式形同虚设；WSL drvfs/9p（没开 metadata）、没有 unix extensions 的 CIFS、vfat/exfat 和 WSLC 的 bind mount 都存不住。
    - 目录检查在启动时做，reload 不复查。Windows 上配置目录和 sigilc `data_dir` 的属主须为 SYSTEM、Administrators（或非提权时的当前用户），其他主体不得有写入、删除、删子项、改 DACL、改属主权限。sigils `data_dir` 在 Windows 上须完全私有（继承项也算），Unix 上 `mode&077==0` 且属主为运行用户。不合规拒绝启动，报错点名目录并给出 `icacls`/`chmod`/`chown` 命令。`ca\` 子目录的检查在 `ca.Bootstrap` 中。
    - data_dir 不存在时由 `EnsurePrivateDirectory` 私有创建；已存在的目录只检查不收紧。提权进程写出的文件和目录 DACL 不再带操作者本人 SID，新建对象属主为 Administrators。
+   - 配置目录和 data_dir 的每一级上级目录都不得归其他账户所有，也不得让其他账户删改子项；检查只看最后一级，默认布局满足。输出文件所在目录及其上级也不能让低权限账户可写（`O_NOFOLLOW` 只保护最后一段路径）。
 5. 私钥输出默认权限为 `0600`；公开证书可为 `0644`。不要对所有输出格式使用同一默认权限。对账重写输出时按证书成组暂存：内容、权限位和属主先在临时文件上就位，全部暂存成功才依次改名替换，不能先改名再 chown。Windows 上的私钥类输出（`pem-key`、`pem-bundle`、`pkcs12`）有几条额外规则：
    - 临时文件在 `CreateFile` 时就带受保护 DACL：SYSTEM、Administrators 完全控制（非提权时另加当前用户），配置的 `owner` 只读。`owner` 不改属主，只加只读 ACE。
    - `mode` 在 Windows 上不应用，不能放宽这个 DACL；只读属性还会让之后的替换失败。
