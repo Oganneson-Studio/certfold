@@ -64,11 +64,12 @@ func (p *execProvider) Timeout() (timeout, interval time.Duration) {
 
 // run runs the program for action, through proc.Run: a run that times out,
 // or whose ctx ends, is killed along with the processes the program started,
-// so that none of them changes the record after lego has moved on. The error it returns names only
-// the action, the record and the exit status or timeout: it becomes the
-// certificate's last error, which IPC shows, while the arguments may hold
-// credentials and the output may repeat them. The last 4 KiB of the output
-// are logged instead, as a Private value that only the service log holds.
+// so that none of them changes the record after lego has moved on. The error
+// it returns names only the action, the record and the exit status or
+// timeout: it becomes the certificate's last error, which IPC shows, while
+// the arguments may hold credentials and the output may repeat them. The last
+// 4 KiB of the output are logged instead, as a Private value that only the
+// service log holds.
 func (p *execProvider) run(action, domain, keyAuth string) error {
 	info := dns01.GetChallengeInfo(domain, keyAuth)
 	// The record name comes from the network: from the identifier of the
