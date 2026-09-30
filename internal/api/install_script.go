@@ -186,7 +186,7 @@ $Arch = switch ($MachineArch.ToUpperInvariant()) {
 }
 
 $Dest = 'C:\Program Files\Sigil\sigilc.exe'
-# The download goes beside sigilc.exe, and one move puts it in place: a
+# The download goes beside sigilc.exe, which it replaces in one step: a
 # download that fails leaves the installed sigilc.exe as it was. PowerShell
 # runs a file only if its name ends in .exe.
 $Download = 'C:\Program Files\Sigil\sigilc.download.exe'
@@ -210,7 +210,12 @@ if ($Service) {
     Write-Host 'Stopping service...'
     Stop-Service -Name sigilc
 }
-Move-Item -Force -LiteralPath $Download -Destination $Dest
+if (Test-Path -LiteralPath $Dest) {
+    # PowerShell would pass $null to it as an empty path.
+    [IO.File]::Replace($Download, $Dest, [NullString]::Value)
+} else {
+    Move-Item -LiteralPath $Download -Destination $Dest
+}
 
 if (-not $Upgrade) {
     Write-Host 'Enrolling...'

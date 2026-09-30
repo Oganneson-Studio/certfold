@@ -131,7 +131,8 @@ func TestInstallPs1KeepsTokenOffCommandLines(t *testing.T) {
 
 // TestInstallPs1ReplacesSigilc checks the steps of install.ps1, which are
 // those of install.sh (TestInstallShReplacesSigilc). Windows does not let a
-// sigilc.exe that runs be replaced, so the service stops first.
+// sigilc.exe that runs be replaced, so the service stops first; ReplaceFile
+// then puts the new one in place in one step.
 func TestInstallPs1ReplacesSigilc(t *testing.T) {
 	script := getInstallScript(t, "/install.ps1").Body.String()
 	if strings.Contains(script, "-OutFile $Dest") {
@@ -145,7 +146,9 @@ func TestInstallPs1ReplacesSigilc(t *testing.T) {
 		" -OutFile $Download\n",
 		"\n& $Download version\n",
 		"\nif ($Service) {\n    Write-Host 'Stopping service...'\n    Stop-Service -Name sigilc\n}\n",
-		"\nMove-Item -Force -LiteralPath $Download -Destination $Dest\n",
+		"\nif (Test-Path -LiteralPath $Dest) {\n",
+		"\n    [IO.File]::Replace($Download, $Dest, [NullString]::Value)\n} else {\n"+
+			"    Move-Item -LiteralPath $Download -Destination $Dest\n}\n",
 		"\nif (-not $Upgrade) {\n",
 		"\n        & $Dest enroll\n",
 		"\n    if ($Service) {\n",
