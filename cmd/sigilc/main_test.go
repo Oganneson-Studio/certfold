@@ -124,7 +124,8 @@ func enrollThroughManInTheMiddle(t *testing.T, dnsName string) string {
 func TestErrorQuotingClientYAMLIsPrintable(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "client.yaml")
 	// A YAML escape: a raw control character would fail the YAML parser.
-	if err := os.WriteFile(cfgPath, []byte("identity: \"\\e]0;pwned\\a\"\n"), 0o600); err != nil {
+	// enroll reads the client section alone, so the value stands for it.
+	if err := os.WriteFile(cfgPath, []byte("client: \"\\e]0;pwned\\a\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	token := enrollmentToken(t, map[string]string{"server_url": "https://sigil.example.com", "name": "web-1"})
