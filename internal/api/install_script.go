@@ -133,6 +133,18 @@ fi
 
 echo "Starting service..."
 "$DEST" service start
+# The service manager starts a daemon that then fails, such as on a
+# client.yaml it cannot load, as well: the daemon runs once it answers.
+i=0
+until STATUS=$("$DEST" status 2>/dev/null); do
+  i=$((i + 1))
+  if [ "$i" -ge 15 ]; then
+    echo "The sigilc daemon did not start within 15 seconds: see journalctl -u sigilc (on macOS, /var/log/sigilc.err.log)." >&2
+    exit 1
+  fi
+  sleep 1
+done
+echo "$STATUS"
 
 echo "Done."
 `))
@@ -257,6 +269,16 @@ if (-not $Upgrade) {
 Write-Host 'Starting service...'
 & $Dest service start
 if ($LASTEXITCODE -ne 0) { throw "sigilc service start failed with exit code $LASTEXITCODE" }
+# The SCM starts a daemon that then fails, such as on a client.yaml it cannot
+# load, as well: the daemon runs once it answers. Until then sigilc status
+# fails, and says why on stderr, which is no error of the installer.
+$Deadline = (Get-Date).AddSeconds(15)
+do {
+    Start-Sleep -Seconds 1
+    $Status = & { $ErrorActionPreference = 'Continue'; & $Dest status 2>$null }
+} until ($LASTEXITCODE -eq 0 -or (Get-Date) -gt $Deadline)
+if ($LASTEXITCODE -ne 0) { throw 'The sigilc daemon did not start within 15 seconds: see the Application event log, source sigilc.' }
+$Status | ForEach-Object { Write-Host $_ }
 
 Write-Host 'Done.'
 `))

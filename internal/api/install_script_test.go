@@ -181,6 +181,26 @@ func TestInstallPs1StartsServiceWhenEnrollFails(t *testing.T) {
 	)
 }
 
+// TestInstallPs1WaitsForTheDaemon checks that install.ps1 does not report a
+// service whose daemon does not run as done: the SCM starts one that fails
+// as well. It waits up to 15 seconds for sigilc status to succeed, prints
+// what it says, and otherwise fails with where the log is. sigilc status
+// runs where its stderr is no error, since it fails until the daemon
+// answers.
+func TestInstallPs1WaitsForTheDaemon(t *testing.T) {
+	script := getInstallScript(t, "/install.ps1").Body.String()
+	inOrder(t, script,
+		"\n& $Dest service start\nif ($LASTEXITCODE -ne 0) { throw ",
+		"\n$Deadline = (Get-Date).AddSeconds(15)\ndo {\n    Start-Sleep -Seconds 1\n"+
+			"    $Status = & { $ErrorActionPreference = 'Continue'; & $Dest status 2>$null }\n"+
+			"} until ($LASTEXITCODE -eq 0 -or (Get-Date) -gt $Deadline)\n",
+		"\nif ($LASTEXITCODE -ne 0) { throw 'The sigilc daemon did not start within 15 seconds: "+
+			"see the Application event log, source sigilc.' }\n",
+		"\n$Status | ForEach-Object { Write-Host $_ }\n",
+		"\nWrite-Host 'Done.'\n",
+	)
+}
+
 // TestInstallShUsage checks the commands that the comment of install.sh
 // gives: with a token, as sigils token create prints it; asking for the
 // token; and to upgrade. It names --replace, which the token for a reinstall
@@ -215,6 +235,23 @@ func TestInstallShStartsServiceWhenEnrollFails(t *testing.T) {
 		"\n        echo \"Enrolling failed, and so did starting the sigilc service again with its earlier client.yaml: "+
 			"see both errors above.\" >&2\n",
 		"\n    exit 1\n",
+	)
+}
+
+// TestInstallShWaitsForTheDaemon checks that install.sh does not report a
+// service whose daemon does not run as done: systemd starts one that fails
+// as well. It waits up to 15 seconds for sigilc status to succeed, prints
+// what it says, and otherwise fails with where the log is.
+func TestInstallShWaitsForTheDaemon(t *testing.T) {
+	script := getInstallScript(t, "/install.sh").Body.String()
+	inOrder(t, script,
+		"\n\"$DEST\" service start\n",
+		"\nuntil STATUS=$(\"$DEST\" status 2>/dev/null); do\n",
+		"\n  if [ \"$i\" -ge 15 ]; then\n"+
+			"    echo \"The sigilc daemon did not start within 15 seconds: see journalctl -u sigilc (on macOS, /var/log/sigilc.err.log).\" >&2\n"+
+			"    exit 1\n",
+		"\n  sleep 1\ndone\necho \"$STATUS\"\n",
+		"\necho \"Done.\"\n",
 	)
 }
 
