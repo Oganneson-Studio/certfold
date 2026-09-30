@@ -17,8 +17,10 @@ import (
 func start(_ context.Context, cmd *exec.Cmd) (release func(), err error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
-		// exec cancels only before it has waited for the program, so the
-		// group ID is still the program's own process ID.
+		// The group ID is the program's process ID. exec usually cancels
+		// while the program runs, but when ctx ends as the program exits it
+		// may cancel after it has waited for it: the kill then reaches the
+		// members left in the group, or none, which ESRCH reports.
 		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		if errors.Is(err, syscall.ESRCH) {
 			return os.ErrProcessDone
