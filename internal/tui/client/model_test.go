@@ -5,8 +5,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/x/exp/teatest"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 )
@@ -27,20 +26,24 @@ func newTestBackend() *fakeBackend {
 }
 
 func TestClientModel_QuitKey(t *testing.T) {
-	tm := teatest.NewTestModel(t, New(newTestBackend()), teatest.WithInitialTermSize(100, 30))
-	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
-	tm.WaitFinished(t, teatest.WithFinalTimeout(3*time.Second))
+	_, cmd := step(t, newModel(t, newTestBackend()), tea.KeyPressMsg{Code: 'q', Text: "q"})
+	if cmd == nil {
+		t.Fatal("q returned no command")
+	}
+	if msg := cmd(); msg != (tea.QuitMsg{}) {
+		t.Errorf("the command of q returned %#v, want tea.QuitMsg", msg)
+	}
 }
 
 func TestClientModel_ViewContainsClientName(t *testing.T) {
-	view := newModel(t, newTestBackend()).View()
+	view := plain(newModel(t, newTestBackend()))
 	if !strings.Contains(view, "web-1") {
 		t.Errorf("view missing client name: %q", view[:min(200, len(view))])
 	}
 }
 
 func TestClientModel_ViewContainsCerts(t *testing.T) {
-	view := newModel(t, newTestBackend()).View()
+	view := plain(newModel(t, newTestBackend()))
 	if !strings.Contains(view, "api-prod") {
 		t.Errorf("view missing api-prod: %q", view)
 	}

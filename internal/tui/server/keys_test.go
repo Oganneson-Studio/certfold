@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/key"
+	"charm.land/bubbles/v2/key"
 )
 
 // TestEveryHelpKeyIsWired presses every key that the help shows, on every
@@ -42,7 +42,7 @@ func TestEveryHelpKeyIsWired(t *testing.T) {
 				t.Fatal("creating a token did not show it")
 			}
 			v := &m.created.view
-			v.SetYOffset((v.TotalLineCount() - v.Height) / 2)
+			v.SetYOffset((v.TotalLineCount() - v.Height()) / 2)
 			return m
 		}},
 	}
@@ -59,9 +59,9 @@ func TestEveryHelpKeyIsWired(t *testing.T) {
 					if key.Matches(keyMsg(k), m.keys.Tab) && int(k[0]-'1') == m.tab {
 						continue // selects the tab shown; the other tabs press it
 					}
-					before := m.View()
+					before := m.View().Content
 					next, cmd := m.Update(keyMsg(k))
-					if cmd == nil && next.(Model).View() == before {
+					if cmd == nil && next.(Model).View().Content == before {
 						t.Errorf("%s (%s) does nothing", k, b.Help().Desc)
 					}
 				}

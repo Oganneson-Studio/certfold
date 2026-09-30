@@ -3,10 +3,8 @@ package server
 import (
 	"strings"
 	"testing"
-	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/x/exp/teatest"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 )
@@ -24,15 +22,19 @@ func TestModel_InitialTabIsOverview(t *testing.T) {
 }
 
 func TestModel_QuitKey(t *testing.T) {
-	tm := teatest.NewTestModel(t, newTestModel(t), teatest.WithInitialTermSize(100, 30))
-	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
-	tm.WaitFinished(t, teatest.WithFinalTimeout(3*time.Second))
+	_, cmd := newTestModel(t).Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	if cmd == nil {
+		t.Fatal("q returned no command")
+	}
+	if msg := cmd(); msg != (tea.QuitMsg{}) {
+		t.Errorf("the command of q returned %#v, want tea.QuitMsg", msg)
+	}
 }
 
 func TestModel_TabSwitchByNumber(t *testing.T) {
 	m := newTestModel(t)
 	for i := 1; i <= numTabs; i++ {
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{rune('0' + i)}})
+		updated, _ := m.Update(tea.KeyPressMsg{Code: rune('0' + i), Text: string(rune('0' + i))})
 		if got := updated.(Model).tab; got != i-1 {
 			t.Errorf("tab key %d: got tab %d, want %d", i, got, i-1)
 		}
@@ -42,15 +44,15 @@ func TestModel_TabSwitchByNumber(t *testing.T) {
 func TestModel_TabCycle(t *testing.T) {
 	m := newTestModel(t)
 	for i := 0; i < numTabs+1; i++ {
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+		updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 		m = updated.(Model)
 	}
 	// After numTabs+1 tab presses from tab 0, we should be at tab 1.
 	if m.tab != 1 {
 		t.Errorf("after %d tabs: got tab %d", numTabs+1, m.tab)
 	}
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
-	updated, _ = updated.(Model).Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	updated, _ = updated.(Model).Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 	if got := updated.(Model).tab; got != numTabs-1 {
 		t.Errorf("shift+tab twice from tab 1: got tab %d, want %d", got, numTabs-1)
 	}
@@ -66,7 +68,7 @@ func TestModel_OverviewView(t *testing.T) {
 		"event-3",
 	} {
 		if !shows(m, want) {
-			t.Errorf("overview missing %q: %q", want, m.View())
+			t.Errorf("overview missing %q: %q", want, plain(m))
 		}
 	}
 }
@@ -74,7 +76,7 @@ func TestModel_OverviewView(t *testing.T) {
 func TestModel_CertsTabView(t *testing.T) {
 	m := newTestModel(t)
 	m.tab = tabCertificates
-	view := m.View()
+	view := plain(m)
 	if !strings.Contains(view, "api-prod") {
 		t.Errorf("certs tab missing 'api-prod': %q", view)
 	}
@@ -88,7 +90,7 @@ func TestModel_CertsTabShowsMissingExpiryAsDash(t *testing.T) {
 		t.Errorf("row of new-cert = %q, want - for Not After and Renew At", got)
 	}
 	m.certsTable.SetCursor(2)
-	if view := m.View(); !strings.Contains(view, "new-cert") || strings.Contains(view, "0001-01-01") {
+	if view := plain(m); !strings.Contains(view, "new-cert") || strings.Contains(view, "0001-01-01") {
 		t.Errorf("certs tab should list new-cert without a zero date: %q", view)
 	}
 }
@@ -98,7 +100,7 @@ func TestModel_ClientsTabView(t *testing.T) {
 	m.tab = tabClients
 	// web-2 subscribes to both certificates.
 	if !shows(m, "web-2") || m.clientsTable.Rows()[1][3] != "api-prod,mail" {
-		t.Errorf("clients tab should list web-2 with its certificates: %q", m.View())
+		t.Errorf("clients tab should list web-2 with its certificates: %q", plain(m))
 	}
 }
 

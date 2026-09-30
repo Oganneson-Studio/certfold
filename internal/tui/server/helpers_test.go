@@ -10,7 +10,8 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 	"github.com/Oganneson-Studio/sigil/internal/logging"
@@ -298,33 +299,39 @@ func onTab(t *testing.T, b Backend, tab int) Model {
 	m.clientsTable.SetCursor(1)
 	m.tokensTable.SetCursor(1)
 	m, _ = drive(t, m, tea.WindowSizeMsg{Width: m.width, Height: m.height})
-	m.eventsView.SetYOffset(m.eventsView.YOffset / 2)
+	m.eventsView.SetYOffset(m.eventsView.YOffset() / 2)
 	return m
 }
 
-// keyTypes maps the names of the special keys to their types.
-var keyTypes = func() map[string]tea.KeyType {
-	types := make(map[string]tea.KeyType)
-	for t := tea.KeyType(-200); t < 200; t++ {
-		if name := (tea.Key{Type: t}).String(); name != "" {
-			types[name] = t
+// specialKeys are the keys that type no text among those the TUI handles.
+var specialKeys = []tea.KeyPressMsg{
+	{Code: tea.KeyEnter}, {Code: tea.KeyEscape}, {Code: tea.KeyBackspace},
+	{Code: tea.KeyTab}, {Code: tea.KeyTab, Mod: tea.ModShift},
+	{Code: tea.KeyUp}, {Code: tea.KeyDown}, {Code: tea.KeyPgUp}, {Code: tea.KeyPgDown},
+	{Code: 'c', Mod: tea.ModCtrl},
+}
+
+// keyMsg returns the message of the key named k, as bubbletea names keys, or
+// else of typing k. A space types " ", which bubbletea names "space".
+func keyMsg(k string) tea.KeyPressMsg {
+	for _, msg := range specialKeys {
+		if msg.String() == k {
+			return msg
 		}
 	}
-	return types
-}()
+	if r := []rune(k); len(r) == 1 {
+		return tea.KeyPressMsg{Code: r[0], Text: k}
+	}
+	return tea.KeyPressMsg{Code: tea.KeyExtended, Text: k}
+}
 
-// keyMsg returns the message of the key named k, as bubbletea names keys.
-func keyMsg(k string) tea.KeyMsg {
-	if k == " " {
-		return tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(k)}
-	}
-	if t, ok := keyTypes[k]; ok {
-		return tea.KeyMsg{Type: t}
-	}
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
+// plain returns the view of m as a terminal without colors shows it: lipgloss
+// styles text with escape sequences whatever the terminal.
+func plain(m Model) string {
+	return ansi.Strip(m.View().Content)
 }
 
 // shows reports whether the view of m holds text, however it wraps.
 func shows(m Model, text string) bool {
-	return strings.Contains(strings.Join(strings.Fields(m.View()), " "), strings.Join(strings.Fields(text), " "))
+	return strings.Contains(strings.Join(strings.Fields(plain(m)), " "), strings.Join(strings.Fields(text), " "))
 }
