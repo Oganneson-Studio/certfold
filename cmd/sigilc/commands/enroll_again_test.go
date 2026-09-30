@@ -1,0 +1,109 @@
+package commands
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/Oganneson-Studio/sigil/internal/config"
+)
+
+// reloadHint is the part of the line that enroll prints when it replaced the
+// identity of a client.yaml that was there before.
+const reloadHint = "until `sigilc reload` or a restart of the sigilc service"
+
+// TestEnrollAgainKeepsConfigWithServiceVariables enrolls again, as the
+// install scripts do on a host that has sigilc, with a token for the name and
+// server URL of the client.yaml there. That client.yaml takes a password
+// from a variable that only the service's environment sets, which sudo does
+// not pass to the installer: enroll must not need it, must keep it, and must
+// say that a running daemon goes on with the identity it loaded.
+func TestEnrollAgainKeepsConfigWithServiceVariables(t *testing.T) {
+	srv := newSigningEnrollServer(t)
+	cfgPath := filepath.Join(t.TempDir(), "client.yaml")
+	const passwordRef = "${SIGIL_TEST_SERVICE_ONLY_PASSWORD}"
+	existing := fmt.Sprintf(`client:
+  name: web-1
+  server_url: %q
+  data_dir: %q
+certificates:
+  api:
+    outputs:
+      - format: pkcs12
+        path: /etc/ssl/api.p12
+        password: %s
+`, srv.URL, t.TempDir(), passwordRef)
+	if err := os.WriteFile(cfgPath, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runSigilcErr(t, "--config", cfgPath, "enroll", "--token", srv.token(t, "web-1"))
+	if err != nil {
+		t.Fatalf("enroll again: %v", err)
+	}
+	if !strings.Contains(out, reloadHint) {
+		t.Errorf("enroll over an existing client.yaml printed:\n%s\nwant a line that says %q", out, reloadHint)
+	}
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "password: "+passwordRef+"\n") {
+		t.Errorf("client.yaml after enroll lost the password reference:\n%s", raw)
+	}
+	t.Setenv("SIGIL_TEST_SERVICE_ONLY_PASSWORD", "secret")
+	cfg, err := config.LoadClient(cfgPath)
+	if err != nil {
+		t.Fatalf("load client.yaml in the service's environment: %v", err)
+	}
+	if cfg.Identity.ClientCert == "" || cfg.Certificates["api"].Outputs[0].Password != "secret" {
+		t.Fatalf("client.yaml after enroll: identity set %t, api password %q; want an identity and the password",
+			cfg.Identity.ClientCert != "", cfg.Certificates["api"].Outputs[0].Password)
+	}
+}
+
+// TestEnrollFirstTimeSaysNothingOfReload checks that the first enrollment,
+// which writes client.yaml, does not tell of a daemon that cannot run yet.
+func TestEnrollFirstTimeSaysNothingOfReload(t *testing.T) {
+	srv := newSigningEnrollServer(t)
+	cfgPath := filepath.Join(t.TempDir(), "client.yaml")
+	out, err := runSigilcErr(t, "--config", cfgPath, "enroll", "--token", srv.token(t, "web-1"))
+	if err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+	if strings.Contains(out, reloadHint) {
+		t.Errorf("first enrollment printed:\n%s\nwant no line about reloading a daemon", out)
+	}
+}
+
+// TestEnrollRefusesAnotherClientsConfig checks that a client.yaml for
+// another name or server is left alone, before the token is sent, with an
+// error that says which file stands in the way.
+func TestEnrollRefusesAnotherClientsConfig(t *testing.T) {
+	srv := newRefusingEnrollServer(t)
+	for _, tc := range []struct{ name, serverURL string }{
+		{"web-2", srv.URL},
+		{"web-1", "https://other.example.com"},
+	} {
+		t.Run(tc.name+" at "+tc.serverURL, func(t *testing.T) {
+			cfgPath := filepath.Join(t.TempDir(), "client.yaml")
+			existing := fmt.Sprintf("client:\n  name: %s\n  server_url: %q\n", tc.name, tc.serverURL)
+			if err := os.WriteFile(cfgPath, []byte(existing), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			before := srv.requests.Load()
+			err := runEnrollCommand(cfgPath, srv.token(t, "web-1"))
+			if err == nil || !strings.Contains(err.Error(), "remove "+cfgPath+" and try again") {
+				t.Fatalf("enroll error = %v, want one that says to remove %s", err, cfgPath)
+			}
+			if n := srv.requests.Load() - before; n != 0 {
+				t.Fatalf("sent the token %d times for a client.yaml of another client", n)
+			}
+			if got, err := os.ReadFile(cfgPath); err != nil || string(got) != existing {
+				t.Fatalf("client.yaml after a refused enrollment = %q (error %v), want it unchanged", got, err)
+			}
+		})
+	}
+}

@@ -104,6 +104,13 @@ func runEnroll(cmd *cobra.Command, _ []string) (err error) {
 	}
 
 	fmt.Printf("enrolled as %q — identity written to %s\n", clientName, cfgPath)
+	if !created {
+		// The server now accepts only the new identity, and a daemon that
+		// runs goes on with the one it loaded until it reads client.yaml
+		// again.
+		fmt.Println("a running sigilc daemon keeps its old identity, which the server no longer accepts, " +
+			"until `sigilc reload` or a restart of the sigilc service")
+	}
 	return nil
 }
 
@@ -231,8 +238,8 @@ func clientIPCSocket(cmd *cobra.Command) string {
 	}
 	// Locating the daemon must not require the variables client.yaml takes
 	// from the service's environment.
-	if socket, err := config.ReadClientIPCSocket(clientConfigPath(cmd)); err == nil && socket != "" {
-		return socket
+	if basics, err := config.ReadClientBasics(clientConfigPath(cmd)); err == nil && basics.IPCSocket != "" {
+		return basics.IPCSocket
 	}
 	return ipc.DefaultClientSocket()
 }
@@ -241,17 +248,22 @@ func clientIPCSocket(cmd *cobra.Command) string {
 // cfgPath must name the client and server URL of the token; without one, it
 // writes one that does, and reports that it created it. Writing it before
 // the token is sent stops an enrollment that could not save its identity
-// before the server spends the token.
+// before the server spends the token. The client.yaml of an earlier install
+// may take values from variables that only the service's environment sets,
+// which a reinstall under sudo does not have: only the name and server URL
+// are read.
 func ensureEnrollmentConfig(cfgPath, tokenName, serverURL string) (name string, created bool, err error) {
-	cfg, err := config.LoadClient(cfgPath)
+	cfg, err := config.ReadClientBasics(cfgPath)
 	if err == nil {
-		if cfg.Client.Name != tokenName {
-			return "", false, fmt.Errorf("client name %q in %s does not match token name %q", cfg.Client.Name, cfgPath, tokenName)
+		if cfg.Name != tokenName {
+			return "", false, fmt.Errorf("client name %q in %s does not match token name %q; to enroll as %q, remove %s and try again",
+				cfg.Name, cfgPath, tokenName, tokenName, cfgPath)
 		}
-		if cfg.Client.ServerURL != serverURL {
-			return "", false, fmt.Errorf("server URL %q in %s does not match token server URL %q", cfg.Client.ServerURL, cfgPath, serverURL)
+		if cfg.ServerURL != serverURL {
+			return "", false, fmt.Errorf("server URL %q in %s does not match token server URL %q; to enroll with %s, remove %s and try again",
+				cfg.ServerURL, cfgPath, serverURL, serverURL, cfgPath)
 		}
-		return cfg.Client.Name, false, nil
+		return cfg.Name, false, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return "", false, fmt.Errorf("load config: %w", err)
