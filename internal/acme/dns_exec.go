@@ -99,16 +99,12 @@ func (p *execProvider) run(action, domain, keyAuth string) error {
 	return fmt.Errorf("exec: %s %s: %w", action, info.EffectiveFQDN, err)
 }
 
-// isHostName reports whether name, with the trailing dot of a record name,
-// is made of labels of ASCII letters, digits, '-' and '_', none of them empty
-// or beginning with '-'. Challenge records and the CNAME targets they are
+// isHostName reports whether name, a record name with its trailing dot, is
+// made of labels of ASCII letters, digits, '-' and '_', none of them empty or
+// beginning with '-'. Challenge records and the CNAME targets they are
 // delegated to have underscores, and their case varies.
 func isHostName(name string) bool {
-	labels, ok := strings.CutSuffix(name, ".")
-	if !ok {
-		return false
-	}
-	for label := range strings.SplitSeq(labels, ".") {
+	for label := range strings.SplitSeq(strings.TrimSuffix(name, "."), ".") {
 		if label == "" || label[0] == '-' || strings.ContainsFunc(label, func(r rune) bool {
 			return !('a' <= r && r <= 'z' || 'A' <= r && r <= 'Z' || '0' <= r && r <= '9' || r == '-' || r == '_')
 		}) {
