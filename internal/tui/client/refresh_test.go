@@ -115,7 +115,7 @@ func TestRefreshShowsErrors(t *testing.T) {
 
 	f.stateErr = errors.New("ipc request: sigilc stopped")
 	m = press(t, m, "r")
-	if view := m.View(); !strings.Contains(view, "Error: ipc request: sigilc stopped") || !strings.Contains(view, "web-1") {
+	if view := plain(m); !strings.Contains(view, "Error: ipc request: sigilc stopped") || !strings.Contains(view, "web-1") {
 		t.Errorf("view after a failed state read lacks the error or the last state:\n%s", view)
 	}
 
@@ -123,13 +123,13 @@ func TestRefreshShowsErrors(t *testing.T) {
 	f.state.Name = "web-2"
 	f.eventsErr = errors.New("ipc GET /ipc/v1/events?after=0: server returned 404")
 	m = press(t, m, "r")
-	if view := m.View(); !strings.Contains(view, "Error: ipc GET /ipc/v1/events?after=0: server returned 404") || !strings.Contains(view, "web-2") {
+	if view := plain(m); !strings.Contains(view, "Error: ipc GET /ipc/v1/events?after=0: server returned 404") || !strings.Contains(view, "web-2") {
 		t.Errorf("view after a failed events read lacks the error or the new state:\n%s", view)
 	}
 
 	f.eventsErr = nil
 	m = press(t, m, "r")
-	if view := m.View(); strings.Contains(view, "Error:") {
+	if view := plain(m); strings.Contains(view, "Error:") {
 		t.Errorf("view after a refresh that succeeded still shows an error:\n%s", view)
 	}
 }
@@ -146,15 +146,15 @@ func TestEventsViewFollowsNewEvents(t *testing.T) {
 
 	f.emit(50, "more")
 	m = press(t, m, "r")
-	if !m.eventsView.AtBottom() || !strings.Contains(m.View(), "more 50") {
-		t.Errorf("events view at the bottom did not follow the new events:\n%s", m.View())
+	if !m.eventsView.AtBottom() || !strings.Contains(plain(m), "more 50") {
+		t.Errorf("events view at the bottom did not follow the new events:\n%s", plain(m))
 	}
 
 	m = press(t, m, "pgup")
-	offset := m.eventsView.YOffset
+	offset := m.eventsView.YOffset()
 	f.emit(50, "later")
 	m = press(t, m, "r")
-	if m.eventsView.YOffset != offset {
-		t.Errorf("events view scrolled up moved from line %d to %d", offset, m.eventsView.YOffset)
+	if m.eventsView.YOffset() != offset {
+		t.Errorf("events view scrolled up moved from line %d to %d", offset, m.eventsView.YOffset())
 	}
 }

@@ -56,7 +56,7 @@ func TestTokenRefusedForReplacementSaysHowInTheTUI(t *testing.T) {
 	fake.setActionErr(fmt.Errorf("client %q is already enrolled; %w", "web-9", ipc.ErrReplaceRequired))
 	m, _ := press(t, onTab(t, fake, tabTokens), "n", "web-9", "enter")
 	if !shows(m, "create the token again to confirm the replacement") || shows(m, "--replace") {
-		t.Errorf("status after the refusal: %q", m.View())
+		t.Errorf("status after the refusal: %q", plain(m))
 	}
 }
 
@@ -67,7 +67,7 @@ func TestRenewalNotWaitedForMayStillFinish(t *testing.T) {
 	fake.setActionErr(fmt.Errorf("ipc request: %w", context.DeadlineExceeded))
 	m, _ := press(t, onTab(t, fake, tabCertificates), "R", "y")
 	if !shows(m, "the renewal may still finish in the daemon: see `sigils events` or `sigils cert show mail`") {
-		t.Errorf("status after a renewal that timed out: %q", m.View())
+		t.Errorf("status after a renewal that timed out: %q", plain(m))
 	}
 }
 
@@ -158,7 +158,7 @@ func TestTokenForNameWithUnusedTokenAsksFirst(t *testing.T) {
 	if calls := fake.changes(); !slices.Equal(calls, []string{"CreateToken web-6 1h0m0s replace"}) {
 		t.Errorf("y: backend calls %q, want the token created as a replacement", calls)
 	}
-	if m.created == nil || !strings.Contains(m.created.content(m.created.view.Width), `Revoked   1 unused token(s) for "web-6"`) {
+	if m.created == nil || !strings.Contains(m.created.content(m.created.view.Width()), `Revoked   1 unused token(s) for "web-6"`) {
 		t.Error("the box of the replacing token does not say that it revoked the unused token")
 	}
 
@@ -178,7 +178,7 @@ func TestNewTokenShownOnlyInItsBox(t *testing.T) {
 		t.Fatal("the new token is not shown")
 	}
 	// The lines are cut to the width of the box and joined again here.
-	content := strings.ReplaceAll(m.created.content(m.created.view.Width), "\n", "")
+	content := strings.ReplaceAll(m.created.content(m.created.view.Width()), "\n", "")
 	sh, ps1 := api.InstallCommands(testServerURL, testToken)
 	// The ID names the token on the Tokens tab, as the time it expires does.
 	id, expires := m.created.token.TokenID, m.created.token.ExpiresAt.Local().Format("2006-01-02 15:04:05 -07:00")

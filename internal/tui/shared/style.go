@@ -1,7 +1,7 @@
 // Package shared provides common lipgloss styles for all Sigil TUI components.
 package shared
 
-import "github.com/charmbracelet/lipgloss"
+import "charm.land/lipgloss/v2"
 
 var (
 	// Primary purple accent.

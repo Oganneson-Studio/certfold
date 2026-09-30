@@ -3,7 +3,7 @@ package server
 import (
 	"slices"
 
-	"github.com/charmbracelet/bubbles/key"
+	"charm.land/bubbles/v2/key"
 )
 
 // keyMap holds every key the TUI handles. The help line is built from the

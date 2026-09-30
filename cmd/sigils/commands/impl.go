@@ -11,7 +11,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 
 	"github.com/Oganneson-Studio/sigil/internal/api"
@@ -337,7 +337,7 @@ func runServerTUI(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
-	_, err = tea.NewProgram(tuiserver.New(c), tea.WithAltScreen()).Run()
+	_, err = tea.NewProgram(tuiserver.New(c)).Run()
 	return err
 }
 

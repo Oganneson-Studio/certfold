@@ -14,20 +14,20 @@ import (
 func TestHeaderShowsWhenSigilcDoesNotAnswer(t *testing.T) {
 	f := newTestBackend()
 	m := newModel(t, f)
-	if view := m.View(); !strings.Contains(view, "online") {
+	if view := plain(m); !strings.Contains(view, "online") {
 		t.Fatalf("header of an answering sigilc lacks online:\n%s", view)
 	}
 
 	f.stateErr = errors.New("ipc request: sigilc stopped")
 	m = press(t, m, "r")
-	if view := m.View(); strings.Contains(view, "online") || !strings.Contains(view, "unknown, sigilc is not answering") {
+	if view := plain(m); strings.Contains(view, "online") || !strings.Contains(view, "unknown, sigilc is not answering") {
 		t.Errorf("header of a sigilc that does not answer:\n%s", view)
 	}
 
 	f.stateErr = nil
 	f.eventsErr = errors.New("ipc GET /ipc/v1/events?after=0: server returned 404")
 	m = press(t, m, "r")
-	if view := m.View(); !strings.Contains(view, "online") || strings.Contains(view, "not answering") {
+	if view := plain(m); !strings.Contains(view, "online") || strings.Contains(view, "not answering") {
 		t.Errorf("header after a refresh that read the state:\n%s", view)
 	}
 }

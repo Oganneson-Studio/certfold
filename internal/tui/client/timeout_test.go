@@ -28,7 +28,7 @@ func TestRefreshGivesUpOnSilentDaemon(t *testing.T) {
 			m := newModel(t, f)
 			tc.hang(f, true)
 			m = press(t, m, "r")
-			if view := m.View(); !strings.Contains(view, "Error: "+context.DeadlineExceeded.Error()) {
+			if view := plain(m); !strings.Contains(view, "Error: "+context.DeadlineExceeded.Error()) {
 				t.Fatalf("a refresh of a daemon that does not answer did not end in an error:\n%s", view)
 			}
 			if m.refreshing {
@@ -37,7 +37,7 @@ func TestRefreshGivesUpOnSilentDaemon(t *testing.T) {
 
 			tc.hang(f, false)
 			m = press(t, m, "r")
-			if view := m.View(); strings.Contains(view, "Error:") {
+			if view := plain(m); strings.Contains(view, "Error:") {
 				t.Errorf("the refresh after the daemon answered again still shows an error:\n%s", view)
 			}
 		})

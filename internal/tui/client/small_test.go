@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 )
@@ -31,7 +31,7 @@ func TestViewFitsTheScreen(t *testing.T) {
 				for _, k := range keys {
 					m = press(t, m, k)
 				}
-				view := m.View()
+				view := plain(m)
 				name := fmt.Sprintf("%d certificates at %dx%d with keys %q", n, size.Width, size.Height, keys)
 
 				lines := strings.Split(view, "\n")

@@ -9,12 +9,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/help"
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/table"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/help"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/table"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 	"github.com/Oganneson-Studio/sigil/internal/logging"
@@ -156,7 +156,7 @@ func New(backend Backend) Model {
 			table.Column{Title: "Status", Width: 7},
 			table.Column{Title: "Expires", Width: 16},
 		),
-		eventsView: viewport.New(0, 0),
+		eventsView: viewport.New(),
 	}
 }
 
@@ -174,9 +174,10 @@ func newTable(cols ...table.Column) table.Model {
 	return table.New(table.WithColumns(cols), table.WithStyles(styles))
 }
 
-// Init starts refreshing: now, and then every refreshInterval.
+// Init starts refreshing: now, and then every refreshInterval. It also asks
+// the terminal for its background color, which the colors of the help follow.
 func (m Model) Init() tea.Cmd {
-	return func() tea.Msg { return tickMsg{} }
+	return tea.Batch(func() tea.Msg { return tickMsg{} }, tea.RequestBackgroundColor)
 }
 
 // Update handles msg, then fits the tables and views to the window again:
@@ -191,6 +192,8 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+	case tea.BackgroundColorMsg:
+		m.help.Styles = help.DefaultStyles(msg.IsDark())
 	case tickMsg:
 		refresh := m.startRefresh()
 		return tea.Batch(refresh, tea.Tick(refreshInterval, func(time.Time) tea.Msg { return tickMsg{} }))
@@ -226,8 +229,13 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		m.confirm, m.form = nil, nil
 		m.created = newCreatedToken(msg.name, msg.token)
 		return m.startRefresh()
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+	case tea.PasteMsg:
+		// A paste types into the token form; elsewhere it does nothing.
+		if m.form != nil {
+			m.form.add(msg.Content)
+		}
 	}
 	return nil
 }
@@ -343,7 +351,7 @@ func (m *Model) addEvents(page *ipc.EventsPage) {
 		m.events = m.events[extra:]
 	}
 	atBottom := m.eventsView.AtBottom()
-	m.eventsView.SetContent(eventLines(m.events, m.eventsView.Width))
+	m.eventsView.SetContent(eventLines(m.events, m.eventsView.Width()))
 	follow(&m.eventsView, atBottom)
 }
 
@@ -353,12 +361,12 @@ func follow(v *viewport.Model, atBottom bool) {
 	if atBottom {
 		v.GotoBottom()
 	} else {
-		v.SetYOffset(v.YOffset)
+		v.SetYOffset(v.YOffset())
 	}
 }
 
-func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
-	if msg.Type == tea.KeyCtrlC {
+func (m *Model) handleKey(msg tea.KeyPressMsg) tea.Cmd {
+	if msg.String() == "ctrl+c" {
 		return tea.Quit
 	}
 	switch {
@@ -376,7 +384,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case key.Matches(msg, k.Quit):
 		return tea.Quit
 	case key.Matches(msg, k.Tab):
-		m.tab = int(msg.Runes[0] - '1')
+		m.tab = int(msg.String()[0] - '1')
 	case key.Matches(msg, k.NextTab):
 		m.tab = (m.tab + 1) % numTabs
 	case key.Matches(msg, k.PrevTab):
@@ -392,15 +400,15 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 // handleTabKey handles the keys of the current tab.
-func (m *Model) handleTabKey(msg tea.KeyMsg) {
+func (m *Model) handleTabKey(msg tea.KeyPressMsg) {
 	k := m.keys
 	if m.tab == tabEvents {
 		v := &m.eventsView
 		switch {
 		case key.Matches(msg, k.Up):
-			v.LineUp(1)
+			v.ScrollUp(1)
 		case key.Matches(msg, k.Down):
-			v.LineDown(1)
+			v.ScrollDown(1)
 		case key.Matches(msg, k.PageUp):
 			v.PageUp()
 		case key.Matches(msg, k.PageDown):
@@ -472,7 +480,7 @@ func (m *Model) layout() {
 
 	// Inside the padding of shared.ContentStyle.
 	w, h := max(m.width-4, 0), max(height-2, 0)
-	m.help.Width = w
+	m.help.SetWidth(w)
 
 	fitColumn(&m.certsTable, 4, w)
 	fitColumn(&m.clientsTable, 3, w)
@@ -484,16 +492,18 @@ func (m *Model) layout() {
 
 	v := &m.eventsView
 	atBottom := v.AtBottom()
-	if v.Width != w {
-		v.Width = w
+	if v.Width() != w {
+		v.SetWidth(w)
 		v.SetContent(eventLines(m.events, w))
 	}
-	v.Height = h
+	v.SetHeight(h)
 	follow(v, atBottom)
 }
 
 // fitColumn gives column i of t the width that the other columns leave of
-// width, and at least 8.
+// width, and at least 8. t gets the width of its rows, which is more than
+// width when column i needs those 8: a table cuts its rows to its width, and
+// draws none while its width is 0.
 func fitColumn(t *table.Model, i, width int) {
 	cols := slices.Clone(t.Columns())
 	rest := width
@@ -503,9 +513,13 @@ func fitColumn(t *table.Model, i, width int) {
 			rest -= c.Width
 		}
 	}
-	if rest = max(rest, 8); cols[i].Width != rest {
-		cols[i].Width = rest
+	fitted := max(rest, 8)
+	if cols[i].Width != fitted {
+		cols[i].Width = fitted
 		t.SetColumns(cols)
+	}
+	if rows := width - rest + fitted; t.Width() != rows {
+		t.SetWidth(rows)
 	}
 }
 

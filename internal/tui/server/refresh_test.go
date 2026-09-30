@@ -15,15 +15,15 @@ func TestRefreshErrorShownUntilARefreshSucceeds(t *testing.T) {
 	fake.listErr = errors.New("ipc GET /ipc/v1/certs: " + shown)
 	m := loaded(t, fake)
 	if !shows(m, shown) {
-		t.Fatalf("the failed refresh is not shown: %q", m.View())
+		t.Fatalf("the failed refresh is not shown: %q", plain(m))
 	}
 	if m = refresh(t, m); !shows(m, shown) {
-		t.Fatalf("a second failed refresh hid the error: %q", m.View())
+		t.Fatalf("a second failed refresh hid the error: %q", plain(m))
 	}
 
 	fake.setListErr(nil)
 	if m = refresh(t, m); shows(m, shown) || !shows(m, "api-prod") {
-		t.Errorf("a refresh that succeeded left the error or missed the lists: %q", m.View())
+		t.Errorf("a refresh that succeeded left the error or missed the lists: %q", plain(m))
 	}
 }
 
@@ -35,15 +35,15 @@ func TestActionErrorOutlivesRefresh(t *testing.T) {
 	fake.actionErr = errors.New("ipc DELETE /ipc/v1/clients/web-2: " + shown)
 	m, _ := press(t, onTab(t, fake, tabClients), "d", "y")
 	if !shows(m, shown) {
-		t.Fatalf("the failed removal is not shown: %q", m.View())
+		t.Fatalf("the failed removal is not shown: %q", plain(m))
 	}
 	if m = refresh(t, m); !shows(m, shown) {
-		t.Fatalf("the refresh after the failed removal hid it: %q", m.View())
+		t.Fatalf("the refresh after the failed removal hid it: %q", plain(m))
 	}
 
 	fake.setActionErr(nil)
 	if m, _ = press(t, m, "d", "y"); shows(m, shown) {
-		t.Errorf("a removal that succeeded left the earlier error: %q", m.View())
+		t.Errorf("a removal that succeeded left the earlier error: %q", plain(m))
 	}
 }
 
@@ -104,13 +104,13 @@ func TestEventsFollowNewestOnly(t *testing.T) {
 	m.tab = tabEvents
 	fake.setEvents(makeEvents(1, 85, "event"))
 	if m = refresh(t, m); !m.eventsView.AtBottom() || !shows(m, "event-85") {
-		t.Fatalf("the Events tab did not follow event-85: %q", m.View())
+		t.Fatalf("the Events tab did not follow event-85: %q", plain(m))
 	}
 
 	m, _ = press(t, m, "k")
-	offset := m.eventsView.YOffset
+	offset := m.eventsView.YOffset()
 	fake.setEvents(makeEvents(1, 90, "event"))
-	if m = refresh(t, m); m.eventsView.AtBottom() || m.eventsView.YOffset != offset {
-		t.Errorf("the scrolled Events tab moved from offset %d to %d", offset, m.eventsView.YOffset)
+	if m = refresh(t, m); m.eventsView.AtBottom() || m.eventsView.YOffset() != offset {
+		t.Errorf("the scrolled Events tab moved from offset %d to %d", offset, m.eventsView.YOffset())
 	}
 }
