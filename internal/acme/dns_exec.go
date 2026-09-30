@@ -2,6 +2,7 @@ package acme
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -11,22 +12,20 @@ import (
 	"github.com/go-acme/lego/v4/challenge/dns01"
 
 	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/sigil/internal/proc"
 )
 
 // Bounds on one run of an exec provider's program. They are variables only so
 // tests can shorten them.
 var (
-	// dnsHookTimeout bounds one run; when it expires the program is killed.
+	// dnsHookTimeout bounds one run; when it expires the program is killed
+	// along with the processes it started.
 	dnsHookTimeout = 2 * time.Minute
 	// dnsHookWaitDelay bounds how long the program's output may stay open
 	// after it exits or is killed, typically because a process it started
-	// (such as the curl of a killed shell script) still holds it.
+	// still holds it.
 	dnsHookWaitDelay = 5 * time.Second
 )
-
-// dnsHookLogLimit caps the program output logged after a failed run. The end
-// of the output, where errors usually are, is kept.
-const dnsHookLogLimit = 4 << 10
 
 // execProvider is the exec DNS provider. For each challenge record it runs
 //
@@ -57,33 +56,28 @@ func (p *execProvider) Timeout() (timeout, interval time.Duration) {
 	return dnsPropagationTimeout, dnsPollingInterval
 }
 
-// run runs the program for action. The error it returns names only the
-// action, the record and the exit status or timeout: it becomes the
+// run runs the program for action, through proc.Run: a run that times out is
+// killed along with the processes the program started, so that none of them
+// changes the record after lego has moved on. The error it returns names only
+// the action, the record and the exit status or timeout: it becomes the
 // certificate's last error, which IPC shows, while the arguments may hold
-// credentials and the output may repeat them. The output is logged instead,
-// as a Private value that only the service log holds.
+// credentials and the output may repeat them. The last 4 KiB of the output
+// are logged instead, as a Private value that only the service log holds.
 func (p *execProvider) run(action, domain, keyAuth string) error {
 	info := dns01.GetChallengeInfo(domain, keyAuth)
 
-	ctx, cancel := context.WithTimeout(context.Background(), dnsHookTimeout)
-	defer cancel()
 	// Clone first: appending to the shared argv in place would let concurrent
 	// runs overwrite each other's arguments in its spare capacity.
-	args := append(slices.Clone(p.argv[1:]), action, info.EffectiveFQDN, info.Value)
-	cmd := exec.CommandContext(ctx, p.argv[0], args...)
-	cmd.WaitDelay = dnsHookWaitDelay
-	out, err := cmd.CombinedOutput()
+	argv := append(slices.Clone(p.argv), action, info.EffectiveFQDN, info.Value)
+	out, err := proc.Run(context.Background(), argv, dnsHookTimeout, dnsHookWaitDelay)
 	if err == nil {
 		return nil
 	}
-	if ctx.Err() != nil {
-		// Wait reports the killed process's exit status, not the timeout.
-		err = fmt.Errorf("timed out after %s", dnsHookTimeout)
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// Unlike on_change, a failure: the process may yet change the record.
+		err = errors.New("exit status 0, but a process it started still holds its output")
 	}
 	if len(out) > 0 {
-		if n := len(out); n > dnsHookLogLimit {
-			out = append([]byte("..."), out[n-dnsHookLogLimit:]...)
-		}
 		slog.Warn("exec DNS provider failed",
 			"action", action, "record", info.EffectiveFQDN, "error", err, "output", logging.Private(out))
 	}

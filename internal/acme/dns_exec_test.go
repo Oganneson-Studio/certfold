@@ -11,7 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -30,6 +32,9 @@ const (
 	// Sentinels that an exec provider error must never contain.
 	argvSecret   = "argv-secret-7f3a"
 	outputSecret = "output-secret-91c2"
+
+	// floodBytes is how much the "flood" mode prints.
+	floodBytes = 128 << 20
 )
 
 func TestMain(m *testing.M) {
@@ -65,6 +70,39 @@ func runTestHook(mode string) int {
 		return 3
 	case "sleep":
 		time.Sleep(20 * time.Second)
+		return 0
+	case "flood":
+		// Print floodBytes, far more than is logged, then fail.
+		chunk := []byte(strings.Repeat("x", 1<<20))
+		for written := 0; written < floodBytes; written += len(chunk) {
+			if _, err := os.Stdout.Write(chunk); err != nil {
+				return 2
+			}
+		}
+		return 1
+	case "spawn":
+		// Start a child, whose output is not this program's, then sleep.
+		exe, err := os.Executable()
+		if err != nil {
+			return 1
+		}
+		child := exec.Command(exe)
+		child.Env = append(os.Environ(), testHookEnv+"=child")
+		if err := child.Start(); err != nil {
+			return 1
+		}
+		time.Sleep(20 * time.Second)
+		return 0
+	case "child":
+		// Write the time to the heartbeat file until the stop file appears,
+		// for at most 20 seconds.
+		dir := os.Getenv(testHookDirEnv)
+		for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			if _, err := os.Stat(filepath.Join(dir, "stop")); err == nil {
+				break
+			}
+			_ = os.WriteFile(filepath.Join(dir, "heartbeat"), []byte(strconv.FormatInt(time.Now().UnixNano(), 10)), 0o600)
+		}
 		return 0
 	case "orphan":
 		// Exit at once, leaving a process that holds this one's output open.
@@ -267,18 +305,86 @@ func TestExecProviderKillsProgramAfterTimeout(t *testing.T) {
 	}
 }
 
-func TestExecProviderDoesNotWaitForOutputHeldByOrphans(t *testing.T) {
+// TestExecProviderKillsTheProcessesItsProgramStarted covers a program killed
+// on timeout while a process it started runs. Programs are often interpreters,
+// such as /bin/sh or powershell.exe, whose children, such as a curl without
+// --max-time, do the work; one left running could set the record after lego
+// has cleaned it up.
+func TestExecProviderKillsTheProcessesItsProgramStarted(t *testing.T) {
+	setHookBounds(t, 3*time.Second, 100*time.Millisecond)
+	captureLog(t)
+	dir := t.TempDir()
+	t.Setenv(testHookDirEnv, dir)
+	t.Cleanup(func() {
+		_ = os.WriteFile(filepath.Join(dir, "stop"), nil, 0o600)
+		time.Sleep(200 * time.Millisecond) // let a surviving child see it and exit
+	})
+	p := hookProvider(t, "spawn")
+
+	err := p.Present("example.com", "token", "token.thumbprint")
+	if err == nil || !strings.Contains(err.Error(), "timed out after 3s") {
+		t.Fatalf("Present error = %v, want the timeout", err)
+	}
+	heartbeat := func() string {
+		data, _ := os.ReadFile(filepath.Join(dir, "heartbeat"))
+		return string(data)
+	}
+	if heartbeat() == "" {
+		t.Fatal("the program's child never ran")
+	}
+	time.Sleep(300 * time.Millisecond)
+	before := heartbeat()
+	time.Sleep(300 * time.Millisecond)
+	if heartbeat() != before {
+		t.Fatal("a process the exec program started is still running after the timeout killed the program")
+	}
+}
+
+// TestExecProviderFailsWhenOutputIsHeldOpen covers a program that exits 0 but
+// leaves a process holding its output: Present returns soon after, and,
+// unlike on_change, fails, since that process may yet change the record.
+func TestExecProviderFailsWhenOutputIsHeldOpen(t *testing.T) {
 	setHookBounds(t, dnsHookTimeout, 100*time.Millisecond)
 	captureLog(t)
-	p := hookProvider(t, "orphan")
+	p := hookProvider(t, "orphan", "--token="+argvSecret)
 
-	// The program exits at once but leaves a process holding its output.
-	// Whether that counts as a failure does not matter here; returning soon
-	// after the program exits does.
 	start := time.Now()
-	_ = p.Present("example.com", "token", "token.thumbprint")
+	err := p.Present("example.com", "token", "token.thumbprint")
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("Present returned after %v, want it soon after the program exited", elapsed)
+	}
+	if err == nil {
+		t.Fatal("Present succeeded, want a failure: a process the program started held its output open")
+	}
+	want := "exec: present _acme-challenge.example.com.: exit status 0, but a process it started still holds its output"
+	if msg := err.Error(); msg != want {
+		t.Fatalf("Present error = %q, want %q", msg, want)
+	}
+}
+
+// TestExecProviderBoundsOutputMemory covers a program that prints without
+// end: only the end of its output is logged, so only that may be kept. Up to
+// four issuances run at once, each for up to the 2-minute timeout.
+func TestExecProviderBoundsOutputMemory(t *testing.T) {
+	logs, _ := captureLog(t)
+	p := hookProvider(t, "flood")
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	err := p.Present("example.com", "token", "token.thumbprint")
+	runtime.ReadMemStats(&after)
+	if err == nil || !strings.Contains(err.Error(), "exit status 1") {
+		t.Fatalf("Present error = %v, want the program's exit status 1", err)
+	}
+	// Holding the whole output allocates at least floodBytes; keeping its
+	// end, little more than the buffers that copy it.
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > floodBytes/4 {
+		t.Fatalf("Present allocated %d MiB for %d MiB of output, want the output bounded",
+			allocated>>20, floodBytes>>20)
+	}
+	if !strings.Contains(logs.String(), "xxxx") {
+		t.Errorf("service log does not hold the end of the output: %.200q", logs.String())
 	}
 }
 
