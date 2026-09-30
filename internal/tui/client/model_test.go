@@ -1,13 +1,10 @@
 package client
 
 import (
-	"image/color"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	"charm.land/bubbles/v2/help"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/exp/teatest/v2"
 
@@ -33,23 +30,6 @@ func TestClientModel_QuitKey(t *testing.T) {
 	tm := teatest.NewTestModel(t, New(newTestBackend()), teatest.WithInitialTermSize(100, 30))
 	tm.Send(tea.KeyPressMsg{Code: 'q', Text: "q"})
 	tm.WaitFinished(t, teatest.WithFinalTimeout(3*time.Second))
-}
-
-// The help takes the colors for the background the terminal reports.
-func TestHelpFollowsTheBackground(t *testing.T) {
-	m := newModel(t, newTestBackend())
-	for _, tc := range []struct {
-		name string
-		bg   color.Color
-		want help.Styles
-	}{
-		{"light", color.White, help.DefaultLightStyles()},
-		{"dark", color.Black, help.DefaultDarkStyles()},
-	} {
-		if m, _ = step(t, m, tea.BackgroundColorMsg{Color: tc.bg}); !reflect.DeepEqual(m.help.Styles, tc.want) {
-			t.Errorf("on a %s background the help does not take the styles for it", tc.name)
-		}
-	}
 }
 
 func TestClientModel_ViewContainsClientName(t *testing.T) {

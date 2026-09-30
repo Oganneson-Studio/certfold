@@ -160,10 +160,9 @@ func New(backend Backend) Model {
 	return Model{backend: backend, keys: keys, help: help.New(), eventsView: events}
 }
 
-// Init starts the first refresh at once, and asks the terminal for its
-// background color, which the colors of the help follow.
+// Init starts the first refresh at once.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(func() tea.Msg { return tickMsg{} }, tea.RequestBackgroundColor)
+	return func() tea.Msg { return tickMsg{} }
 }
 
 func tick() tea.Cmd {
@@ -178,9 +177,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.help.SetWidth(msg.Width - lineStyle.GetHorizontalPadding())
 		m.setEventsContent()
-
-	case tea.BackgroundColorMsg:
-		m.help.Styles = help.DefaultStyles(msg.IsDark())
 
 	case tea.KeyPressMsg:
 		m, cmd = m.handleKey(msg)

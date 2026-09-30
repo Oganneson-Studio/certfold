@@ -174,10 +174,9 @@ func newTable(cols ...table.Column) table.Model {
 	return table.New(table.WithColumns(cols), table.WithStyles(styles))
 }
 
-// Init starts refreshing: now, and then every refreshInterval. It also asks
-// the terminal for its background color, which the colors of the help follow.
+// Init starts refreshing: now, and then every refreshInterval.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(func() tea.Msg { return tickMsg{} }, tea.RequestBackgroundColor)
+	return func() tea.Msg { return tickMsg{} }
 }
 
 // Update handles msg, then fits the tables and views to the window again:
@@ -192,8 +191,6 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-	case tea.BackgroundColorMsg:
-		m.help.Styles = help.DefaultStyles(msg.IsDark())
 	case tickMsg:
 		refresh := m.startRefresh()
 		return tea.Batch(refresh, tea.Tick(refreshInterval, func(time.Time) tea.Msg { return tickMsg{} }))
