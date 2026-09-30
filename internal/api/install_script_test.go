@@ -109,3 +109,19 @@ func TestInstallShUsage(t *testing.T) {
 		t.Errorf("script lacks the usage %q:\n%s", usage, script)
 	}
 }
+
+// TestInstallShArchitectures checks that install.sh names each machine that
+// uname -m reports as the GOARCH the binaries directory uses, as install.ps1
+// does its Windows counterparts.
+func TestInstallShArchitectures(t *testing.T) {
+	script := getInstallScript(t, "/install.sh").Body.String()
+	for _, want := range []string{
+		"  x86_64) ARCH=amd64 ;;\n",
+		"  aarch64|arm64) ARCH=arm64 ;;\n",
+		"  i386|i686) ARCH=386 ;;\n",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("script lacks %q:\n%s", want, script)
+		}
+	}
+}
