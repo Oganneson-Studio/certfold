@@ -237,10 +237,11 @@ func clientIPCSocket(cmd *cobra.Command) string {
 // cfgPath must name the client and server URL of the token; without one, it
 // writes one that does, and reports that it created it. Writing it before
 // the token is sent stops an enrollment that could not save its identity
-// before the server spends the token. It refuses a directory that accounts
-// sigilc does not trust may write to: one of them could have put a
-// client.yaml there that names this host and runs its own on_change program.
+// before the server spends the token.
 func ensureEnrollmentConfig(cfgPath, tokenName, serverURL string) (name string, created bool, err error) {
+	// An account sigilc does not trust that may write to the directory could
+	// have put a client.yaml there that names this host and runs its own
+	// on_change program.
 	if err := securefile.CheckDirectory(filepath.Dir(cfgPath)); err != nil {
 		return "", false, fmt.Errorf("configuration directory: %w", err)
 	}
