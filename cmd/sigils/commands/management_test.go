@@ -182,6 +182,17 @@ func serveCertificates(t *testing.T, db *store.DB, cfg *config.ServerConfig) str
 // runSigils runs sigils with args and returns what it printed to stdout.
 func runSigils(t *testing.T, args ...string) string {
 	t.Helper()
+	out, err := runSigilsErr(t, args...)
+	if err != nil {
+		t.Fatalf("sigils %s: %v", strings.Join(args, " "), err)
+	}
+	return out
+}
+
+// runSigilsErr runs sigils with args and returns what it printed to stdout
+// and its error.
+func runSigilsErr(t *testing.T, args ...string) (string, error) {
+	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -200,10 +211,7 @@ func runSigils(t *testing.T, args ...string) string {
 	_ = w.Close()
 	out := <-printed
 	_ = r.Close()
-	if runErr != nil {
-		t.Fatalf("sigils %s: %v", strings.Join(args, " "), runErr)
-	}
-	return string(out)
+	return string(out), runErr
 }
 
 func TestCertListAndShowReportIssuanceState(t *testing.T) {
@@ -256,7 +264,7 @@ func TestCertListAndShowReportIssuanceState(t *testing.T) {
 	wantRows := [][]string{
 		{"NAME", "CA", "DOMAINS", "STATE", "NOT", "AFTER", "RENEW", "AT"},
 		{"mail", "le", "mail.example.com", "backoff", "-", "-"},
-		{"api-prod", "le", "api.example.com", "valid", notAfter.Format("2006-01-02"), renewAt.Format("2006-01-02"), "(ari)"},
+		{"api-prod", "le", "api.example.com", "valid", notAfter.Local().Format("2006-01-02"), renewAt.Local().Format("2006-01-02"), "(ari)"},
 	}
 	lines := strings.Split(strings.TrimSuffix(table, "\n"), "\n")
 	if len(lines) != len(wantRows) {
@@ -302,13 +310,13 @@ func TestCertListAndShowReportIssuanceState(t *testing.T) {
 			"State:        backoff\n" +
 			"Failures:     2\n" +
 			"Last Error:   acme: rate limited\n" +
-			"Next Attempt: " + nextAttempt.Format("2006-01-02 15:04:05 MST") + "\n",
+			"Next Attempt: " + nextAttempt.Local().Format("2006-01-02 15:04:05 -07:00") + "\n",
 		"api-prod": "Name:         api-prod\n" +
 			"CA:           le\n" +
 			"Domains:      api.example.com\n" +
 			"Subscribers:  web-1, web-2\n" +
-			"Not After:    " + notAfter.Format("2006-01-02") + "\n" +
-			"Renew At:     " + renewAt.Format("2006-01-02 15:04:05 MST") + " (ari)\n" +
+			"Not After:    " + notAfter.Local().Format("2006-01-02") + "\n" +
+			"Renew At:     " + renewAt.Local().Format("2006-01-02 15:04:05 -07:00") + " (ari)\n" +
 			"State:        valid\n" +
 			"Failures:     0\n" +
 			"Last Error:   -\n" +

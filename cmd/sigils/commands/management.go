@@ -2,7 +2,10 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"os/signal"
 	"strings"
 	"time"
 
@@ -73,7 +76,7 @@ func runCertAdd(cmd *cobra.Command, args []string) error {
 	// The running daemon edits the server.yaml it runs, checks the result
 	// with its own environment, which holds what the ${VAR} references of
 	// the file need, and applies it.
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -93,7 +96,7 @@ func runCertAdd(cmd *cobra.Command, args []string) error {
 func runCertRemove(cmd *cobra.Command, args []string) error {
 	name := args[0]
 	// As for cert add, the running daemon edits and applies server.yaml.
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -115,11 +118,19 @@ func runCertRemove(cmd *cobra.Command, args []string) error {
 }
 
 func runCertRenew(cmd *cobra.Command, args []string) error {
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
-	if err := c.RenewCert(commandContext(cmd), args[0]); err != nil {
+	// Ctrl-C ends the wait rather than the process, so that the error can
+	// say what becomes of the renewal: once it runs, the daemon finishes it
+	// and stores the certificate whether anyone waits or not.
+	ctx, stop := signal.NotifyContext(commandContext(cmd), os.Interrupt)
+	defer stop()
+	if err := c.RenewCert(ctx, args[0]); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("%w; the renewal may still finish in the daemon: see `sigils events` or `sigils cert show %s`", err, args[0])
+		}
 		return err
 	}
 	if asJSON, _ := cmd.Root().PersistentFlags().GetBool("json"); asJSON {
@@ -130,7 +141,7 @@ func runCertRenew(cmd *cobra.Command, args []string) error {
 }
 
 func runClientShow(cmd *cobra.Command, args []string) error {
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -148,11 +159,11 @@ func runClientShow(cmd *cobra.Command, args []string) error {
 		}
 		lastSeen := "never"
 		if details.LastSeen != nil {
-			lastSeen = details.LastSeen.Format("2006-01-02 15:04:05 MST")
+			lastSeen = formatTime(*details.LastSeen, timeLayout)
 		}
 		fmt.Printf("Name:        %s\n", details.Name)
 		fmt.Printf("Fingerprint: %s\n", details.Fingerprint)
-		fmt.Printf("Enrolled At: %s\n", details.EnrolledAt.Format("2006-01-02 15:04:05 MST"))
+		fmt.Printf("Enrolled At: %s\n", formatTime(details.EnrolledAt, timeLayout))
 		fmt.Printf("Last Seen:   %s\n", lastSeen)
 		return nil
 	}
@@ -217,12 +228,18 @@ func timePointer(value time.Time) *time.Time {
 	return &copy
 }
 
-// formatTime formats value with layout, or returns "-" for the zero time.
+// timeLayout is the layout of a time of day that people read: in local
+// time, with the offset from UTC as a number, which Windows has for every
+// zone, rather than the zone's abbreviation, which it lacks.
+const timeLayout = "2006-01-02 15:04:05 -07:00"
+
+// formatTime formats value in local time with layout, or returns "-" for the
+// zero time.
 func formatTime(value time.Time, layout string) string {
 	if value.IsZero() {
 		return "-"
 	}
-	return value.Format(layout)
+	return value.Local().Format(layout)
 }
 
 // formatRenewAt formats when cert is due for renewal with layout, followed by

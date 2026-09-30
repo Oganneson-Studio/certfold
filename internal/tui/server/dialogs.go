@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -23,18 +24,21 @@ var dialogStyle = lipgloss.NewStyle().
 	BorderForeground(shared.Purple).
 	Padding(0, 1)
 
-// confirmation asks before a renewal, a client removal or a token
-// revocation. run holds the target from when the dialog opened, so a refresh
-// that moves the selection cannot change what y acts on.
+// confirmation asks before a renewal, a client removal, a token revocation
+// or a token for the name of an enrolled client. run holds the target from
+// when the dialog opened, so a refresh that moves the selection cannot change
+// what y acts on.
 type confirmation struct {
 	verb   string // what y does, for the help
 	prompt string
-	run    func(context.Context) error
+	run    tea.Cmd
 }
 
 // ask opens a confirmation of run.
 func (m *Model) ask(verb, prompt string, run func(context.Context) error) {
-	m.confirm = &confirmation{verb: verb, prompt: prompt, run: run}
+	m.confirm = &confirmation{verb: verb, prompt: prompt, run: func() tea.Msg {
+		return actionMsg{err: run(context.Background())}
+	}}
 }
 
 func (m *Model) updateConfirm(msg tea.KeyMsg) tea.Cmd {
@@ -43,7 +47,7 @@ func (m *Model) updateConfirm(msg tea.KeyMsg) tea.Cmd {
 		run := m.confirm.run
 		m.confirm = nil
 		m.actionErr = nil
-		return func() tea.Msg { return actionMsg{err: run(context.Background())} }
+		return run
 	case key.Matches(msg, m.keys.Cancel):
 		m.confirm = nil
 	}
@@ -84,10 +88,31 @@ func (m *Model) updateForm(msg tea.KeyMsg) tea.Cmd {
 		name, b := f.name, m.backend
 		m.form = nil
 		m.actionErr = nil
-		return func() tea.Msg {
-			token, err := b.CreateToken(context.Background(), ipc.CreateTokenRequest{Name: name, TTL: ttl})
-			return createdMsg{name: name, token: token, err: err}
+		create := func(replace bool) tea.Cmd {
+			return func() tea.Msg {
+				token, err := b.CreateToken(context.Background(), ipc.CreateTokenRequest{Name: name, TTL: ttl, Replace: replace})
+				return createdMsg{name: name, token: token, err: err}
+			}
 		}
+		// The daemon refuses the name of an enrolled client, or of an unused
+		// token, unless asked to replace. The lists are those of the last
+		// refresh; a client or token that is newer gets the daemon's refusal.
+		var taken string
+		switch {
+		case slices.ContainsFunc(m.clients, func(c *ipc.ClientInfo) bool { return c.Name == name }):
+			taken = "Client " + strconv.Quote(name) + " is enrolled. "
+		case slices.ContainsFunc(m.tokens, func(t *ipc.TokenInfo) bool { return t.Name == name && tokenStatus(t, time.Now()) == "unused" }):
+			taken = "An enrollment token for " + strconv.Quote(name) + " is unused. "
+		default:
+			return create(false)
+		}
+		m.confirm = &confirmation{
+			verb: "replace",
+			prompt: taken + "The host that enrolls with a token for this name replaces the one before it, takes over its " +
+				"certificates and locks it out. Create the token, and revoke the unused tokens for this name?",
+			run: create(true),
+		}
+		return nil
 	default:
 		value := &f.name
 		if f.onTTL {
@@ -187,8 +212,13 @@ func (c *createdToken) content(width int) string {
 	lines := []string{
 		shared.TitleStyle.Render("New enrollment token for " + strconv.Quote(c.name)),
 		"",
-		text.Render(copyHint),
+		"Token ID  " + c.token.TokenID,
+		"Expires   " + formatTime(c.token.ExpiresAt, timeLayout, "-"),
 	}
+	if c.token.Revoked > 0 {
+		lines = append(lines, fmt.Sprintf("Revoked   %d unused token(s) for %s", c.token.Revoked, strconv.Quote(c.name)))
+	}
+	lines = append(lines, "", text.Render(copyHint))
 	if !c.token.PublicURLConfigured {
 		warning := "server.public_url is not set, so the commands use " + c.token.ServerURL +
 			", which comes from server.listen and may be unreachable for clients."

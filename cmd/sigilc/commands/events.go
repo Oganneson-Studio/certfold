@@ -6,7 +6,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
 	"github.com/Oganneson-Studio/sigil/internal/logging"
 )
 
@@ -23,9 +22,9 @@ func newEventsCmd() *cobra.Command {
 // runEvents prints the events the daemon keeps, oldest first; with --json,
 // as a JSON array.
 func runEvents(cmd *cobra.Command, _ []string) error {
-	c, err := ipc.NewClient(clientIPCSocket(cmd))
+	c, err := dialDaemon(cmd)
 	if err != nil {
-		return fmt.Errorf("ipc unavailable (is sigilc daemon running?): %w", err)
+		return err
 	}
 	page, err := c.Events(context.Background(), 0)
 	if err != nil {

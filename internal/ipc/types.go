@@ -1,6 +1,7 @@
 package ipc
 
 import (
+	"errors"
 	"time"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
@@ -82,19 +83,34 @@ type TokenInfo struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// CreateTokenRequest is the body of POST /ipc/v1/tokens.
+// CreateTokenRequest is the body of POST /ipc/v1/tokens. The host that
+// enrolls with a token replaces the client of its name, takes over the
+// certificates it subscribes to and locks its host out. So the daemon refuses
+// a Name that an enrolled client or an unused token that has not expired has,
+// unless Replace is set; with Replace, it revokes the unused tokens of Name.
 type CreateTokenRequest struct {
-	Name string        `json:"name"`
-	TTL  time.Duration `json:"ttl"`
+	Name    string        `json:"name"`
+	TTL     time.Duration `json:"ttl"`
+	Replace bool          `json:"replace,omitempty"`
 }
 
-// CreateTokenResponse is returned by POST /ipc/v1/tokens. ServerURL is the
-// base URL the token is bound to. PublicURLConfigured reports whether it
-// comes from server.public_url rather than being derived from server.listen.
+// ErrReplaceRequired is why the daemon refuses a CreateTokenRequest without
+// Replace. It crosses IPC as status 409, and the error of CreateToken is it,
+// so the CLI and the TUI can each say how to ask for a replacement.
+var ErrReplaceRequired = errors.New("the token must be created as a replacement")
+
+// CreateTokenResponse is returned by POST /ipc/v1/tokens. TokenID names the
+// token in token list and token revoke. Revoked is the number of unused
+// tokens of the name that a replacement revoked. ServerURL is the base URL
+// the token is bound to. PublicURLConfigured reports whether it comes from
+// server.public_url rather than being derived from server.listen.
 type CreateTokenResponse struct {
-	Token               string `json:"token"`
-	ServerURL           string `json:"server_url"`
-	PublicURLConfigured bool   `json:"public_url_configured"`
+	Token               string    `json:"token"`
+	TokenID             string    `json:"token_id"`
+	ExpiresAt           time.Time `json:"expires_at"`
+	Revoked             int       `json:"revoked,omitempty"`
+	ServerURL           string    `json:"server_url"`
+	PublicURLConfigured bool      `json:"public_url_configured"`
 }
 
 // ClientState is the runtime status returned by a sigilc daemon. Certs lists

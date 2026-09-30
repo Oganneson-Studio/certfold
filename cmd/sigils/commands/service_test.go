@@ -3,11 +3,31 @@ package commands
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	internalsvc "github.com/Oganneson-Studio/sigil/internal/service"
 )
+
+// TestServiceUsesTheConfigOfTheOtherCommands covers `sigils service install`
+// in a shell that sets SIGILS_CONFIG: the service must start with the file
+// every other command reads, not with the platform default.
+func TestServiceUsesTheConfigOfTheOtherCommands(t *testing.T) {
+	fromEnv := filepath.Join(t.TempDir(), "env.yaml")
+	t.Setenv("SIGILS_CONFIG", fromEnv)
+	if got := serverSvcConfig(NewRootCmd()).ConfigPath; got != fromEnv {
+		t.Errorf("service config path = %q, want $SIGILS_CONFIG %q", got, fromEnv)
+	}
+	flag := filepath.Join(t.TempDir(), "flag.yaml")
+	cmd := NewRootCmd()
+	if err := cmd.PersistentFlags().Set("config", flag); err != nil {
+		t.Fatal(err)
+	}
+	if got := serverSvcConfig(cmd).ConfigPath; got != flag {
+		t.Errorf("service config path = %q, want --config %q", got, flag)
+	}
+}
 
 func TestServiceDataDirUsesConfiguredDataDirWithoutCredentials(t *testing.T) {
 	path := writeManagementTestConfig(t, "  []\n")

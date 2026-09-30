@@ -1,14 +1,19 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"syscall"
 
 	ksvc "github.com/kardianos/service"
+
+	"github.com/Oganneson-Studio/sigil/internal/ipc"
+	"github.com/Oganneson-Studio/sigil/internal/securefile"
 )
 
 // Daemon is the application logic that the system service runs.
@@ -38,16 +43,26 @@ type Config struct {
 // The returned Service can be Run() to start the daemon loop, or used for
 // install / uninstall / start / stop / restart / status operations.
 func New(d Daemon, cfg Config) (ksvc.Service, error) {
-	sc := buildServiceConfig(cfg)
+	sc, err := buildServiceConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
 	return ksvc.New(d, sc)
 }
 
-func buildServiceConfig(cfg Config) *ksvc.Config {
+func buildServiceConfig(cfg Config) (*ksvc.Config, error) {
 	name, displayName, desc, cfgDefault := roleAttrs(cfg.Role)
 
 	configPath := cfg.ConfigPath
 	if configPath == "" {
 		configPath = cfgDefault
+	}
+	// The service manager starts the daemon in a working directory of its
+	// own, / under systemd and System32 under the SCM, where a relative path
+	// names no file: the daemon would fail at every start.
+	configPath, err := filepath.Abs(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve config path: %w", err)
 	}
 
 	args := []string{"serve", "--config", configPath}
@@ -81,17 +96,20 @@ func buildServiceConfig(cfg Config) *ksvc.Config {
 		}
 	}
 
-	return sc
+	return sc, nil
 }
 
 // systemdUnit replaces the unit kardianos writes by default, which restarts a
 // failed daemon only after 120 seconds. A daemon that keeps failing, such as
 // one whose configuration does not load, is restarted every 5 seconds without
 // end: without StartLimit settings, systemd's default limit of 5 starts in 10
-// seconds is never reached. An earlier install keeps its unit: kardianos
-// refuses to install over an existing service, so the service has to be
-// uninstalled and installed again. The template syntax is that of kardianos
-// v1.3.0.
+// seconds is never reached. KillMode=mixed sends the stop's SIGTERM to the
+// daemon alone, not to the whole control group: the programs sigils runs for
+// exec DNS providers keep running while it waits for issuances at shutdown,
+// and are killed with SIGKILL once it exits. An earlier install keeps its
+// unit: kardianos refuses to install over an existing service, so the
+// service has to be uninstalled and installed again. The template syntax is
+// that of kardianos v1.3.0.
 const systemdUnit = `[Unit]
 Description={{Description}}
 ConditionFileIsExecutable={{Path | cmdEscape}}
@@ -102,6 +120,7 @@ Wants=network-online.target
 ExecStart={{Path | cmdEscape}}{{range Arguments}} {{. | cmd}}{{end}}
 Restart=on-failure
 RestartSec=5
+KillMode=mixed
 EnvironmentFile=-/etc/sysconfig/{{Name}}
 
 [Install]
@@ -127,7 +146,17 @@ func Install(d Daemon, cfg Config) error {
 	if err != nil {
 		return err
 	}
+	return install(svc, cfg.Role)
+}
+
+// install registers svc, the service of role. kardianos refuses to install
+// over an existing service, and then the error says how to go on.
+func install(svc ksvc.Service, role Role) error {
 	if err := svc.Install(); err != nil {
+		if _, statusErr := svc.Status(); !errors.Is(statusErr, ksvc.ErrNotInstalled) {
+			name, _, _, _ := roleAttrs(role)
+			return fmt.Errorf("install service: %w; to install it anew, run `%s service uninstall` first", err, name)
+		}
 		return fmt.Errorf("install service: %w", err)
 	}
 	return nil
@@ -181,23 +210,61 @@ func Restart(d Daemon, cfg Config) error {
 	return nil
 }
 
-// StatusText returns a human-readable service status string.
-func StatusText(d Daemon, cfg Config) (string, error) {
+// StatusText returns a human-readable service status string. The service
+// manager reports a daemon that it keeps restarting as running: kardianos
+// maps systemd's activating to running, and the SCM's start pending as well.
+// So a running service is running only if its daemon answers on socket, its
+// IPC endpoint.
+func StatusText(d Daemon, cfg Config, socket string) (string, error) {
 	svc, err := New(d, cfg)
 	if err != nil {
 		return "", err
 	}
+	// kardianos reports a service that is not installed, or in systemd's
+	// failed state, as an error.
 	st, err := svc.Status()
 	if err != nil {
 		return "", fmt.Errorf("query status: %w", err)
 	}
-	switch st {
-	case ksvc.StatusRunning:
-		return "Running", nil
-	case ksvc.StatusStopped:
+	if st != ksvc.StatusRunning {
 		return "Stopped", nil
+	}
+	return runningStatus(cfg.Role, socket), nil
+}
+
+// runningStatus reports a service the manager reports as running: "Running"
+// when its daemon answers on socket; not answering when the endpoint is
+// missing, refuses the connection or stays busy, as while the daemon fails
+// at start; and otherwise that it cannot check, such as for a user who may
+// not open the endpoint, which does not show whether the daemon answers.
+func runningStatus(role Role, socket string) string {
+	conn, err := ipc.Dial(socket)
+	if err == nil {
+		_ = conn.Close()
+		return "Running"
+	}
+	var timeout interface{ Timeout() bool }
+	switch {
+	case errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) || errors.As(err, &timeout) && timeout.Timeout():
+		name, _, _, _ := roleAttrs(role)
+		return fmt.Sprintf("Running (not answering on %s: %v; see %s)", socket, err, serviceLog(name))
+	case errors.Is(err, fs.ErrPermission):
+		return fmt.Sprintf("Running (cannot check the daemon on %s: %v; checking it needs root or an elevated administrator)", socket, err)
 	default:
-		return "NotInstalled", nil
+		return fmt.Sprintf("Running (cannot check the daemon on %s: %v)", socket, err)
+	}
+}
+
+// serviceLog says where the log of the service name is: the log of a daemon
+// that fails at start says why.
+func serviceLog(name string) string {
+	switch runtime.GOOS {
+	case "windows":
+		return "the Application event log, source " + name
+	case "darwin":
+		return "/var/log/" + name + ".err.log"
+	default:
+		return "journalctl -u " + name
 	}
 }
 
@@ -223,6 +290,13 @@ func NoopDaemon() Daemon { return &noopDaemon{} }
 // Returns (n, nil) where n is the number of binaries written.
 // If fsys contains no matching files the function prints a warning and returns (0, nil).
 func UnpackClients(fsys fs.FS, dataDir string, w io.Writer) (int, error) {
+	// The service is installed before it first runs, so data_dir may not
+	// exist yet. Created with the default permissions, it would let a local
+	// user put a binary of their own there for the install scripts to hand
+	// out to every new client.
+	if err := securefile.EnsurePrivateDirectory(dataDir); err != nil {
+		return 0, fmt.Errorf("private directory %s: %w", dataDir, err)
+	}
 	destDir := filepath.Join(dataDir, "binaries")
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return 0, fmt.Errorf("mkdir %s: %w", destDir, err)
@@ -257,8 +331,8 @@ func UnpackClients(fsys fs.FS, dataDir string, w io.Writer) (int, error) {
 	}
 
 	if count == 0 {
-		fmt.Fprintf(w, "warning: no bundled sigilc binaries found; "+
-			"drop binaries into %s manually or set binary_source in server.yaml\n", destDir)
+		fmt.Fprintf(w, "warning: this sigils bundles no sigilc binaries; for the install scripts to download them, "+
+			"put them into %s as sigilc-<os>-<arch>, with .exe for windows\n", destDir)
 	}
 	return count, nil
 }

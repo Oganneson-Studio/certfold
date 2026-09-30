@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/sigil/internal/proc"
 )
 
 // Bounds on one run of an on_change program. They are variables only so tests
@@ -22,14 +23,10 @@ var (
 	hookWaitDelay = 5 * time.Second
 )
 
-// hookOutputLimit caps the program output kept for the log. The end of the
-// output, where errors usually are, is kept.
-const hookOutputLimit = 4 << 10
-
 // runHook runs argv, the on_change program of the certificate certName, and
 // returns nil if it exits 0.
 //
-// How it runs:
+// How it runs, through proc.Run:
 //   - argv is executed directly, never through a shell. It comes only from
 //     client.yaml; the server's responses, the certificate name included, are
 //     only used to look up that configuration and never choose the program,
@@ -38,17 +35,21 @@ const hookOutputLimit = 4 << 10
 //     an empty stdin, and runs in the working directory of sigilc: / or
 //     System32 when it runs as a service.
 //   - hookTimeout (2 minutes) bounds one run; when it expires the program is
-//     killed. Once it has exited or been killed, WaitDelay (5 seconds) bounds
-//     how long a process it started may keep its output open. Both are
-//     package variables only so tests can shorten them.
+//     killed along with the processes it started. Once it has exited or been
+//     killed, WaitDelay (5 seconds) bounds how long a process it started may
+//     keep its output open. Both are package variables only so tests can
+//     shorten them.
 //   - The timeout is added to ctx, which must end with the daemon: the ctx
 //     of Run, or context.Background before Run starts. After Run returns,
 //     callers keep passing its cancelled ctx, so a program started then is
 //     killed at once instead of outliving the daemon. Stopping the
-//     daemon kills the program instead of waiting up to hookTimeout for it,
-//     since the service stop waits for Run to return. An IPC caller that
-//     disconnects must not kill it, so ctx is never that of an IPC request.
-//     A killed run is a failure; the program runs again after the next start.
+//     daemon kills the program and the processes it started instead of
+//     waiting up to hookTimeout for them, since the service stop waits for
+//     Run to return. An IPC caller that disconnects must not kill it, so ctx
+//     is never that of an IPC request. A killed run is a failure; the
+//     program runs again after the next start.
+//   - The processes a program leaves behind when it exits by itself keep
+//     running.
 //   - Callers hold pullMu, so at most one program runs at a time, and never
 //     while outputs are being written.
 //
@@ -68,14 +69,7 @@ const hookOutputLimit = 4 << 10
 //     which may end that process on its next write, so this is logged as the
 //     event "on_change output held open", naming only the certificate.
 func runHook(ctx context.Context, certName string, argv []string) error {
-	ctx, cancel := context.WithTimeoutCause(ctx, hookTimeout, fmt.Errorf("timed out after %s", hookTimeout))
-	defer cancel()
-	out := &tailWriter{}
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	// One writer for both, so exec serializes the writes to it.
-	cmd.Stdout, cmd.Stderr = out, out
-	cmd.WaitDelay = hookWaitDelay
-	err := cmd.Run()
+	out, err := proc.Run(ctx, argv, hookTimeout, hookWaitDelay)
 	if err == nil {
 		return nil
 	}
@@ -86,30 +80,6 @@ func runHook(ctx context.Context, certName string, argv []string) error {
 		slog.Warn("on_change output held open", "cert", certName)
 		return nil
 	}
-	if ctx.Err() != nil {
-		// Wait reports the killed program's exit status, not why it was
-		// killed: the timeout, or ctx ending with the daemon.
-		err = context.Cause(ctx)
-	}
-	tail := out.tail
-	if out.truncated {
-		tail = append([]byte("..."), tail...)
-	}
-	slog.Warn("on_change failed", "cert", certName, "error", err, "output", logging.Private(tail))
+	slog.Warn("on_change failed", "cert", certName, "error", err, "output", logging.Private(out))
 	return fmt.Errorf("on_change of certificate %s: %w", certName, err)
-}
-
-// tailWriter keeps the last hookOutputLimit bytes written to it.
-type tailWriter struct {
-	tail      []byte
-	truncated bool
-}
-
-func (w *tailWriter) Write(p []byte) (int, error) {
-	w.tail = append(w.tail, p...)
-	if extra := len(w.tail) - hookOutputLimit; extra > 0 {
-		w.tail = append(w.tail[:0], w.tail[extra:]...)
-		w.truncated = true
-	}
-	return len(p), nil
 }

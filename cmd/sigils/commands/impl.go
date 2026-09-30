@@ -3,15 +3,16 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 
 	"github.com/Oganneson-Studio/sigil/internal/api"
 	"github.com/Oganneson-Studio/sigil/internal/config"
@@ -42,9 +43,6 @@ type serverReloadResult struct {
 }
 
 func runReload(cmd *cobra.Command, _ []string) error {
-	if cmd == nil {
-		return fmt.Errorf("command context unavailable")
-	}
 	c, err := dialReloadServer(cmd)
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
@@ -72,33 +70,15 @@ func dialReloadServer(cmd *cobra.Command) (serverReloader, error) {
 }
 
 // ---------------------------------------------------------------------------
-// config validate / config show
+// config validate
 // ---------------------------------------------------------------------------
 
 func runConfigValidate(cmd *cobra.Command, _ []string) error {
-	cfgPath, _ := cmd.Root().PersistentFlags().GetString("config")
-	if cfgPath == "" {
-		cfgPath = defaultServerCfgPath()
-	}
-	_, err := config.LoadServer(cfgPath)
+	_, err := config.LoadServer(serverConfigPath(cmd))
 	if err != nil {
 		return err
 	}
 	fmt.Println("ok")
-	return nil
-}
-
-func runConfigShow(cmd *cobra.Command, _ []string) error {
-	cfgPath, _ := cmd.Root().PersistentFlags().GetString("config")
-	if cfgPath == "" {
-		cfgPath = defaultServerCfgPath()
-	}
-	cfg, err := config.LoadServer(cfgPath)
-	if err != nil {
-		return err
-	}
-	out, _ := yaml.Marshal(cfg)
-	fmt.Print(string(out))
 	return nil
 }
 
@@ -108,7 +88,7 @@ func runConfigShow(cmd *cobra.Command, _ []string) error {
 
 func runCertList(cmd *cobra.Command, _ []string) error {
 	asJSON, _ := cmd.Root().PersistentFlags().GetBool("json")
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -133,7 +113,7 @@ func runCertList(cmd *cobra.Command, _ []string) error {
 
 func runCertShow(cmd *cobra.Command, args []string) error {
 	asJSON, _ := cmd.Root().PersistentFlags().GetBool("json")
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -159,11 +139,11 @@ func runCertShow(cmd *cobra.Command, args []string) error {
 			fmt.Printf("Domains:      %s\n", strings.Join(cert.Domains, ", "))
 			fmt.Printf("Subscribers:  %s\n", subscribers)
 			fmt.Printf("Not After:    %s\n", formatTime(cert.NotAfter, "2006-01-02"))
-			fmt.Printf("Renew At:     %s\n", formatRenewAt(cert, "2006-01-02 15:04:05 MST"))
+			fmt.Printf("Renew At:     %s\n", formatRenewAt(cert, timeLayout))
 			fmt.Printf("State:        %s\n", cert.State)
 			fmt.Printf("Failures:     %d\n", cert.Failures)
 			fmt.Printf("Last Error:   %s\n", lastError)
-			fmt.Printf("Next Attempt: %s\n", formatTime(cert.NextAttemptAt, "2006-01-02 15:04:05 MST"))
+			fmt.Printf("Next Attempt: %s\n", formatTime(cert.NextAttemptAt, timeLayout))
 			return nil
 		}
 	}
@@ -176,7 +156,7 @@ func runCertShow(cmd *cobra.Command, args []string) error {
 
 func runClientList(cmd *cobra.Command, _ []string) error {
 	asJSON, _ := cmd.Root().PersistentFlags().GetBool("json")
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -194,7 +174,7 @@ func runClientList(cmd *cobra.Command, _ []string) error {
 	for _, cl := range clients {
 		lastSeen := "never"
 		if !cl.LastSeen.IsZero() {
-			lastSeen = cl.LastSeen.Format("2006-01-02 15:04")
+			lastSeen = formatTime(cl.LastSeen, "2006-01-02 15:04")
 		}
 		fmt.Fprintf(table, "%s\t%s\t%s\n", cl.Name, cl.Fingerprint, lastSeen)
 	}
@@ -202,14 +182,37 @@ func runClientList(cmd *cobra.Command, _ []string) error {
 }
 
 func runClientRemove(cmd *cobra.Command, args []string) error {
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
-	if err := c.DeleteClient(commandContext(cmd), args[0]); err != nil {
+	name := args[0]
+	if err := c.DeleteClient(commandContext(cmd), name); err != nil {
 		return err
 	}
-	fmt.Printf("client %q removed\n", args[0])
+	fmt.Printf("client %q removed\n", name)
+
+	// The host keeps the private keys of the certificates it fetched. When
+	// it is removed because it may be compromised, only new certificates
+	// take them from it. The removal stands whether or not they are listed.
+	certs, err := c.ListCerts(commandContext(cmd))
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: cannot list the certificates %q subscribes to: %v\n", name, err)
+		return nil
+	}
+	var subscribed []string
+	for _, cert := range certs {
+		if slices.Contains(cert.Subscribers, name) {
+			subscribed = append(subscribed, cert.Name)
+		}
+	}
+	if len(subscribed) > 0 {
+		fmt.Printf("its host keeps the private keys of the certificates it subscribes to; if it may be compromised, renew them:\n")
+		for _, cert := range subscribed {
+			fmt.Printf("  sigils cert renew %s\n", cert)
+		}
+		fmt.Println("the old certificates and keys stay valid until they expire: renewing does not revoke them")
+	}
 	return nil
 }
 
@@ -217,27 +220,36 @@ func runClientRemove(cmd *cobra.Command, args []string) error {
 // token create / list / revoke
 // ---------------------------------------------------------------------------
 
+// tokenCreateResult is what token create prints with --json.
+type tokenCreateResult struct {
+	Token          string    `json:"token"`
+	TokenID        string    `json:"token_id"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	Revoked        int       `json:"revoked,omitempty"`
+	InstallSh      string    `json:"install_sh"`
+	InstallWindows string    `json:"install_ps1"`
+}
+
 func runTokenCreate(cmd *cobra.Command, _ []string) error {
 	name, _ := cmd.Flags().GetString("name")
 	ttl, _ := cmd.Flags().GetDuration("expires")
+	replace, _ := cmd.Flags().GetBool("replace")
 	if ttl == 0 {
 		ttl = time.Hour
 	}
 
 	// The running daemon owns the store and the mini-CA, and binds the token
 	// to the public URL of the configuration it runs.
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
-	created, err := c.CreateToken(commandContext(cmd), ipc.CreateTokenRequest{Name: name, TTL: ttl})
+	created, err := c.CreateToken(commandContext(cmd), ipc.CreateTokenRequest{Name: name, TTL: ttl, Replace: replace})
+	if errors.Is(err, ipc.ErrReplaceRequired) {
+		return fmt.Errorf("create token: %w; to create it anyway, add --replace, which also revokes the unused tokens of %q", err, name)
+	}
 	if err != nil {
 		return fmt.Errorf("create token: %w", err)
-	}
-	// A daemon started before this binary was installed answers the same
-	// route with a bare token ID that can never be redeemed.
-	if created.Token == "" || created.ServerURL == "" {
-		return fmt.Errorf("create token: the running sigils daemon returned no usable token; it is older than this command, so restart the sigils service and try again")
 	}
 	// Without public_url the URL is derived from server.listen and may not be
 	// reachable by clients.
@@ -247,6 +259,23 @@ func runTokenCreate(cmd *cobra.Command, _ []string) error {
 
 	sh, ps1 := api.InstallCommands(created.ServerURL, created.Token)
 	out := cmd.OutOrStdout()
+	if asJSON, _ := cmd.Root().PersistentFlags().GetBool("json"); asJSON {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(tokenCreateResult{
+			Token:          created.Token,
+			TokenID:        created.TokenID,
+			ExpiresAt:      created.ExpiresAt,
+			Revoked:        created.Revoked,
+			InstallSh:      sh,
+			InstallWindows: ps1,
+		})
+	}
+	if created.Revoked > 0 {
+		fmt.Fprintf(out, "Revoked:  %d unused token(s) for %q\n", created.Revoked, name)
+	}
+	fmt.Fprintf(out, "Token ID: %s\n", created.TokenID)
+	fmt.Fprintf(out, "Expires:  %s\n", formatTime(created.ExpiresAt, timeLayout))
 	fmt.Fprintf(out, "Token: %s\n\n", created.Token)
 	fmt.Fprintln(out, "Install (Linux/macOS):")
 	fmt.Fprintf(out, "  %s\n\n", sh)
@@ -257,7 +286,7 @@ func runTokenCreate(cmd *cobra.Command, _ []string) error {
 
 func runTokenList(cmd *cobra.Command, _ []string) error {
 	asJSON, _ := cmd.Root().PersistentFlags().GetBool("json")
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -272,19 +301,23 @@ func runTokenList(cmd *cobra.Command, _ []string) error {
 	// hold.
 	table := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(table, "ID\tNAME\tSTATUS\tEXPIRES")
+	now := time.Now()
 	for _, tok := range tokens {
 		status := "unused"
-		if !tok.UsedAt.IsZero() {
+		switch {
+		case !tok.UsedAt.IsZero():
 			status = "used"
+		case !now.Before(tok.ExpiresAt):
+			status = "expired"
 		}
 		fmt.Fprintf(table, "%s\t%s\t%s\t%s\n",
-			tok.TokenID, tok.Name, status, tok.ExpiresAt.Format("2006-01-02 15:04"))
+			tok.TokenID, tok.Name, status, formatTime(tok.ExpiresAt, "2006-01-02 15:04"))
 	}
 	return table.Flush()
 }
 
 func runTokenRevoke(cmd *cobra.Command, args []string) error {
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -300,7 +333,7 @@ func runTokenRevoke(cmd *cobra.Command, args []string) error {
 // ---------------------------------------------------------------------------
 
 func runServerTUI(cmd *cobra.Command, _ []string) error {
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -312,16 +345,12 @@ func runServerTUI(cmd *cobra.Command, _ []string) error {
 // helpers
 // ---------------------------------------------------------------------------
 
-func dialIPC(path string) (*ipc.Client, error) {
-	return ipc.NewClient(path)
-}
-
 type serverReloader interface {
 	ReloadServer(context.Context) error
 }
 
 var dialServerReloader = func(path string) (serverReloader, error) {
-	return dialIPC(path)
+	return ipc.NewClient(path)
 }
 
 func printJSON(v any) error {

@@ -22,6 +22,17 @@ import (
 // runSigilc runs sigilc with args and returns what it printed to stdout.
 func runSigilc(t *testing.T, args ...string) string {
 	t.Helper()
+	out, err := runSigilcErr(t, args...)
+	if err != nil {
+		t.Fatalf("sigilc %s: %v", strings.Join(args, " "), err)
+	}
+	return out
+}
+
+// runSigilcErr runs sigilc with args and returns what it printed to stdout
+// and its error.
+func runSigilcErr(t *testing.T, args ...string) (string, error) {
+	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -40,17 +51,14 @@ func runSigilc(t *testing.T, args ...string) string {
 	_ = w.Close()
 	out := <-printed
 	_ = r.Close()
-	if runErr != nil {
-		t.Fatalf("sigilc %s: %v", strings.Join(args, " "), runErr)
-	}
-	return string(out)
+	return string(out), runErr
 }
 
 // serveEvents serves the IPC API with the events of ring alone until the
 // test ends, and returns its endpoint.
 func serveEvents(t *testing.T, ring *logging.Ring) string {
 	t.Helper()
-	socket := fmt.Sprintf(`\\.\pipe\sigilc-events-test-%d`, time.Now().UnixNano())
+	socket := fmt.Sprintf(`\\.\pipe\sigilc-events-test-%d-%d`, os.Getpid(), time.Now().UnixNano())
 	if runtime.GOOS != "windows" {
 		// Unix socket paths are length-limited; keep this one short.
 		dir, err := os.MkdirTemp("", "sigil")
@@ -116,7 +124,7 @@ func TestEventsPrintsDaemonEvents(t *testing.T) {
 func TestEventsFailsWhenDaemonIsNotRunning(t *testing.T) {
 	root := NewRootCmd()
 	root.SetArgs([]string{"--ipc", missingIPCSocket(t), "events"})
-	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "ipc unavailable") {
-		t.Fatalf("events without a daemon: error = %v, want ipc unavailable", err)
+	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "daemon is not running") {
+		t.Fatalf("events without a daemon: error = %v, want a daemon-not-running error", err)
 	}
 }

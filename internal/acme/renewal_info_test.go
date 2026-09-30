@@ -182,7 +182,7 @@ func TestRenewalInfoReturnsTheCAWindow(t *testing.T) {
 	cfg, spec := renewalInfoConfig(ca.URL + "/dir")
 
 	// RenewalInfo needs no account store.
-	info, err := NewIssuer(nil).RenewalInfo(cfg, spec, certPEM)
+	info, err := NewIssuer(context.Background(), nil).RenewalInfo(cfg, spec, certPEM)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestRenewalInfoWithoutRenewalInfoInTheDirectory(t *testing.T) {
 	ca := newFakeACME(t, 1)
 	cfg, spec := renewalInfoConfig(ca.URL + "/dir")
 
-	_, err := NewIssuer(nil).RenewalInfo(cfg, spec, certPEM)
+	_, err := NewIssuer(context.Background(), nil).RenewalInfo(cfg, spec, certPEM)
 	if !errors.Is(err, ErrNoRenewalInfo) {
 		t.Fatalf("error = %v, want ErrNoRenewalInfo", err)
 	}
@@ -224,7 +224,7 @@ func TestRenewalInfoWithoutAuthorityKeyIdentifier(t *testing.T) {
 	ca := newRenewalInfoCA(t, http.StatusOK, "", windowJSON(now.Add(time.Hour), now.Add(2*time.Hour)))
 	cfg, spec := renewalInfoConfig(ca.URL + "/dir")
 
-	_, err := NewIssuer(nil).RenewalInfo(cfg, spec, certPEM)
+	_, err := NewIssuer(context.Background(), nil).RenewalInfo(cfg, spec, certPEM)
 	if !errors.Is(err, ErrNoRenewalInfo) {
 		t.Fatalf("error = %v, want ErrNoRenewalInfo", err)
 	}
@@ -242,7 +242,7 @@ func TestRenewalInfoRejectsProblemDocuments(t *testing.T) {
 		`{"type":"urn:ietf:params:acme:error:malformed","detail":"no such certificate","status":404}`)
 	cfg, spec := renewalInfoConfig(ca.URL + "/dir")
 
-	info, err := NewIssuer(nil).RenewalInfo(cfg, spec, certPEM)
+	info, err := NewIssuer(context.Background(), nil).RenewalInfo(cfg, spec, certPEM)
 	if err == nil {
 		t.Fatalf("got window [%s, %s), want an error", info.Start, info.End)
 	}
@@ -276,7 +276,7 @@ func TestRenewalInfoChecksTheWindow(t *testing.T) {
 			ca := newRenewalInfoCA(t, http.StatusOK, tt.retryAfter, windowJSON(tt.start, tt.end))
 			cfg, spec := renewalInfoConfig(ca.URL + "/dir")
 
-			info, err := NewIssuer(nil).RenewalInfo(cfg, spec, certPEM)
+			info, err := NewIssuer(context.Background(), nil).RenewalInfo(cfg, spec, certPEM)
 			if tt.wantErr {
 				if err == nil || !strings.Contains(err.Error(), "invalid renewal window") {
 					t.Fatalf("error = %v, want an invalid renewal window", err)
@@ -327,7 +327,7 @@ func TestIssueNamesTheReplacedCertificate(t *testing.T) {
 			cfg, spec := renewalInfoConfig(ca.URL + "/dir")
 
 			// The fake CA fails the order.
-			_, issueErr := NewIssuer(db.Accounts).Issue(context.Background(), cfg, spec, tt.replacing)
+			_, issueErr := NewIssuer(context.Background(), db.Accounts).Issue(context.Background(), cfg, spec, tt.replacing)
 
 			ca.mu.Lock()
 			defer ca.mu.Unlock()

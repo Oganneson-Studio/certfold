@@ -14,11 +14,11 @@ Run without arguments to open the TUI status panel.
 Use 'enroll' to bootstrap a new client against a sigils instance.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE:          runDefaultTUI,
+		RunE:          runClientTUI,
 	}
 
-	cmd.PersistentFlags().String("config", "", "path to client.yaml (default: platform-specific)")
-	cmd.PersistentFlags().String("ipc", "", "IPC socket path (default: platform-specific)")
+	cmd.PersistentFlags().String("config", "", "path to client.yaml (default: $SIGILC_CONFIG, else platform-specific)")
+	cmd.PersistentFlags().String("ipc", "", "IPC socket path (default: client.ipc_socket in the config, else platform-specific)")
 
 	cmd.AddCommand(
 		newServeCmd(),
@@ -30,6 +30,20 @@ Use 'enroll' to bootstrap a new client against a sigils instance.`,
 		newFetchCmd(),
 		newEventsCmd(),
 	)
+	failOnUnknownSubcommand(cmd)
 
 	return cmd
+}
+
+// failOnUnknownSubcommand makes each command group of root, which runs
+// nothing itself, fail on an argument that names none of its subcommands.
+// Cobra would answer a mistyped one, such as `sigilc service instal` in a
+// provisioning script, with the help of the group and exit status 0.
+func failOnUnknownSubcommand(root *cobra.Command) {
+	for _, group := range root.Commands() {
+		if group.HasSubCommands() && group.RunE == nil {
+			group.Args = cobra.NoArgs
+			group.RunE = func(c *cobra.Command, _ []string) error { return c.Help() }
+		}
+	}
 }

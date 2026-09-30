@@ -8,10 +8,6 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/version"
 )
 
-func runDefaultTUI(cmd *cobra.Command, args []string) error {
-	return runServerTUI(cmd, args)
-}
-
 func newServeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "serve",
@@ -32,8 +28,14 @@ func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print version information",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			fmt.Printf("sigils %s (commit %s, built %s)\n", version.Version, version.Commit, version.BuildDate)
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if asJSON, _ := cmd.Root().PersistentFlags().GetBool("json"); asJSON {
+				return printJSON(struct {
+					Version string `json:"version"`
+					Commit  string `json:"commit,omitempty"`
+				}{version.Version, version.Commit})
+			}
+			fmt.Println("sigils " + version.String())
 			return nil
 		},
 	}
@@ -42,12 +44,23 @@ func newVersionCmd() *cobra.Command {
 func newConfigCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "Inspect and validate server.yaml",
+		Short: "Validate server.yaml",
 	}
 	cmd.AddCommand(
-		&cobra.Command{Use: "validate", Short: "Parse and validate server.yaml without starting the daemon", RunE: runConfigValidate},
-		&cobra.Command{Use: "show", Short: "Print the effective configuration (with defaults applied)", RunE: runConfigShow},
+		withoutJSON(&cobra.Command{Use: "validate", Short: "Parse and validate server.yaml without starting the daemon", RunE: runConfigValidate}),
 	)
+	return cmd
+}
+
+// withoutJSON makes cmd, which prints nothing for --json to shape, fail
+// when --json is set, rather than hand a script text it cannot parse.
+func withoutJSON(cmd *cobra.Command) *cobra.Command {
+	cmd.PreRunE = func(c *cobra.Command, _ []string) error {
+		if asJSON, _ := c.Root().PersistentFlags().GetBool("json"); asJSON {
+			return fmt.Errorf("--json is not supported by %s", c.CommandPath())
+		}
+		return nil
+	}
 	return cmd
 }
 
@@ -89,7 +102,7 @@ func newClientCmd() *cobra.Command {
 	cmd.AddCommand(
 		&cobra.Command{Use: "list", Short: "List all enrolled clients", RunE: runClientList},
 		&cobra.Command{Use: "show <name>", Short: "Show client details", Args: cobra.ExactArgs(1), RunE: runClientShow},
-		&cobra.Command{Use: "remove <name>", Short: "Remove a client and revoke its mTLS certificate", Args: cobra.ExactArgs(1), RunE: runClientRemove},
+		withoutJSON(&cobra.Command{Use: "remove <name>", Short: "Remove a client and revoke its mTLS certificate", Args: cobra.ExactArgs(1), RunE: runClientRemove}),
 	)
 	return cmd
 }
@@ -105,14 +118,16 @@ func newTokenCmd() *cobra.Command {
 		Short: "Create an enrollment token and print one-line install commands",
 		RunE:  runTokenCreate,
 	}
-	create.Flags().String("name", "", "client name (must be unique)")
-	create.Flags().Duration("expires", 0, "token lifetime (default 1h)")
+	create.Flags().String("name", "", "client name; the name of an enrolled client, or one with an unused token, needs --replace")
+	create.Flags().Duration("expires", 0, "token lifetime, at most 168h (default 1h)")
+	create.Flags().Bool("replace", false, "create a token for the name of an enrolled client, or one with an unused token, and revoke "+
+		"the unused tokens: the host that enrolls with it replaces the client, takes over its certificates and locks the enrolled host out")
 	_ = create.MarkFlagRequired("name")
 
 	cmd.AddCommand(
 		create,
-		&cobra.Command{Use: "list", Short: "List active enrollment tokens", RunE: runTokenList},
-		&cobra.Command{Use: "revoke <id>", Short: "Revoke an unused enrollment token", Args: cobra.ExactArgs(1), RunE: runTokenRevoke},
+		&cobra.Command{Use: "list", Short: "List enrollment tokens: unused, used or expired", RunE: runTokenList},
+		withoutJSON(&cobra.Command{Use: "revoke <id>", Short: "Revoke an unused enrollment token", Args: cobra.ExactArgs(1), RunE: runTokenRevoke}),
 	)
 	return cmd
 }

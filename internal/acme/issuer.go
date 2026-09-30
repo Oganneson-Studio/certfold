@@ -101,6 +101,9 @@ type accountStore interface {
 
 // Issuer wraps lego to issue/renew certificates per CertificateSpec.
 type Issuer struct {
+	// programs ends the programs of exec DNS providers: lego's provider API
+	// takes no context.
+	programs context.Context
 	accounts accountStore
 	// accountLocks maps a CA name to the *sync.Mutex that serializes the
 	// initialization of its ACME account; see accountClient.
@@ -108,7 +111,14 @@ type Issuer struct {
 }
 
 // NewIssuer creates an Issuer backed by the persistent ACME account store.
-func NewIssuer(accounts *store.AccountRepo) *Issuer { return &Issuer{accounts: accounts} }
+// When ctx ends, the programs of exec DNS providers still running are killed
+// along with the processes they started. It must end with the daemon, not
+// with the scheduler or a request: sigils ends it when shutdown gives up on
+// the issuances still running, so that those finishing in time can still
+// clean up their DNS records.
+func NewIssuer(ctx context.Context, accounts *store.AccountRepo) *Issuer {
+	return &Issuer{programs: ctx, accounts: accounts}
+}
 
 // Issue requests a certificate for the given spec from its configured CA.
 // cfg and spec must come from the same validated runtime configuration
@@ -120,8 +130,9 @@ func NewIssuer(accounts *store.AccountRepo) *Issuer { return &Issuer{accounts: a
 //
 // ctx is used only for the account store. lego's API takes no context, so
 // cancelling ctx does not interrupt a running ACME exchange; the timeouts
-// described at the top of this file bound it instead. sigils waits for the
-// scheduler's in-flight Issue during shutdown for a bounded time only
+// described at the top of this file bound it instead. The programs of exec
+// DNS providers end with the ctx of NewIssuer, not this one. sigils waits for
+// the scheduler's in-flight Issue during shutdown for a bounded time only
 // (server.Run), and abandons it past that.
 func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec config.CertificateSpec, replacing []byte) (*Result, error) {
 	caEntry, ok := cfg.ACME.CAs[spec.CA]
@@ -139,7 +150,7 @@ func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec confi
 	if !ok {
 		return nil, fmt.Errorf("unknown DNS provider %q", spec.DNSProvider)
 	}
-	provider, err := buildDNSProvider(dnsP)
+	provider, err := buildDNSProvider(i.programs, dnsP)
 	if err != nil {
 		return nil, fmt.Errorf("dns provider %q: %w", spec.DNSProvider, err)
 	}
@@ -356,7 +367,9 @@ func (u *legoUser) GetPrivateKey() crypto.PrivateKey        { return u.key }
 // DNS provider builder
 // ---------------------------------------------------------------------------
 
-func buildDNSProvider(p config.DNSProvider) (challenge.Provider, error) {
+// buildDNSProvider builds the provider p configures. The programs of an exec
+// provider are killed when ctx ends.
+func buildDNSProvider(ctx context.Context, p config.DNSProvider) (challenge.Provider, error) {
 	cfg := p.Config
 	switch p.Type {
 	case "cloudflare":
@@ -424,7 +437,7 @@ func buildDNSProvider(p config.DNSProvider) (challenge.Provider, error) {
 		return gcloud.NewDNSProviderCredentials(project)
 
 	case "exec":
-		return &execProvider{argv: p.Command}, nil
+		return &execProvider{ctx: ctx, argv: p.Command}, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported provider type %q", p.Type)
