@@ -5,15 +5,23 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 	"github.com/Oganneson-Studio/sigil/internal/logging"
 	"github.com/Oganneson-Studio/sigil/internal/tui/shared"
 )
 
-// View renders the current model.
-func (m Model) View() string {
+// View renders the current model on the alternate screen.
+func (m Model) View() tea.View {
+	v := tea.NewView(m.render())
+	v.AltScreen = true
+	return v
+}
+
+// render renders the current model, through shared.Narrow.
+func (m Model) render() string {
 	if m.width == 0 {
 		return "Loading..."
 	}

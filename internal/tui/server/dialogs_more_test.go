@@ -65,7 +65,7 @@ func TestRefusedTokenShowsTheReason(t *testing.T) {
 		t.Fatalf("backend calls %q, want the creation asked for", calls)
 	}
 	if m.created != nil || !shows(m, reason) {
-		t.Errorf("refused creation: box open %v, view %q; want the reason on the status line", m.created != nil, m.View())
+		t.Errorf("refused creation: box open %v, view %q; want the reason on the status line", m.created != nil, plain(m))
 	}
 }
 
@@ -76,14 +76,14 @@ func TestTokenCreationClearsTheEarlierActionError(t *testing.T) {
 	fake.actionErr = errors.New("ipc DELETE /ipc/v1/clients/web-2: server returned 404: " + shown)
 	m, _ := press(t, onTab(t, fake, tabClients), "d", "y")
 	if !shows(m, shown) {
-		t.Fatalf("the failed removal is not shown: %q", m.View())
+		t.Fatalf("the failed removal is not shown: %q", plain(m))
 	}
 	fake.setActionErr(nil)
 	// drive runs the creation after the keys pressed with it, so esc comes
 	// in a press of its own.
 	m, _ = press(t, m, "4", "n", "web-9", "enter")
 	if m, _ = press(t, m, "esc"); shows(m, shown) {
-		t.Errorf("a token created after the failed removal left its error: %q", m.View())
+		t.Errorf("a token created after the failed removal left its error: %q", plain(m))
 	}
 }
 

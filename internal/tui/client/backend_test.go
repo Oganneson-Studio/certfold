@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 	"github.com/Oganneson-Studio/sigil/internal/logging"
@@ -111,6 +112,12 @@ func newModel(t *testing.T, f *fakeBackend) Model {
 	return press(t, m, "r")
 }
 
+// plain returns the view of m as a terminal without colors shows it: lipgloss
+// styles text with escape sequences whatever the terminal.
+func plain(m Model) string {
+	return ansi.Strip(m.View().Content)
+}
+
 // step passes msg to m and returns what Update returns.
 func step(t *testing.T, m Model, msg tea.Msg) (Model, tea.Cmd) {
 	t.Helper()
@@ -141,12 +148,15 @@ func press(t *testing.T, m Model, k string) Model {
 }
 
 // keyMsg returns the message of the key k names, as key bindings name keys.
-func keyMsg(t *testing.T, k string) tea.KeyMsg {
+func keyMsg(t *testing.T, k string) tea.KeyPressMsg {
 	t.Helper()
-	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
-	for _, typ := range []tea.KeyType{tea.KeyCtrlC, tea.KeyCtrlD, tea.KeyCtrlU, tea.KeyUp, tea.KeyDown, tea.KeyPgUp, tea.KeyPgDown, tea.KeySpace} {
-		if typ.String() == k {
-			msg = tea.KeyMsg{Type: typ}
+	msg := tea.KeyPressMsg{Code: []rune(k)[0], Text: k}
+	for _, key := range []tea.KeyPressMsg{
+		{Code: 'c', Mod: tea.ModCtrl}, {Code: 'd', Mod: tea.ModCtrl}, {Code: 'u', Mod: tea.ModCtrl},
+		{Code: tea.KeyUp}, {Code: tea.KeyDown}, {Code: tea.KeyPgUp}, {Code: tea.KeyPgDown}, {Code: tea.KeySpace, Text: " "},
+	} {
+		if key.String() == k {
+			msg = key
 		}
 	}
 	if msg.String() != k {

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 	"github.com/Oganneson-Studio/sigil/internal/tui/shared"
@@ -47,7 +47,7 @@ func TestViewDrawsOnlyNarrowGlyphs(t *testing.T) {
 	for _, size := range []tea.WindowSizeMsg{{Width: 40, Height: 24}, {Width: 120, Height: 40}} {
 		for name, open := range views {
 			m, _ := step(t, open(t, backend()), size)
-			if r, wide := shared.WideGlyph(m.View()); wide {
+			if r, wide := shared.WideGlyph(m.View().Content); wide {
 				t.Errorf("%s at %d columns draws %q", name, size.Width, r)
 			}
 		}

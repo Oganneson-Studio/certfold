@@ -9,16 +9,18 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/Oganneson-Studio/sigil/internal/api"
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 	"github.com/Oganneson-Studio/sigil/internal/tui/shared"
 )
 
+// dialogStyle frames the dialogs. Its width takes in the border, which the
+// views add to the width they allow the text and its padding.
 var dialogStyle = lipgloss.NewStyle().
 	Border(lipgloss.RoundedBorder()).
 	BorderForeground(shared.Purple).
@@ -41,7 +43,7 @@ func (m *Model) ask(verb, prompt string, run func(context.Context) error) {
 	}}
 }
 
-func (m *Model) updateConfirm(msg tea.KeyMsg) tea.Cmd {
+func (m *Model) updateConfirm(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case key.Matches(msg, m.keys.Confirm):
 		run := m.confirm.run
@@ -55,12 +57,12 @@ func (m *Model) updateConfirm(msg tea.KeyMsg) tea.Cmd {
 }
 
 func (c *confirmation) view(width int) string {
-	return dialogStyle.Width(min(width, 64)).Render(c.prompt)
+	return dialogStyle.Width(min(width, 64) + dialogStyle.GetHorizontalBorderSize()).Render(c.prompt)
 }
 
 // tokenForm asks for the client name and the lifetime of a new enrollment
 // token. Typing and backspace edit the end of the focused field; a paste
-// arrives as typing, without its control characters.
+// types its text, without its control characters.
 type tokenForm struct {
 	name  string
 	ttl   string
@@ -72,7 +74,27 @@ func newTokenForm() *tokenForm {
 	return &tokenForm{ttl: "1h"}
 }
 
-func (m *Model) updateForm(msg tea.KeyMsg) tea.Cmd {
+// focused returns the field that has the focus.
+func (f *tokenForm) focused() *string {
+	if f.onTTL {
+		return &f.ttl
+	}
+	return &f.name
+}
+
+// add types text at the end of the focused field. A paste keeps every rune,
+// so it drops those that control the terminal, which the view would write to
+// it.
+func (f *tokenForm) add(text string) {
+	value := f.focused()
+	for _, r := range text {
+		if !unicode.IsControl(r) {
+			*value += string(r)
+		}
+	}
+}
+
+func (m *Model) updateForm(msg tea.KeyPressMsg) tea.Cmd {
 	f := m.form
 	switch {
 	case key.Matches(msg, m.keys.Close):
@@ -113,24 +135,12 @@ func (m *Model) updateForm(msg tea.KeyMsg) tea.Cmd {
 			run: create(true),
 		}
 		return nil
-	default:
-		value := &f.name
-		if f.onTTL {
-			value = &f.ttl
-		}
-		switch msg.Type {
-		case tea.KeyRunes, tea.KeySpace:
-			// A paste keeps every rune, so drop those that control the
-			// terminal, which the view would write to it.
-			for _, r := range msg.Runes {
-				if !unicode.IsControl(r) {
-					*value += string(r)
-				}
-			}
-		case tea.KeyBackspace:
-			if r := []rune(*value); len(r) > 0 {
-				*value = string(r[:len(r)-1])
-			}
+	case msg.Text != "":
+		f.add(msg.Text)
+	case msg.Code == tea.KeyBackspace:
+		value := f.focused()
+		if r := []rune(*value); len(r) > 0 {
+			*value = string(r[:len(r)-1])
 		}
 	}
 	return nil
@@ -156,7 +166,7 @@ func (f *tokenForm) view(width int) string {
 	if f.err != "" {
 		lines = append(lines, "", shared.ErrorStyle.Render(f.err))
 	}
-	return dialogStyle.Width(min(width, 64)).Render(strings.Join(lines, "\n"))
+	return dialogStyle.Width(min(width, 64) + dialogStyle.GetHorizontalBorderSize()).Render(strings.Join(lines, "\n"))
 }
 
 // createdToken shows a new enrollment token and the commands that install
@@ -169,18 +179,18 @@ type createdToken struct {
 }
 
 func newCreatedToken(name string, token *ipc.CreateTokenResponse) *createdToken {
-	return &createdToken{name: name, token: token, view: viewport.New(0, 0)}
+	return &createdToken{name: name, token: token, view: viewport.New()}
 }
 
-func (m *Model) updateCreated(msg tea.KeyMsg) {
+func (m *Model) updateCreated(msg tea.KeyPressMsg) {
 	v := &m.created.view
 	switch {
 	case key.Matches(msg, m.keys.Close):
 		m.created = nil
 	case key.Matches(msg, m.keys.Up):
-		v.LineUp(1)
+		v.ScrollUp(1)
 	case key.Matches(msg, m.keys.Down):
-		v.LineDown(1)
+		v.ScrollDown(1)
 	case key.Matches(msg, m.keys.PageUp):
 		v.PageUp()
 	case key.Matches(msg, m.keys.PageDown):
@@ -191,12 +201,12 @@ func (m *Model) updateCreated(msg tea.KeyMsg) {
 // resize fits the box into width and height, and cuts its lines anew when
 // the width changes.
 func (c *createdToken) resize(width, height int) {
-	if c.view.Width != width {
-		c.view.Width = width
+	if c.view.Width() != width {
+		c.view.SetWidth(width)
 		c.view.SetContent(c.content(width))
 	}
-	c.view.Height = height
-	c.view.SetYOffset(c.view.YOffset)
+	c.view.SetHeight(height)
+	c.view.SetYOffset(c.view.YOffset())
 }
 
 // copyHint explains why the commands cannot be copied as they are shown: the

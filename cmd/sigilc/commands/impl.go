@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"syscall"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
@@ -169,7 +169,7 @@ func runClientTUI(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	p := tea.NewProgram(tuiclient.New(ipcClient), tea.WithAltScreen())
+	p := tea.NewProgram(tuiclient.New(ipcClient))
 	_, err = p.Run()
 	return err
 }

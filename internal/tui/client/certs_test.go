@@ -63,7 +63,7 @@ func TestViewShowsState(t *testing.T) {
 	f.state.Certs = []ipc.ClientCertState{
 		{Name: "api-prod", NotAfter: time.Now().Add(60*24*time.Hour + time.Hour), Outputs: 3, OnChange: true, HookPending: true},
 	}
-	view := newModel(t, f).View()
+	view := plain(newModel(t, f))
 	for _, want := range []string{
 		"web-1", "https://sigil.example.com", "online", "Last pull:  2026-09-28 10:11:12", "Last error: sync: server returned 503",
 		"Name      Not After             Outputs  on_change  Pending",
@@ -77,7 +77,7 @@ func TestViewShowsState(t *testing.T) {
 	f.state.Online = false
 	f.state.LastPullAt = time.Time{}
 	f.state.LastError = ""
-	view = newModel(t, f).View()
+	view = plain(newModel(t, f))
 	for _, want := range []string{"offline", "Last pull:  never"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view lacks %q:\n%s", want, view)

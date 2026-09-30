@@ -18,7 +18,7 @@ func TestRefreshGivesUpOnSilentDaemon(t *testing.T) {
 	fake.setHang(true)
 	m, _ = press(t, m, "r")
 	if !shows(m, context.DeadlineExceeded.Error()) {
-		t.Fatalf("a refresh of a daemon that does not answer did not end in an error: %q", m.View())
+		t.Fatalf("a refresh of a daemon that does not answer did not end in an error: %q", plain(m))
 	}
 	if m.refreshing {
 		t.Fatal("the refresh is still in flight after its call ended")
@@ -26,6 +26,6 @@ func TestRefreshGivesUpOnSilentDaemon(t *testing.T) {
 
 	fake.setHang(false)
 	if m, _ = press(t, m, "r"); shows(m, context.DeadlineExceeded.Error()) || !shows(m, "api-prod") {
-		t.Errorf("the refresh after the daemon answered again: %q", m.View())
+		t.Errorf("the refresh after the daemon answered again: %q", plain(m))
 	}
 }

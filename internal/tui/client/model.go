@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/help"
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/help"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 	"github.com/Oganneson-Studio/sigil/internal/logging"
@@ -66,7 +66,7 @@ type keyMap struct {
 func newKeyMap() keyMap {
 	scroll := viewport.DefaultKeyMap()
 	// f fetches, so it does not page down.
-	scroll.PageDown = key.NewBinding(key.WithKeys("pgdown", " "), key.WithHelp("pgdn", "page down"))
+	scroll.PageDown = key.NewBinding(key.WithKeys("pgdown", "space"), key.WithHelp("pgdn", "page down"))
 	// The help of the viewport names keys with ↑, ↓ and ½, which some
 	// consoles draw two cells wide (see shared.WideGlyph).
 	scroll.Up.SetHelp("k/up", "up")
@@ -155,7 +155,7 @@ type actionMsg struct {
 // New returns a Model that reads the daemon through backend.
 func New(backend Backend) Model {
 	keys := newKeyMap()
-	events := viewport.New(0, 0)
+	events := viewport.New()
 	events.KeyMap = keys.scroll
 	return Model{backend: backend, keys: keys, help: help.New(), eventsView: events}
 }
@@ -175,10 +175,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.help.Width = msg.Width - lineStyle.GetHorizontalPadding()
+		m.help.SetWidth(msg.Width - lineStyle.GetHorizontalPadding())
 		m.setEventsContent()
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		m, cmd = m.handleKey(msg)
 
 	case tickMsg:
@@ -205,7 +205,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) handleKey(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.quit):
 		return m, tea.Quit
@@ -310,15 +310,22 @@ func (m *Model) setEventsContent() {
 // footer.
 func (m *Model) layout() {
 	atBottom := m.eventsView.AtBottom()
-	m.eventsView.Width = m.width
-	m.eventsView.Height = max(0, m.height-1-lipgloss.Height(m.footer()))
+	m.eventsView.SetWidth(m.width)
+	m.eventsView.SetHeight(max(0, m.height-1-lipgloss.Height(m.footer())))
 	if atBottom {
 		m.eventsView.GotoBottom()
 	}
 }
 
-// View renders the model, through shared.Narrow.
-func (m Model) View() string {
+// View renders the model on the alternate screen.
+func (m Model) View() tea.View {
+	v := tea.NewView(m.render())
+	v.AltScreen = true
+	return v
+}
+
+// render renders the model, through shared.Narrow.
+func (m Model) render() string {
 	if m.width == 0 {
 		return "Loading..."
 	}

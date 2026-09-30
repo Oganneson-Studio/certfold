@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // keyCheck checks what pressing a key did: before and after are the models
@@ -19,11 +19,11 @@ func quits(_ *fakeBackend, _, _ Model, msgs []tea.Msg) bool {
 }
 
 func scrollsUp(_ *fakeBackend, before, after Model, _ []tea.Msg) bool {
-	return after.eventsView.YOffset < before.eventsView.YOffset
+	return after.eventsView.YOffset() < before.eventsView.YOffset()
 }
 
 func scrollsDown(_ *fakeBackend, before, after Model, _ []tea.Msg) bool {
-	return after.eventsView.YOffset > before.eventsView.YOffset
+	return after.eventsView.YOffset() > before.eventsView.YOffset()
 }
 
 // TestEveryHelpKeyIsWired presses every key the full help shows and checks
@@ -50,7 +50,7 @@ func TestEveryHelpKeyIsWired(t *testing.T) {
 	}
 	eventsView := map[string]keyCheck{
 		"up": scrollsUp, "k": scrollsUp, "pgup": scrollsUp, "b": scrollsUp, "u": scrollsUp, "ctrl+u": scrollsUp,
-		"down": scrollsDown, "j": scrollsDown, "pgdown": scrollsDown, " ": scrollsDown, "d": scrollsDown, "ctrl+d": scrollsDown,
+		"down": scrollsDown, "j": scrollsDown, "pgdown": scrollsDown, "space": scrollsDown, "d": scrollsDown, "ctrl+d": scrollsDown,
 	}
 
 	keys := New(&fakeBackend{}).keys
@@ -125,19 +125,19 @@ func TestFetchAndReloadShowTheirOutcome(t *testing.T) {
 			m := newModel(t, f)
 
 			m, cmd := step(t, m, keyMsg(t, tc.key))
-			if view := m.View(); !strings.Contains(view, tc.name+": running...") {
+			if view := plain(m); !strings.Contains(view, tc.name+": running...") {
 				t.Errorf("view while the %s runs lacks %q:\n%s", tc.name, tc.name+": running...", view)
 			}
 			f.state.Name = "web-2"
 			m, _ = settle(t, m, cmd)
-			if view := m.View(); !strings.Contains(view, tc.name+": done at ") || !strings.Contains(view, "web-2") {
+			if view := plain(m); !strings.Contains(view, tc.name+": done at ") || !strings.Contains(view, "web-2") {
 				t.Errorf("view after the %s lacks %q or the state read after it:\n%s", tc.name, tc.name+": done at ", view)
 			}
 
 			tc.fail(f, errors.New("client.data_dir changed; restart sigilc to apply it"))
 			m = press(t, m, tc.key)
 			want := tc.name + " failed: client.data_dir changed; restart sigilc to apply it"
-			if view := m.View(); !strings.Contains(view, want) || strings.Contains(view, tc.name+": done at ") {
+			if view := plain(m); !strings.Contains(view, want) || strings.Contains(view, tc.name+": done at ") {
 				t.Errorf("view after a failed %s lacks %q:\n%s", tc.name, want, view)
 			}
 			if got := len(f.fetches) + f.reloads; got != 2 {
