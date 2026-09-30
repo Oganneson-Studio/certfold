@@ -37,7 +37,13 @@ Place platform binaries in `<data_dir>/binaries/` using names such as `sigilc-li
 **Linux / macOS** (as a user who may sudo):
 
 ```bash
-curl -fsSL 'https://sigil.example.com:8443/install.sh' | sudo sh -s -- --token '<token>'
+curl -fsSL --proto '=https' --proto-redir '=https' 'https://sigil.example.com:8443/install.sh' | sudo sh -s -- --token '<token>'
+```
+
+Without `--token`, the script asks for the token on the terminal (not echoed), which keeps it off the command line. Prefer this on a host that others use:
+
+```bash
+curl -fsSL --proto '=https' --proto-redir '=https' 'https://sigil.example.com:8443/install.sh' | sudo sh
 ```
 
 **Windows** (elevated PowerShell, 5.1 or 7):
@@ -46,11 +52,29 @@ curl -fsSL 'https://sigil.example.com:8443/install.sh' | sudo sh -s -- --token '
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; & ([scriptblock]::Create((irm 'https://sigil.example.com:8443/install.ps1'))) -Token '<token>'
 ```
 
+Without `-Token`, the script prompts for the token with `Read-Host -AsSecureString` (only asterisks on screen):
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; & ([scriptblock]::Create((irm 'https://sigil.example.com:8443/install.ps1')))
+```
+
 The `-bor 3072` prefix adds TLS 1.2 to the protocols Windows PowerShell 5.1 offers. The Sigil server accepts TLS 1.2 and above on its public HTTPS listener, while `sigilc`'s own connections (enrollment and mTLS) require TLS 1.3.
 
-The token appears in the process command line; see [Current limitations](#current-limitations).
+With `--token` / `-Token`, the token appears in the process command line: `sh -s -- --token` is visible to other users, and `-Token '...'` is saved to the PowerShell history file. To keep the token off the command line, omit the flag so that the script prompts for it interactively. `sigilc enroll` without `--token` reads the `SIGILC_TOKEN` environment variable; both scripts use this to pass the token to `sigilc`.
 
-The old command `iwr -useb '.../install.ps1?token=...' | iex` no longer works as expected: the script now takes a mandatory `-Token` parameter, so `iex` stops at an interactive prompt or fails in non-interactive sessions.
+**Reinstalling** on a host where `sigilc` is already installed: run the same command with a new token (created with `sigils token create --name <name> --replace`). The script stops the service, replaces the binary, enrolls with the new token, reinstalls the service, and starts it.
+
+**Upgrading** the binary without re-enrolling:
+
+```bash
+curl -fsSL --proto '=https' --proto-redir '=https' 'https://sigil.example.com:8443/install.sh' | sudo sh -s -- --upgrade
+```
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; & ([scriptblock]::Create((irm 'https://sigil.example.com:8443/install.ps1'))) -Upgrade
+```
+
+`--upgrade` / `-Upgrade` stops the service, replaces the binary, and restarts; it fails if `sigilc` was never installed. You cannot combine `--upgrade` with `--token`.
 
 ## Production TLS
 
@@ -97,9 +121,9 @@ sigils --config /etc/sigil/server.yaml reload
 
 On Linux, `sigils` and `sigilc` management commands need root because the IPC sockets are owned by root.
 
-`token create` and `reload` are served by the running daemon over local IPC and fail when it is not running. `token create` also refuses to run when `server.public_url` is unset and `server.listen` names no host clients can reach. `cert add` and `cert remove` edit `server.yaml` and then tell a running daemon to reload.
+`token create`, `reload`, `cert add`, and `cert remove` are served by the running daemon over local IPC and fail when it is not running. `token create` also refuses to run when `server.public_url` is unset and `server.listen` names no host clients can reach. When the name belongs to an enrolled client or to an unused token that has not expired, `token create` requires `--replace`; with `--replace`, it also revokes all unused tokens of that name. `cert add` and `cert remove` edit `server.yaml` and apply the new configuration atomically.
 
-`sigilc enroll` writes `client.yaml` before sending the token; if enrollment fails, the file it created is removed (an existing file is not touched). A token whose name or server URL does not pass the naming rules is rejected before any network request.
+`sigilc enroll` writes `client.yaml` before sending the token; if enrollment fails, the file it created is removed (an existing file is not touched). A token whose name or server URL does not pass the naming rules is rejected before any network request. Without `--token`, `sigilc enroll` reads the `SIGILC_TOKEN` environment variable.
 
 `client remove` and `token revoke` report an error (exit code 1) when the name or ID does not exist, instead of silently claiming success.
 
@@ -109,7 +133,7 @@ On Linux, the install script writes:
 - `/etc/sigil/client.yaml` (file `0600`, directory `0700`)
 - `/var/lib/sigilc` (created on first certificate delivery)
 - `/var/run/sigil/sigilc.sock` (`0660`, owned by root; `sudo sigilc status` to query)
-- `/etc/systemd/system/sigilc.service` with `Restart=on-failure` and `RestartSec=5`
+- `/etc/systemd/system/sigilc.service` with `Restart=on-failure`, `RestartSec=5`, and `KillMode=mixed`
 
 To uninstall (do not remove `/var/run/sigil`; `sigils` uses it too):
 
@@ -155,7 +179,7 @@ certificates:
 ```
 
 - Which certificates a client receives is decided only by `subscribers` in `server.yaml`. An entry under `certificates` in `client.yaml` only says where to write a certificate the client already receives.
-- Output formats are `pem-cert`, `pem-key`, `pem-fullchain`, `pem-bundle`, `pkcs12` (requires `password`), and `der`. `mode`, `owner`, and `group` are optional. Private-key outputs default to `0600`, the others to `0644`.
+- Output formats are `pem-cert`, `pem-key`, `pem-fullchain`, `pem-bundle`, `pkcs12` (requires `password`), and `der`. `mode`, `owner`, and `group` are optional. Private-key outputs default to `0600`, the others to `0644`. `mode` is read as octal: `640` means `0640`; `0o640` also works.
 - Two outputs cannot share a path. Paths are compared after cleaning, and case-insensitively on Windows.
 - `enroll` adds the client's mTLS identity to this file.
 - The top-level `outputs` map and the `client.pull_interval`, `client.push_listen`, and `client.push_token` keys of earlier builds are rejected as unknown fields, as is the `clients` section of `server.yaml`.
@@ -169,7 +193,7 @@ certificates:
 After every round, whether the server reported a change, reported none, or could not be reached, `sigilc` reconciles each configured output with its local store:
 
 - An output that is missing or whose content differs is rewritten. All outputs of one certificate are staged first and then replaced together.
-- An output with the right content but the wrong permission bits or ownership is corrected in place (on Windows, a wrong owner has the file recreated). This does not count as a change and does not run `on_change`.
+- An output with the right content but the wrong permission bits or ownership is corrected in place. On Windows, reconciliation compares content only; permission and ownership changes take effect on the next content change (renewal) or when the file is deleted. This does not count as a change and does not run `on_change`.
 - On filesystems that cannot store Unix permission bits, the configured `mode` has no effect; protect such directories by other means.
 - An idle client reconciles about every 55 seconds. While errors persist, including a failing `on_change` program, rounds back off from 5 seconds to 5 minutes.
 
@@ -298,9 +322,9 @@ Values in `server.yaml` and `client.yaml` can reference environment variables as
 
 ## Private key outputs on Windows
 
-Outputs that contain a private key (`pem-key`, `pem-bundle`, `pkcs12`) are created with a protected ACL that grants access only to SYSTEM, Administrators, and the account running `sigilc`. `mode` is not applied on Windows and cannot widen that ACL. To let a service such as IIS or nginx read a key, set `owner` on that output to the service's account name or SID; that account gets read access.
+Outputs that contain a private key (`pem-key`, `pem-bundle`, `pkcs12`) are created with a protected ACL that grants access only to SYSTEM and Administrators. `mode` is not applied on Windows and cannot widen that ACL. To let a service such as IIS or nginx read a key, set `owner` on that output to the service's account name or SID; that account gets read access but does not become the file's owner. `owner` only takes effect on private-key outputs; on other formats it is silently ignored.
 
-Reconciliation compares a Windows output's content and, when `owner` is set, its owner, but not its ACL. A key file whose ACL was loosened, or that inherits its directory's ACL because another tool or an earlier build wrote it, keeps that ACL until its content changes at the next renewal. Removing `owner` from the configuration likewise leaves the previous owner and its read access in place, on Unix as well. To apply the configuration at once, delete the file; the next round recreates it.
+On Windows, reconciliation compares only the content of each output, not its ACL or ownership. A key file whose ACL was loosened, or that inherits its directory's ACL because another tool or an earlier build wrote it, keeps that ACL until its content changes at the next renewal. Removing `owner` from the configuration likewise leaves the previous account and its read access in place, on Unix as well. To apply the configuration at once, delete the file; the next round recreates it.
 
 ## DNS-01 validation
 
@@ -352,7 +376,7 @@ Read-only IPC responses expose metadata only and never include certificate priva
 
 `sigilc` automatically renews its mTLS identity before expiry. `client.identity_renew_before` defaults to 30 days and accepts values from 1 hour through 89 days. A failed renewal does not stop delivery: the client keeps using its current identity and retries the renewal each round.
 
-The database schema only migrates forward. After an upgrade, an older `sigils` cannot open the database.
+The database schema only migrates forward. After an upgrade, an older `sigils` refuses to open the database with an error that names both schema versions.
 
 ## Naming rules
 
@@ -366,17 +390,71 @@ Renaming a CA registers a new ACME account under the new name. Renaming a certif
 
 On Windows, `service install` registers the daemon and writes a recovery action (restart after 10 seconds, reset the failure count after 24 hours). Events go to the Application event log. `service uninstall` removes the event log source.
 
-Under systemd, `service install` writes a unit with `Restart=on-failure` and `RestartSec=5`. A daemon that keeps failing restarts every 5 seconds indefinitely. To update an existing unit, run `service uninstall` then `service install`; kardianos reports an error when the service already exists. Environment variables for the service (DNS credentials, `LEGO_CA_CERTIFICATES`, etc.) go in `/etc/sysconfig/<name>`. Create the directory first on distributions that do not ship it.
+Under systemd, `service install` writes a unit with `Restart=on-failure`, `RestartSec=5`, and `KillMode=mixed`. `KillMode=mixed` sends SIGTERM to the daemon alone on stop; processes it started (exec DNS programs) keep running until the daemon exits, then receive SIGKILL. A daemon that keeps failing restarts every 5 seconds indefinitely. To update an existing unit, run `service uninstall` then `service install`; kardianos reports an error when the service already exists. Environment variables for the service (DNS credentials, `LEGO_CA_CERTIFICATES`, etc.) go in `/etc/sysconfig/<name>`. Create the directory first on distributions that do not ship it.
+
+`service install` resolves the configuration path to an absolute path. The search order is `--config`, then `SIGILS_CONFIG` / `SIGILC_CONFIG`, then the platform default.
 
 ## Current limitations
 
-- The enrollment token appears in the process command line of `sh -s -- --token` and `sigilc enroll --token`. A used token cannot be replayed.
-- Reinstalling `sigilc` over a running binary fails with `ETXTBSY` on Linux and a file-lock error on Windows. Stop the service first.
+- With `--token` / `-Token`, the token appears in the process command line. Omit the flag and let the script prompt for it to keep it off the command line. `sigilc enroll` without `--token` reads the `SIGILC_TOKEN` environment variable.
 - The container E2E issues certificates through the `exec` DNS provider; lego's built-in cloud DNS providers are not covered by an E2E.
 - Reconciliation does not compare Windows ACLs; see [Private key outputs on Windows](#private-key-outputs-on-windows).
 - Two output paths that name the same file, one relative and one absolute, are not detected as duplicates.
 - Certificates whose lifetime does not exceed about twice the CA's NotBefore backdate (about 2 hours for Let's Encrypt, which backdates by 1 hour) are not supported: they arrive already past their renewal point and are caught by the arrival guard, which backs off instead of retrying immediately.
-- The mini-CA root certificate expires after 10 years and has no rotation mechanism.
+- The mini-CA root certificate expires after 10 years and has no rotation mechanism. When it has less than a year remaining, the server logs a warning at startup and on each server-certificate reissue.
 - ARI does not do short-interval exponential backoff for 5xx responses (lego does not expose the HTTP status code); it retries after 6 hours.
 - The random renewal moment within an ARI window is not persisted; a restart picks a new moment within the same window.
 - A reload rejection caused by a YAML type error may include up to about 10 characters of the configuration value in the event and service log.
+
+## Directory requirements
+
+`sigils` and `sigilc` check their configuration and data directories at startup and refuse to run when other accounts can write to them. The checks vary by platform:
+
+- **sigils data_dir** (Unix): mode `0700`, owned by the running user. (Windows): completely private --- only SYSTEM, Administrators, and the running user may access it.
+- **Configuration directory and sigilc data_dir** (Windows): owned by SYSTEM, Administrators, or (when not elevated) the current user; no other account may write, delete, or change permissions.
+- **ca/ subdirectory**: checked and tightened by `ca.Bootstrap` on first use.
+
+When the directory does not exist, the daemon creates it with private permissions. When it exists but does not pass the check, the error names the directory and prints the commands to fix it:
+
+```
+C:\ProgramData\Sigil is owned by DESKTOP\Alice, and only SYSTEM, Administrators may own it. ...
+  icacls "C:\ProgramData\Sigil" /setowner *S-1-5-32-544
+```
+
+On Linux, if the data directory was created with mode `0755`:
+
+```
+/var/lib/sigils gives the group or others access. ...
+```
+
+The simplest fix in both cases is to remove the directory and let the daemon recreate it. After that, run `service install` if the service was uninstalled.
+
+## Enrollment troubleshooting
+
+When `sigilc enroll` fails after a network error, retry with the same token. If the server says `invalid token`, the server consumed the token before the response reached the client. Create a new token with `sigils token create --name <name> --replace` and try again.
+
+Two situations can leave the client unable to tell whether its enrollment succeeded:
+
+1. The server committed the enrollment but the connection dropped before `sigilc` received the response. The client's old identity, if any, was already replaced on the server.
+2. The server marked the token as used but the database write for the new identity failed (500). The token is consumed; the old identity still works. Create a replacement token.
+
+In both cases the error message says that the server may have taken the token, and suggests `sigils token create --name <name> --replace`.
+
+## Upgrade notes
+
+**Old Windows installations**: builds before the directory audit created `C:\ProgramData\Sigil` with the installing user's SID in the ACL. After upgrading, the `sigilc` service and reinstall enrollment both refuse to start. Fix it with the `icacls` command the error message prints, or remove the directory and re-enroll:
+
+```powershell
+icacls "C:\ProgramData\Sigil" /setowner *S-1-5-32-544
+icacls "C:\ProgramData\Sigil" /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" /remove:g *S-1-5-21-...
+```
+
+The exact command is in the error message; copy it from there.
+
+If the `sigils` data directory was created interactively with elevation, it may have the same problem. The fix is the same.
+
+**Old CLI with new daemon**: after upgrading the binary but before restarting the daemon, the new CLI's `token create` rejects the old daemon's response (which lacks `token_id`), though the token is already stored in the database and will expire. Restart `sigils` before creating tokens. `cert add` and `cert remove` return `404 page not found` with the old daemon; restart `sigils` to use them.
+
+**Systemd units**: builds before the audit did not include `KillMode=mixed`. After upgrading, run `service uninstall` then `service install` to update the unit.
+
+**Output re-encoding**: the current build re-encodes certificate PEM blocks before writing outputs. If a CA's PEM was not in Go's standard format, each certificate's outputs are rewritten once after the upgrade, and `on_change` runs once.
