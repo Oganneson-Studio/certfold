@@ -48,6 +48,27 @@ func TestEventsAndLinesWithholdURLQueries(t *testing.T) {
 	}
 }
 
+// "?REDACTED" is longer than a short query, so the query is withheld before
+// the message is cut: the other way round, a message of maxMessageBytes that
+// ends with a URL would come out longer.
+func TestEventMessagesAreRedactedBeforeTheyAreCut(t *testing.T) {
+	url := "https://a.example/x?k"
+	msg := strings.Repeat("a", maxMessageBytes-len(url)) + url
+	var sink bytes.Buffer
+	ring := NewRing()
+	line := logToAll(&sink, ring, func(logger *slog.Logger) { logger.Info(msg) })
+
+	// The URL keeps its length, len("https://a.example/x?k"), of which
+	// "?REDACTED" fills the last two bytes.
+	want := strings.Repeat("a", maxMessageBytes-len(url)) + "https://a.example/x?R"
+	for _, got := range []string{onlyEvent(t, ring).Message, line} {
+		if got != want {
+			t.Errorf("message of %d bytes ends with %q, want %d bytes ending with %q",
+				len(got), got[max(0, len(got)-30):], len(want), want[len(want)-30:])
+		}
+	}
+}
+
 func TestEventMessagesAreCutAtRuneBoundary(t *testing.T) {
 	// "é" takes two bytes and starts at odd offsets, so byte maxMessageBytes
 	// falls inside one.

@@ -55,11 +55,12 @@ type ClientInfo struct {
 }
 
 // TokenInfo is the read-only enrollment-token metadata exposed over IPC.
+// UsedAt is zero, and absent from the JSON, while the token is unused.
 type TokenInfo struct {
 	TokenID   string    `json:"token_id"`
 	Name      string    `json:"name"`
 	ExpiresAt time.Time `json:"expires_at"`
-	UsedAt    time.Time `json:"used_at"`
+	UsedAt    time.Time `json:"used_at,omitzero"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -79,12 +80,13 @@ type CreateTokenResponse struct {
 }
 
 // ClientState is the runtime status returned by a sigilc daemon. Certs lists
-// the certificates in its store in name order, and is never null.
+// the certificates in its store in name order, and is never null. LastPullAt
+// is zero, and absent from the JSON, until sigils has answered a sync.
 type ClientState struct {
 	Name       string            `json:"name"`
 	ServerURL  string            `json:"server_url"`
 	Online     bool              `json:"online"`
-	LastPullAt time.Time         `json:"last_pull_at,omitempty"`
+	LastPullAt time.Time         `json:"last_pull_at,omitzero"`
 	LastError  string            `json:"last_error,omitempty"`
 	Certs      []ClientCertState `json:"certs"`
 }

@@ -5,8 +5,9 @@ import (
 	"testing"
 )
 
-// Printable replaces everything a terminal may take for a command: C0 but
-// "\n", DEL, C1 and invalid UTF-8.
+// Printable replaces everything a terminal may take for a command, or that
+// changes how the line reads: C0 but "\n", DEL, C1, format characters, line
+// and paragraph separators, and invalid UTF-8.
 func TestPrintable(t *testing.T) {
 	for _, tc := range []struct {
 		name, in, want string
@@ -19,6 +20,11 @@ func TestPrintable(t *testing.T) {
 		{"invalid UTF-8", "a\xffb\x9b[2Jc\xc2", "a\uFFFDb\uFFFD[2Jc\uFFFD"},
 		{"newline", "a\nb", "a\nb"},
 		{"printable", "déjà vu – 证书", "déjà vu – 证书"},
+		// "prod-api" reads "ipa-dorp" once the override reorders it.
+		{"right-to-left override", "cert \u202Eprod-api\u202C ok", "cert  prod-api  ok"},
+		{"isolates", "\u2066a\u2067b\u2068c\u2069", " a b c "},
+		{"invisible format characters", "a\u200Bb\u200Dc\uFEFFd\u00ADe", "a b c d e"},
+		{"line and paragraph separators", "a\u2028b\u2029c", "a b c"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Printable(tc.in); got != tc.want {

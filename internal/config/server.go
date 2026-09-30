@@ -94,16 +94,20 @@ var validKeyTypes = map[string]bool{
 	"ec384":   true,
 }
 
-// validDNSProviderTypes is the closed set of DNS provider types Sigil
-// supports out of the box. Each value except exec corresponds to a lego
-// provider package; exec runs the program given by command.
-var validDNSProviderTypes = map[string]bool{
-	"cloudflare":   true,
-	"aliyun":       true,
-	"tencentcloud": true,
-	"route53":      true,
-	"gcloud":       true,
-	"exec":         true,
+// dnsProviderKeys maps the closed set of DNS provider types Sigil supports
+// to the keys each takes besides its typed fields: those buildDNSProvider in
+// internal/acme reads. Each type except exec corresponds to a lego provider
+// package; exec runs the program given by command and takes typed fields
+// only. The issuer ignores any other key, so a misspelled one would pass
+// unnoticed: route53 given AWS-style key names would sign with the ambient
+// AWS credentials.
+var dnsProviderKeys = map[string][]string{
+	"cloudflare":   {"api_token", "zone_api_token", "auth_email", "auth_key"},
+	"aliyun":       {"access_key", "access_secret"},
+	"tencentcloud": {"secret_id", "secret_key"},
+	"route53":      {"access_key", "secret_key", "region"},
+	"gcloud":       {"project", "service_account_file"},
+	"exec":         nil,
 }
 
 // LoadServer reads server.yaml from path, expands ${VAR} references inside
@@ -196,7 +200,7 @@ func (c *ServerConfig) Validate() error {
 		v.Add("server.data_dir", "must be set")
 	}
 	if !isValidListen(c.Server.Listen) {
-		v.Add("server.listen", "invalid listen address %q", c.Server.Listen)
+		v.Add("server.listen", "invalid listen address %q (want host:port with a port from 1 to 65535; the host may be empty)", c.Server.Listen)
 	}
 	if (c.Server.TLSCertFile == "") != (c.Server.TLSKeyFile == "") {
 		v.Add("server.tls", "tls_cert_file and tls_key_file must be set together")
@@ -250,7 +254,7 @@ func (c *ServerConfig) Validate() error {
 		path := fmt.Sprintf("dns_providers.%s", name)
 		if p.Type == "" {
 			v.Add(path+".type", "must be set")
-		} else if !validDNSProviderTypes[p.Type] {
+		} else if _, ok := dnsProviderKeys[p.Type]; !ok {
 			v.Add(path+".type", "unknown DNS provider type %q (supported: cloudflare, aliyun, tencentcloud, route53, gcloud, exec)", p.Type)
 		} else {
 			validateDNSProviderFields(v, path, p)
@@ -307,16 +311,39 @@ func (c *ServerConfig) Validate() error {
 	return v.ErrOrNil()
 }
 
-// validateDNSProviderFields checks that per-type required fields are present.
+// validateDNSProviderFields checks the keys of p against its type, and that
+// the fields its type requires are set.
 func validateDNSProviderFields(v *ValidationError, path string, p DNSProvider) {
-	strField := func(key string) string {
-		if val, ok := p.Config[key].(string); ok {
-			return val
+	// The inline map takes any key, so KnownFields cannot catch a typo such
+	// as "comand" or "access_key_id". The issuer reads only strings: a value
+	// YAML resolves to another type, such as the digits of a token that
+	// ${VAR} expands to, would be dropped. A null value, which ${VAR:-}
+	// gives, is not set.
+	keys := dnsProviderKeys[p.Type]
+	for _, key := range slices.Sorted(maps.Keys(p.Config)) {
+		field := fmt.Sprintf("%s.%s", path, key)
+		if !slices.Contains(keys, key) {
+			if len(keys) == 0 {
+				v.Add(field, "unknown field for provider type %q", p.Type)
+			} else {
+				v.Add(field, "unknown field for provider type %q (supported: %s)", p.Type, strings.Join(keys, ", "))
+			}
+			continue
 		}
-		return ""
+		if value := p.Config[key]; value != nil {
+			if _, ok := value.(string); !ok {
+				v.Add(field, "must be a string (quote the value, or the ${VAR} that gives it)")
+			}
+		}
+	}
+	// set reports whether key has a value. A value that is not a string was
+	// reported above.
+	set := func(key string) bool {
+		value := p.Config[key]
+		return value != nil && value != ""
 	}
 	requireField := func(key string) {
-		if strField(key) == "" {
+		if !set(key) {
 			v.Add(fmt.Sprintf("%s.%s", path, key), "required for provider type %q", p.Type)
 		}
 	}
@@ -328,9 +355,7 @@ func validateDNSProviderFields(v *ValidationError, path string, p DNSProvider) {
 	switch p.Type {
 	case "cloudflare":
 		// Either api_token (recommended) or auth_email+auth_key must be set.
-		hasToken := strField("api_token") != ""
-		hasLegacy := strField("auth_email") != "" && strField("auth_key") != ""
-		if !hasToken && !hasLegacy {
+		if !set("api_token") && !(set("auth_email") && set("auth_key")) {
 			v.Add(path, "cloudflare provider requires api_token, or both auth_email and auth_key")
 		}
 	case "aliyun":
@@ -342,24 +367,17 @@ func validateDNSProviderFields(v *ValidationError, path string, p DNSProvider) {
 	case "route53":
 		// route53 can use IAM instance roles (no explicit keys required),
 		// but if access_key is set then secret_key must also be set.
-		hasKey := strField("access_key") != ""
-		hasSecret := strField("secret_key") != ""
-		if hasKey != hasSecret {
+		if set("access_key") != set("secret_key") {
 			v.Add(path, "route53 provider requires both access_key and secret_key (or neither for IAM role)")
 		}
 	case "gcloud":
 		// Without a service account file the issuer uses application default
 		// credentials for the configured project; lego does not detect the
 		// project on that path, so one of the two must be set.
-		if strField("project") == "" && strField("service_account_file") == "" {
+		if !set("project") && !set("service_account_file") {
 			v.Add(path, "gcloud provider requires project (used with application default credentials) or service_account_file")
 		}
 	case "exec":
-		// The inline map takes any key, so KnownFields cannot catch a typo
-		// such as "comand". exec has only typed fields: reject every other key.
-		for _, key := range slices.Sorted(maps.Keys(p.Config)) {
-			v.Add(fmt.Sprintf("%s.%s", path, key), "unknown field for provider type %q", p.Type)
-		}
 		// Whether the program exists is not checked: that can change between
 		// runs, and a failed run is reported as the certificate's last error.
 		if len(p.Command) == 0 {
@@ -387,16 +405,29 @@ func (c *ServerConfig) PublicBaseURL() string {
 }
 
 // ValidatePublicURL reports whether s can be server.public_url: an https URL
-// without the characters unquotable reports. Enrollment tokens carry the
-// public URL to sigilc, which checks the URL of a token under the same rule
-// before it writes the URL to client.yaml and prints it.
+// with a host, without the characters unquotable reports. sigils appends the
+// paths of its endpoints to it, so it takes no user information, query or
+// fragment, and a port it has must be one from 1 to 65535. Enrollment tokens
+// carry the public URL to sigilc, which checks the URL of a token under the
+// same rule before it writes the URL to client.yaml and prints it.
 func ValidatePublicURL(s string) error {
-	if u, err := url.ParseRequestURI(s); err != nil || u.Scheme != "https" {
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
 		return fmt.Errorf("must be an https URL, got %q", s)
 	}
 	if i := strings.IndexFunc(s, unquotable); i >= 0 {
 		r, _ := utf8.DecodeRuneInString(s[i:])
 		return fmt.Errorf("must not contain %q: install commands quote the URL for sh and PowerShell", r)
+	}
+	switch {
+	case u.User != nil:
+		return fmt.Errorf("must not contain user information, got %q", s)
+	case strings.ContainsAny(s, "?#"):
+		return fmt.Errorf("must not have a query or a fragment, got %q", s)
+	case u.Hostname() == "":
+		return fmt.Errorf("must name a host, got %q", s)
+	case strings.HasSuffix(u.Host, ":") || u.Port() != "" && !isValidPort(u.Port()):
+		return fmt.Errorf("must have a port from 1 to 65535 if any, got %q", s)
 	}
 	return nil
 }
@@ -424,16 +455,22 @@ func isValidDNSResolver(s string) bool {
 	}) {
 		return false
 	}
-	n, err := strconv.ParseUint(port, 10, 16)
-	return err == nil && n > 0
+	return isValidPort(port)
 }
 
+// isValidListen reports whether addr is host:port with a port isValidPort
+// accepts, such as ":8443", "0.0.0.0:8443", "[::]:8443" or "host:8443". A
+// service name is refused as a port: PublicBaseURL puts the port in a URL.
 func isValidListen(addr string) bool {
-	if addr == "" {
-		return false
-	}
-	// Accept ":8443", "0.0.0.0:8443", "[::]:8443", "host:port".
-	return strings.Contains(addr, ":")
+	_, port, err := net.SplitHostPort(addr)
+	return err == nil && isValidPort(port)
+}
+
+// isValidPort reports whether port is a decimal TCP or UDP port from 1 to
+// 65535.
+func isValidPort(port string) bool {
+	n, err := strconv.ParseUint(port, 10, 16)
+	return err == nil && n > 0
 }
 
 func isValidDomain(d string) bool {

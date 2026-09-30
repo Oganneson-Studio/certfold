@@ -1,34 +1,24 @@
 package store
 
 import (
-	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
 func TestOpenProtectsSQLiteFiles(t *testing.T) {
-	tests := []struct {
-		name string
-		dsn  func(string) string
+	for _, tt := range []struct {
+		name   string
+		params string
 	}{
-		{name: "plain path", dsn: func(path string) string { return path }},
-		{name: "file URI", dsn: func(path string) string {
-			uriPath := filepath.ToSlash(path)
-			if !strings.HasPrefix(uriPath, "/") {
-				uriPath = "/" + uriPath
-			}
-			return (&url.URL{Scheme: "file", Path: uriPath}).String()
-		}},
-	}
-
-	for _, tt := range tests {
+		{name: "path"},
+		{name: "path with parameters", params: "?_pragma=busy_timeout(10000)"},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			makeSQLiteDirectoryBroad(t, dir)
 			path := filepath.Join(dir, "sigils.db")
-			db, err := Open(tt.dsn(path))
+			db, err := Open(path + tt.params)
 			if err != nil {
 				t.Fatalf("Open: %v", err)
 			}

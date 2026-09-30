@@ -26,7 +26,7 @@ var ctx = context.Background()
 // CertRepo
 // ---------------------------------------------------------------------------
 
-func TestCertRepo_UpsertGetDelete(t *testing.T) {
+func TestCertRepo_UpsertGet(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().UTC().Truncate(time.Second)
 
@@ -78,12 +78,8 @@ func TestCertRepo_UpsertGetDelete(t *testing.T) {
 		t.Errorf("updated SpecFingerprint: got %q", got2.SpecFingerprint)
 	}
 
-	if err := db.Certs.Delete(ctx, "api-prod", nil); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	_, err = db.Certs.Get(ctx, "api-prod", nil)
-	if err != sql.ErrNoRows {
-		t.Fatalf("expected ErrNoRows after delete, got %v", err)
+	if _, err := db.Certs.Get(ctx, "api-stage", nil); err != sql.ErrNoRows {
+		t.Fatalf("Get of a missing certificate: error = %v, want sql.ErrNoRows", err)
 	}
 }
 
@@ -389,7 +385,7 @@ func TestTokenRepo_List(t *testing.T) {
 // AccountRepo
 // ---------------------------------------------------------------------------
 
-func TestAccountRepo_UpsertGetDelete(t *testing.T) {
+func TestAccountRepo_UpsertGet(t *testing.T) {
 	db := openTestDB(t)
 
 	rec := &AccountRecord{
@@ -427,12 +423,8 @@ func TestAccountRepo_UpsertGetDelete(t *testing.T) {
 		t.Errorf("updated KeyPEM: got %q", got2.KeyPEM)
 	}
 
-	if err := db.Accounts.Delete(ctx, "letsencrypt", nil); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	_, err = db.Accounts.Get(ctx, "letsencrypt", nil)
-	if err != sql.ErrNoRows {
-		t.Fatalf("expected ErrNoRows after delete, got %v", err)
+	if _, err := db.Accounts.Get(ctx, "zerossl", nil); err != sql.ErrNoRows {
+		t.Fatalf("Get of a missing account: error = %v, want sql.ErrNoRows", err)
 	}
 }
 

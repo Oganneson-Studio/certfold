@@ -254,6 +254,43 @@ func TestParseServer_DNSResolvers(t *testing.T) {
 	}
 }
 
+// server.listen is host:port with a decimal port, which PublicBaseURL puts
+// in the URL it derives when server.public_url is not set.
+func TestParseServer_Listen(t *testing.T) {
+	for _, listen := range []string{
+		":8443",
+		"0.0.0.0:8443",
+		"[::]:8443",
+		"127.0.0.1:1",
+		"sigil.internal:65535",
+	} {
+		src := strings.Replace(validServerYAML, `listen: ":8443"`, "listen: "+strconv.Quote(listen), 1)
+		if _, err := ParseServer([]byte(src)); err != nil {
+			t.Errorf("listen %q rejected: %v", listen, err)
+		}
+	}
+
+	for _, listen := range []string{
+		":",
+		"8443",
+		"sigil.internal",
+		":0",
+		":65536",
+		":https",
+		":-1",
+		"[::1]",
+		"::1:8443",
+	} {
+		t.Run(strconv.Quote(listen), func(t *testing.T) {
+			src := strings.Replace(validServerYAML, `listen: ":8443"`, "listen: "+strconv.Quote(listen), 1)
+			_, err := ParseServer([]byte(src))
+			if want := "server.listen: invalid listen address " + strconv.Quote(listen); err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("error = %v, want %s", err, want)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // DNS provider required-field validation
 // ---------------------------------------------------------------------------

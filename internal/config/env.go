@@ -148,6 +148,11 @@ func expandEnv(s string, lookup func(string) (string, bool)) (string, error) {
 		if name == "" {
 			return "", fmt.Errorf("empty variable name at offset %d", i)
 		}
+		// The first '}' ends the reference, so ${A:-${B}} would give
+		// "${B}" or the value of A followed by "}".
+		if strings.Contains(def, "${") {
+			return "", fmt.Errorf("nested ${...} in the default of %q at offset %d is not supported", name, i)
+		}
 		val, ok := lookup(name)
 		if !ok {
 			if hasDef {
