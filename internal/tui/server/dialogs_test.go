@@ -8,9 +8,26 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
+
 	"github.com/Oganneson-Studio/sigil/internal/api"
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 )
+
+// A dialog gives its text and padding the width it is allowed, at most 64
+// columns, and draws its rounded border, 2 columns, around them.
+func TestDialogWidth(t *testing.T) {
+	for _, width := range []int{30, 64, 100} {
+		want := min(width, 64) + 2
+		c := &confirmation{prompt: strings.Repeat("Revoke enrollment token? ", 8)}
+		if got := lipgloss.Width(c.view(width)); got != want {
+			t.Errorf("a confirmation allowed %d columns is %d wide, want %d", width, got, want)
+		}
+		if got := lipgloss.Width(newTokenForm().view(width)); got != want {
+			t.Errorf("the token form allowed %d columns is %d wide, want %d", width, got, want)
+		}
+	}
+}
 
 func TestConfirmationActsOnlyOnY(t *testing.T) {
 	tests := []struct {
