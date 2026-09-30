@@ -439,18 +439,18 @@ func TestReconcile_ReportsOutputsReplacedBeforeAFailedRename(t *testing.T) {
 }
 
 // TestReconcile_UnknownOwnerLeavesTargetUnchanged covers an owner that does
-// not resolve. Ownership is set on the temporary file, so the failure must
-// come before the target is replaced. The output is a certificate because
-// Windows creates a key output with read access for the owner, and would fail
-// earlier, in createTemp.
+// not resolve. It is looked up for the temporary file, when Unix sets its
+// ownership and when Windows creates a key output with read access for the
+// owner, so the failure must come before the target is replaced. The output
+// is a key because Windows ignores the owner of other formats.
 func TestReconcile_UnknownOwnerLeavesTargetUnchanged(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "cert.pem")
-	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+	path := filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	spec := config.OutputSpec{Format: "pem-cert", Path: path, Owner: "sigil-test-no-such-account"}
+	spec := config.OutputSpec{Format: "pem-key", Path: path, Owner: "sigil-test-no-such-account"}
 	changed, err := Reconcile(makeBundle(t), []config.OutputSpec{spec})
 	if err == nil || changed {
 		t.Fatalf("Reconcile = %v, %v; want an error and no change", changed, err)

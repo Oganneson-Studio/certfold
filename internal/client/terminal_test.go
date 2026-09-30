@@ -126,7 +126,7 @@ func TestReloadErrorIsPrintable(t *testing.T) {
 
 	updated := *cfg
 	updated.Identity.ClientCert = "-----BEGIN X\x1b]0;pwned\a-----\nAAAA\n-----END X\x1b]0;pwned\a-----\n"
-	err := c.Reload(&updated)
+	err := c.Reload(loaded(&updated))
 	if err == nil || !strings.Contains(err.Error(), "load client cert") {
 		t.Fatalf("Reload error = %v, want the client certificate refused", err)
 	}

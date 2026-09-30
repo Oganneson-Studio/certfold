@@ -61,11 +61,7 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 		},
 		Fetch: c.Fetch,
 		Reload: func(context.Context) error {
-			updated, err := config.LoadClient(configPath)
-			if err != nil {
-				return fmt.Errorf("load config: %w", err)
-			}
-			return c.Reload(updated)
+			return c.Reload(func() (*config.ClientConfig, error) { return config.LoadClient(configPath) })
 		},
 	}
 	ipcSrv := ipc.NewServer(ipc.ServerDeps{Client: control, Events: logs.Events})
