@@ -82,8 +82,9 @@ func TestCheckSecurity(t *testing.T) {
 			private: []string{authenticated + " access it"},
 		},
 		{
+			// 0x40 is FILE_DELETE_CHILD.
 			name:    "children deletable by Users",
-			sddl:    "O:BAD:P" + trustedACEs + "(A;;DC;;;BU)",
+			sddl:    "O:BAD:P" + trustedACEs + "(A;;0x40;;;BU)",
 			write:   []string{users + " write to it"},
 			private: []string{users + " access it"},
 		},
