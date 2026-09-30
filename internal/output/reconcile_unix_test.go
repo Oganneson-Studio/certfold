@@ -99,6 +99,44 @@ func TestReconcileReplacesFIFO(t *testing.T) {
 	checkContent(t, b, spec)
 }
 
+// TestReconcileReplacesFIFOWithWriter covers a FIFO whose write end another
+// process holds open without writing. A read of it waits for data, with
+// pullMu held, where TestReconcileReplacesFIFO's reads EOF at once: only the
+// check that the output is a regular file keeps Reconcile from reading it.
+func TestReconcileReplacesFIFOWithWriter(t *testing.T) {
+	b := makeBundle(t)
+	spec := config.OutputSpec{Format: "pem-cert", Path: filepath.Join(t.TempDir(), "cert.pem")}
+	if err := syscall.Mkfifo(spec.Path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// O_RDWR opens a FIFO without waiting and holds its write end open.
+	writer, err := os.OpenFile(spec.Path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := Reconcile(b, []config.OutputSpec{spec})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		_ = writer.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		// Closing the only writer ends the read that waits for data.
+		_ = writer.Close()
+		<-done
+		t.Fatal("Reconcile read the FIFO at the output path and waited for data")
+	}
+	if info, err := os.Lstat(spec.Path); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("output is not a regular file: %v, %v", info, err)
+	}
+	checkContent(t, b, spec)
+}
+
 // TestReconcileRestoresMode covers outputs whose permission bits were changed
 // after they were written: a key made readable by others, and a certificate
 // made private. Their content matches, so the bits are restored in place, and
