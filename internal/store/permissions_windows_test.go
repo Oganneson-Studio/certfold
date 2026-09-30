@@ -74,3 +74,9 @@ func assertNoBroadAccess(t *testing.T, path, sddl string) {
 		}
 	}
 }
+
+// directorySecurity describes the DACL of the directory at path.
+func directorySecurity(t *testing.T, path string) string {
+	t.Helper()
+	return fileSecurityDescriptor(t, path)
+}

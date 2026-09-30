@@ -46,7 +46,10 @@ func TestEnsureEnrollmentConfig_CreatesInitialConfig(t *testing.T) {
 // A client.yaml that names another client or server URL is not replaced; the
 // error says where it is, so an operator who meant to replace it can.
 func TestEnsureEnrollmentConfig_RejectsTokenMismatch(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "client.yaml")
+	// Enrollment refuses a directory that accounts it does not trust may
+	// write to, as the temporary directory may be: securefile creates this
+	// one private.
+	path := filepath.Join(t.TempDir(), "etc", "client.yaml")
 	if _, _, err := ensureEnrollmentConfig(path, "web-1", "https://sigil.example.com"); err != nil {
 		t.Fatal(err)
 	}

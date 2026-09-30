@@ -36,7 +36,7 @@ import (
 // Run to return nil.
 func startRun(t *testing.T, logs logging.Logs) (miniCA *ca.MiniCA, listen, socket string, stop func()) {
 	t.Helper()
-	dataDir := t.TempDir()
+	dataDir := privateDir(t)
 	miniCA, err := ca.Bootstrap(dataDir)
 	if err != nil {
 		t.Fatal(err)

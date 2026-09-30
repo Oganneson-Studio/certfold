@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 	"unicode"
+
+	"github.com/Oganneson-Studio/sigil/internal/securefile"
 )
 
 // runMainEnv, when set, makes the test binary run main with its arguments
@@ -115,16 +117,21 @@ func enrollThroughManInTheMiddle(t *testing.T, dnsName string) string {
 		"name":       "web-1",
 		"ca_cert":    string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Certificate[0]})),
 	})
-	return failingSigilc(t, "enroll", "--token", token, "--config", filepath.Join(t.TempDir(), "client.yaml"))
+	// In a directory enrollment creates: it refuses one that accounts it
+	// does not trust may write to, as the temporary directory may be.
+	return failingSigilc(t, "enroll", "--token", token, "--config", filepath.Join(t.TempDir(), "etc", "client.yaml"))
 }
 
 // main prints errors that quote local files too, such as the type error of
 // a client.yaml, which quotes the value: without control characters, and
 // with the newlines between the lines of the error.
 func TestErrorQuotingClientYAMLIsPrintable(t *testing.T) {
-	cfgPath := filepath.Join(t.TempDir(), "client.yaml")
+	// Enrollment refuses a directory that accounts it does not trust may
+	// write to, as the temporary directory may be: securefile creates this
+	// one private.
+	cfgPath := filepath.Join(t.TempDir(), "etc", "client.yaml")
 	// A YAML escape: a raw control character would fail the YAML parser.
-	if err := os.WriteFile(cfgPath, []byte("identity: \"\\e]0;pwned\\a\"\n"), 0o600); err != nil {
+	if err := securefile.WriteFile(cfgPath, []byte("identity: \"\\e]0;pwned\\a\"\n")); err != nil {
 		t.Fatal(err)
 	}
 	token := enrollmentToken(t, map[string]string{"server_url": "https://sigil.example.com", "name": "web-1"})

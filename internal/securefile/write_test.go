@@ -33,6 +33,26 @@ func TestWriteFileCreatesAndReplacesPrivateFile(t *testing.T) {
 	}
 }
 
+// TestEnsurePrivateDirectoryRefusesFile covers a path where a file stands,
+// such as a data_dir mistyped as the path of a file: it must fail as creating
+// a directory there fails, and leave the file as it is.
+func TestEnsurePrivateDirectoryRefusesFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(path, []byte("kept"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsurePrivateDirectory(path); err == nil {
+		t.Fatal("EnsurePrivateDirectory accepted a file")
+	}
+	if after, err := os.Stat(path); err != nil || after.Mode() != before.Mode() {
+		t.Fatalf("mode after = %v (%v), want %v", after.Mode(), err, before.Mode())
+	}
+}
+
 func TestWriteFileDoesNotChangeExistingParentMode(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX directory modes are not available on Windows")

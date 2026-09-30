@@ -16,7 +16,8 @@ import (
 // all: when the status cannot be written, the certificate is not stored and
 // the stored callback does not run.
 func TestCertificateIsNotStoredWithoutItsStatus(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sigils.db")
+	// A directory that store.Open creates: it refuses one that is not private.
+	path := filepath.Join(t.TempDir(), "data", "sigils.db")
 	db, err := store.Open(path)
 	if err != nil {
 		t.Fatalf("open db: %v", err)

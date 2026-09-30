@@ -2,14 +2,19 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"os"
+	"path/filepath"
 
 	"github.com/Oganneson-Studio/sigil/internal/client"
 	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/enroll"
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/sigil/internal/securefile"
 	"github.com/Oganneson-Studio/sigil/internal/version"
 )
 
@@ -19,9 +24,24 @@ import (
 // logs is the logging that logging.Setup made the default: the IPC API serves
 // its events, and the errors of the IPC server go to its sink alone.
 func Run(ctx context.Context, configPath string, logs logging.Logs) error {
+	// client.yaml names the on_change programs sigilc runs, and data_dir
+	// holds the certificates and keys it writes to the outputs.
+	if err := securefile.CheckDirectory(filepath.Dir(configPath)); err != nil {
+		return fmt.Errorf("configuration directory: %w", err)
+	}
 	cfg, err := config.LoadClient(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+	// Created now if missing, as store.Open does data_dir of sigils: until
+	// the first certificate is stored, another account could create it.
+	if _, err := os.Stat(cfg.Client.DataDir); errors.Is(err, fs.ErrNotExist) {
+		if err := securefile.EnsurePrivateDirectory(cfg.Client.DataDir); err != nil {
+			return fmt.Errorf("create data directory: %w", err)
+		}
+	}
+	if err := securefile.CheckDirectory(cfg.Client.DataDir); err != nil {
+		return fmt.Errorf("data directory: %w", err)
 	}
 
 	c, err := client.New(cfg, client.WithIdentitySaver(func(caCert, clientCert, clientKey string) error {

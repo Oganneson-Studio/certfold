@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -238,6 +239,12 @@ func clientIPCSocket(cmd *cobra.Command) string {
 // the token is sent stops an enrollment that could not save its identity
 // before the server spends the token.
 func ensureEnrollmentConfig(cfgPath, tokenName, serverURL string) (name string, created bool, err error) {
+	// An account sigilc does not trust that may write to the directory could
+	// have put a client.yaml there that names this host and runs its own
+	// on_change program.
+	if err := securefile.CheckDirectory(filepath.Dir(cfgPath)); err != nil {
+		return "", false, fmt.Errorf("configuration directory: %w", err)
+	}
 	cfg, err := config.LoadClient(cfgPath)
 	if err == nil {
 		if cfg.Client.Name != tokenName {

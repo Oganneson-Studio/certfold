@@ -86,23 +86,24 @@ func prepareDatabaseFiles(path string) error {
 	return protectSQLiteFiles(path)
 }
 
+// prepareSQLiteDirectory creates the directory of the database at
+// databasePath private when it does not exist, and refuses one that is not.
+// SQLite deletes -wal and -shm and creates them again as connections close
+// and open, long after Open has protected them, and on Windows they inherit
+// the DACL of the directory. An existing directory is not changed: it may be
+// one like /var/lib or C:\ProgramData, and on Windows the change would reach
+// everything in it.
 func prepareSQLiteDirectory(databasePath string) error {
-	dir := filepath.Clean(filepath.Dir(databasePath))
-	if dir == "." || filepath.Dir(dir) == dir {
-		return nil
-	}
-	if info, err := os.Stat(dir); err == nil {
-		// Shared temporary directories must retain their sticky-bit semantics.
-		if info.Mode()&os.ModeSticky != 0 {
-			return nil
+	dir := filepath.Dir(databasePath)
+	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+		if err := securefile.EnsurePrivateDirectory(dir); err != nil {
+			return fmt.Errorf("create sqlite directory %s: %w", dir, err)
 		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	} else if err != nil {
 		return fmt.Errorf("inspect sqlite directory %s: %w", dir, err)
 	}
-	if err := securefile.EnsurePrivateDirectory(dir); err != nil {
-		return fmt.Errorf("protect sqlite directory %s: %w", dir, err)
-	}
-	return nil
+	// Also after creating it: another account may have created it first.
+	return securefile.CheckPrivateDirectory(dir)
 }
 
 // protectSQLiteFiles protects the database at databasePath, and those of its
