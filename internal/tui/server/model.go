@@ -211,14 +211,14 @@ func (m *Model) update(msg tea.Msg) tea.Cmd {
 		}
 		return m.startRefresh()
 	case createdMsg:
-		if errors.Is(msg.err, ipc.ErrReplaceRequired) {
-			// A client or token newer than the lists has the name. Once they
-			// are refreshed, creating the token again asks to replace.
-			m.actionErr = fmt.Errorf("%w; create the token again to confirm the replacement", msg.err)
-			return m.startRefresh()
-		}
 		if msg.err != nil {
 			m.actionErr = msg.err
+			if errors.Is(msg.err, ipc.ErrReplaceRequired) {
+				// A client or token newer than the lists has the name. Once
+				// the next refresh has them, creating the token again asks to
+				// replace.
+				m.actionErr = fmt.Errorf("%w; create the token again to confirm the replacement", msg.err)
+			}
 			return nil
 		}
 		// The token cannot be shown again, so it takes the place of a
