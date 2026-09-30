@@ -150,6 +150,7 @@ func TestStatusAndFetchShowManInTheMiddleErrorsPrintable(t *testing.T) {
 		}
 		select {
 		case err := <-result:
+			result <- err // for the cleanup, which waits for it
 			t.Fatalf("the daemon returned early: %v", err)
 		default:
 		}
