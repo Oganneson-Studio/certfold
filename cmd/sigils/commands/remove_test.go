@@ -134,7 +134,8 @@ func TestClientRemoveListsTheCertificatesToRenew(t *testing.T) {
 	want := "client \"web-1\" removed\n" +
 		"its host keeps the private keys of the certificates it subscribes to; if it may be compromised, renew them:\n" +
 		"  sigils cert renew api\n" +
-		"  sigils cert renew www\n"
+		"  sigils cert renew www\n" +
+		"the old certificates and keys stay valid until they expire: renewing does not revoke them\n"
 	if got := runSigils(t, "--ipc", socket, "client", "remove", "web-1"); got != want {
 		t.Errorf("client remove web-1 printed:\n%s\nwant:\n%s", got, want)
 	}

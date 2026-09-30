@@ -211,6 +211,7 @@ func runClientRemove(cmd *cobra.Command, args []string) error {
 		for _, cert := range subscribed {
 			fmt.Printf("  sigils cert renew %s\n", cert)
 		}
+		fmt.Println("the old certificates and keys stay valid until they expire: renewing does not revoke them")
 	}
 	return nil
 }
