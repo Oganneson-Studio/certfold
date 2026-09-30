@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -85,29 +86,40 @@ func (s *Server) Create(ctx context.Context, serverURL, name string, ttl time.Du
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-// Verify decodes and validates a token string. Returns the client name on success.
-// Does NOT mark the token as used — the caller should call MarkUsed after signing.
+// Reasons that Verify and SignClientCert refuse a token. ErrTokenUsed and
+// ErrTokenExpired come only for a token whose secret checks out, so they tell
+// nothing to anyone who does not hold the whole token; any other flaw of a
+// token is ErrInvalidToken.
+var (
+	ErrInvalidToken = errors.New("invalid token")
+	ErrTokenUsed    = errors.New("enrollment token was already used")
+	ErrTokenExpired = errors.New("enrollment token has expired")
+)
+
+// Verify decodes and validates a token string. Returns the client name and
+// token ID on success, and with ErrTokenUsed and ErrTokenExpired as well.
+// Does NOT mark the token as used: SignClientCert does.
 func (s *Server) Verify(ctx context.Context, tokenStr string) (name string, tokenID string, err error) {
 	payload, err := DecodeToken(tokenStr)
 	if err != nil {
-		return "", "", fmt.Errorf("decode: %w", err)
+		return "", "", ErrInvalidToken
 	}
 
 	rec, err := s.db.Tokens.Get(ctx, payload.TokenID, nil)
 	if err == sql.ErrNoRows {
-		return "", "", fmt.Errorf("invalid token")
+		return "", "", ErrInvalidToken
 	}
 	if err != nil {
-		return "", "", fmt.Errorf("lookup: %w", err)
-	}
-	if !rec.UsedAt.IsZero() {
-		return "", "", fmt.Errorf("token already used")
-	}
-	if time.Now().After(rec.ExpiresAt) {
-		return "", "", fmt.Errorf("token expired")
+		return "", "", fmt.Errorf("look up token: %w", err)
 	}
 	if tokenPayloadHash(payload) != rec.SecretHash {
-		return "", "", fmt.Errorf("invalid token")
+		return "", "", ErrInvalidToken
+	}
+	if !rec.UsedAt.IsZero() {
+		return rec.Name, rec.TokenID, ErrTokenUsed
+	}
+	if time.Now().After(rec.ExpiresAt) {
+		return rec.Name, rec.TokenID, ErrTokenExpired
 	}
 	return rec.Name, rec.TokenID, nil
 }
@@ -130,7 +142,10 @@ func (s *Server) SignClientCert(ctx context.Context, csr *x509.CertificateReques
 		return nil, fmt.Errorf("begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := s.db.Tokens.MarkUsed(ctx, tokenID, tx); err != nil {
+	if err := s.db.Tokens.MarkUsed(ctx, tokenID, tx); errors.Is(err, store.ErrTokenAlreadyUsed) {
+		// Another enrollment with the token got there since Verify.
+		return nil, ErrTokenUsed
+	} else if err != nil {
 		return nil, fmt.Errorf("mark used: %w", err)
 	}
 	if err := s.db.Clients.Upsert(ctx, &store.ClientRecord{

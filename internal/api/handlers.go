@@ -21,6 +21,7 @@ import (
 
 	"github.com/Oganneson-Studio/sigil/internal/ca"
 	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/sigil/internal/enroll"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 	"github.com/Oganneson-Studio/sigil/pkg/proto"
 )
@@ -222,13 +223,31 @@ func (h *handlers) enroll(w http.ResponseWriter, r *http.Request) {
 
 	// Verify token via enroll.Server (decodes base64, checks secret hash, expiry, replay).
 	name, tokenID, err := h.deps.EnrollServer.Verify(ctx, req.Token)
-	if err != nil {
-		http.Error(w, "invalid token", http.StatusUnauthorized)
+	// A token that can no longer enroll says why, to its holder and to the
+	// log; enroll.Server says it only once the secret checks out.
+	refuse := func(err error) {
+		slog.Warn("enrollment refused", "client", name, "token", tokenID, "error", err)
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+	}
+	switch {
+	case errors.Is(err, enroll.ErrInvalidToken):
+		// Anyone can send one, so it goes unlogged.
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	case errors.Is(err, enroll.ErrTokenUsed), errors.Is(err, enroll.ErrTokenExpired):
+		refuse(err)
+		return
+	case err != nil:
+		serverError(w, "enrollment failed", "error", err)
 		return
 	}
 
 	// Sign the client cert, mark token used, record client — all via enroll.Server.
 	certDER, err := h.deps.EnrollServer.SignClientCert(ctx, csr, name, tokenID)
+	if errors.Is(err, enroll.ErrTokenUsed) {
+		refuse(err)
+		return
+	}
 	if err != nil {
 		serverError(w, "enrollment failed", "client", name, "token", tokenID, "error", err)
 		return

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -293,14 +294,84 @@ func TestTokenConcurrentConsumption(t *testing.T) {
 	succeeded := 0
 	failed := 0
 	for err := range results {
-		if err == nil {
+		switch {
+		case err == nil:
 			succeeded++
-		} else {
+		case errors.Is(err, ErrTokenUsed):
 			failed++
+		default:
+			t.Errorf("concurrent consumption: error = %v, want ErrTokenUsed", err)
 		}
 	}
 	if succeeded != 1 || failed != 1 {
 		t.Fatalf("concurrent consumption: %d succeeded, %d failed; want 1 and 1", succeeded, failed)
+	}
+}
+
+// TestVerifySaysWhyOnlyToTheTokenHolder checks that a token which no longer
+// enrolls is refused for its reason, used or expired, but only when its
+// secret checks out: without the secret, a token ID says nothing.
+func TestVerifySaysWhyOnlyToTheTokenHolder(t *testing.T) {
+	ctx := context.Background()
+	db := mustOpenDB(t)
+	srv := NewServer(db, mustBootstrapCA(t))
+	used, err := srv.Create(ctx, "https://sigil.example.com", "web-1", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, tokenID, err := srv.Verify(ctx, used)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.SignClientCert(ctx, newCSR(t, name), name, tokenID); err != nil {
+		t.Fatal(err)
+	}
+	expired, err := srv.Create(ctx, "https://sigil.example.com", "web-2", -time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutSecret := func(tokenStr string) string {
+		payload, err := DecodeToken(tokenStr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload.Secret = strings.Repeat("a", 64)
+		return encodeTestToken(t, *payload)
+	}
+
+	for _, tt := range []struct {
+		name  string
+		token string
+		want  error
+	}{
+		{"used", used, ErrTokenUsed},
+		{"expired", expired, ErrTokenExpired},
+		{"used, without the secret", withoutSecret(used), ErrInvalidToken},
+		{"expired, without the secret", withoutSecret(expired), ErrInvalidToken},
+		{"not a token", "not-a-token", ErrInvalidToken},
+	} {
+		if _, _, err := srv.Verify(ctx, tt.token); !errors.Is(err, tt.want) {
+			t.Errorf("Verify of a token %s: error = %v, want %v", tt.name, err, tt.want)
+		}
+	}
+}
+
+// TestPostEnrollSaysWhyTheServerRefused checks that the reason the server
+// gives reaches the error that sigilc prints.
+func TestPostEnrollSaysWhyTheServerRefused(t *testing.T) {
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "enrollment token was already used", http.StatusUnauthorized)
+	}))
+	defer ts.Close()
+
+	token := encodeTestToken(t, Token{ServerURL: ts.URL, Name: "web-1", CACert: testServerCertPEM(t, ts)})
+	kc, err := GenerateKeyAndCSR("web-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = PostEnroll(ts.URL, token, kc.CSRDER)
+	if want := "server returned 401: enrollment token was already used"; err == nil || err.Error() != want {
+		t.Fatalf("PostEnroll error = %v, want %q", err, want)
 	}
 }
 

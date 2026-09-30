@@ -11,9 +11,11 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -116,7 +118,10 @@ func PostEnroll(serverURL, tokenStr string, csrDER []byte) (*proto.EnrollRespons
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("server returned %d", resp.StatusCode)
+		// The server says why, such as that the token was already used. The
+		// text comes from the network: sigilc makes the error one line.
+		reason, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
+		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(reason)))
 	}
 	var out proto.EnrollResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {

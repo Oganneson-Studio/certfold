@@ -509,6 +509,23 @@ func TestEnroll_RejectWithClientCert(t *testing.T) {
 	}
 }
 
+// enrollRequest is POST /v1/enroll with tokenStr, for a new key.
+func enrollRequest(t *testing.T, tokenStr string) *http.Request {
+	t.Helper()
+	kc, err := enroll.GenerateKeyAndCSR("web-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(proto.EnrollRequest{
+		Token: tokenStr,
+		CSR:   string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: kc.CSRDER})),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return httptest.NewRequest(http.MethodPost, "/v1/enroll", bytes.NewReader(body))
+}
+
 // A CSR that is not one CERTIFICATE REQUEST signed by its own key is the
 // client's mistake: 400, where the server once failed with 500 or signed it,
 // and the token stays unused for a request that gets it right.

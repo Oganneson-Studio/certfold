@@ -17,11 +17,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Oganneson-Studio/sigil/internal/enroll"
 	"github.com/Oganneson-Studio/sigil/internal/logging"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 	"github.com/Oganneson-Studio/sigil/pkg/proto"
@@ -151,6 +154,56 @@ func TestLastSeenWriteFailureIsAnErrorEvent(t *testing.T) {
 	}
 	if got := eventLines(logs); len(got) != 1 || !strings.HasPrefix(got[0], "ERROR record last_seen failed client=web-1 error=") {
 		t.Fatalf("events = %q, want one ERROR record last_seen failed", got)
+	}
+}
+
+// A token that can no longer enroll is refused with its reason, which is
+// logged as a WARN event naming the client and the token ID. A token that
+// is not one gets the generic refusal and no event: anyone can send one.
+func TestEnrollmentRefusalsSayWhy(t *testing.T) {
+	logs := setupLogs(t)
+	deps := buildDeps(t)
+	ctx := context.Background()
+	used, err := deps.EnrollServer.Create(ctx, "https://sigil.example.com:8443", "web-1", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired, err := deps.EnrollServer.Create(ctx, "https://sigil.example.com:8443", "web-2", -time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenID := func(tokenStr string) string {
+		payload, err := enroll.DecodeToken(tokenStr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return payload.TokenID
+	}
+	handler := newHandler(deps)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, enrollRequest(t, used))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first enrollment: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	for _, tt := range []struct{ name, token, body string }{
+		{"used", used, "enrollment token was already used"},
+		{"expired", expired, "enrollment token has expired"},
+		{"not a token", "not-a-token", "invalid token"},
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, enrollRequest(t, tt.token))
+		if rec.Code != http.StatusUnauthorized || strings.TrimSpace(rec.Body.String()) != tt.body {
+			t.Errorf("enrollment with a token %s: status = %d, body = %q; want 401 %q", tt.name, rec.Code, rec.Body.String(), tt.body)
+		}
+	}
+	want := []string{
+		"INFO client enrolled client=web-1 token=" + tokenID(used),
+		`WARN enrollment refused client=web-1 token=` + tokenID(used) + ` error="enrollment token was already used"`,
+		`WARN enrollment refused client=web-2 token=` + tokenID(expired) + ` error="enrollment token has expired"`,
+	}
+	if got := eventLines(logs); !slices.Equal(got, want) {
+		t.Fatalf("events = %q, want %q", got, want)
 	}
 }
 
