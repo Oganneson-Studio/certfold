@@ -88,14 +88,16 @@ trap 'rm -f "$TMP"' EXIT
 echo "Downloading sigilc for $OS/$ARCH..."
 curl -fsSL "$SERVER_URL/download/sigilc?os=$OS&arch=$ARCH" -o "$TMP"
 chmod 0755 "$TMP"
-# A sigilc that does not run fails here, before anything changes, and not
-# below, where it would pass for a host without the service.
+# A sigilc that does not run fails here, before anything changes.
 "$TMP" version
 
 # The service of an earlier install is stopped before sigilc is replaced,
-# and installed anew after the enrollment, since it cannot be installed over.
+# and installed anew after the enrollment: kardianos refuses to install over
+# the file that defines it, under systemd or launchd, whatever its state.
 INSTALLED=""
-if "$TMP" service status >/dev/null 2>&1; then INSTALLED=1; fi
+for f in /etc/systemd/system/sigilc.service /Library/LaunchDaemons/sigilc.plist; do
+  if [ -e "$f" ]; then INSTALLED=1; fi
+done
 if [ -n "$UPGRADE" ] && [ -z "$INSTALLED" ]; then
   echo "The sigilc service is not installed on this host: install sigilc with a token." >&2
   exit 1

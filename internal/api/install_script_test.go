@@ -272,7 +272,8 @@ func TestInstallShReplacesSigilc(t *testing.T) {
 		"\nTMP=$(mktemp \"$DEST.XXXXXX\")\ntrap 'rm -f \"$TMP\"' EXIT\n",
 		` -o "$TMP"`,
 		"\n\"$TMP\" version\n",
-		"\nif \"$TMP\" service status >/dev/null 2>&1; then INSTALLED=1; fi\n",
+		"\nfor f in /etc/systemd/system/sigilc.service /Library/LaunchDaemons/sigilc.plist; do\n"+
+			"  if [ -e \"$f\" ]; then INSTALLED=1; fi\ndone\n",
 		"\nif [ -n \"$UPGRADE\" ] && [ -z \"$INSTALLED\" ]; then\n",
 		"\n  \"$TMP\" service stop\n",
 		"\nmv -f \"$TMP\" \"$DEST\"\n",
