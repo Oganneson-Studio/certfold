@@ -32,8 +32,14 @@ func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print version information",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			fmt.Printf("sigils %s (commit %s, built %s)\n", version.Version, version.Commit, version.BuildDate)
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if asJSON, _ := cmd.Root().PersistentFlags().GetBool("json"); asJSON {
+				return printJSON(struct {
+					Version string `json:"version"`
+					Commit  string `json:"commit,omitempty"`
+				}{version.Version, version.Commit})
+			}
+			fmt.Println("sigils " + version.String())
 			return nil
 		},
 	}
