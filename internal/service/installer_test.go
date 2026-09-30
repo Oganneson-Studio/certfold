@@ -141,7 +141,9 @@ func TestUnpackClients_EmptyFS(t *testing.T) {
 	fsys := fstest.MapFS{
 		"README": &fstest.MapFile{Data: []byte("placeholder")},
 	}
-	dir := t.TempDir()
+	// A data_dir that UnpackClients creates: it refuses one that is not
+	// private, as the temporary directory may not be.
+	dir := filepath.Join(t.TempDir(), "data")
 	var buf bytes.Buffer
 	n, err := UnpackClients(fsys, dir, &buf)
 	if err != nil {
@@ -165,7 +167,9 @@ func TestUnpackClients_WithBinaries(t *testing.T) {
 		"sigilc-windows-amd64.exe": &fstest.MapFile{Data: content},
 		"README":                   &fstest.MapFile{Data: []byte("skip me")},
 	}
-	dir := t.TempDir()
+	// A data_dir that UnpackClients creates: it refuses one that is not
+	// private, as the temporary directory may not be.
+	dir := filepath.Join(t.TempDir(), "data")
 	var buf bytes.Buffer
 	n, err := UnpackClients(fsys, dir, &buf)
 	if err != nil {
@@ -215,7 +219,9 @@ func TestUnpackClients_AtomicWrite(t *testing.T) {
 	fsys := fstest.MapFS{
 		"sigilc-linux-amd64": &fstest.MapFile{Data: data},
 	}
-	dir := t.TempDir()
+	// A data_dir that UnpackClients creates: it refuses one that is not
+	// private, as the temporary directory may not be.
+	dir := filepath.Join(t.TempDir(), "data")
 	_, err := UnpackClients(fsys, dir, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -253,6 +254,12 @@ func clientIPCSocket(cmd *cobra.Command) string {
 // which a reinstall under sudo does not have: only the name and server URL
 // are read.
 func ensureEnrollmentConfig(cfgPath, tokenName, serverURL string) (name string, created bool, err error) {
+	// An account sigilc does not trust that may write to the directory could
+	// have put a client.yaml there that names this host and runs its own
+	// on_change program.
+	if err := securefile.CheckDirectory(filepath.Dir(cfgPath)); err != nil {
+		return "", false, fmt.Errorf("configuration directory: %w", err)
+	}
 	cfg, err := config.ReadClientBasics(cfgPath)
 	if err == nil {
 		if cfg.Name != tokenName {

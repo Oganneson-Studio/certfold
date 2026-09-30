@@ -101,6 +101,12 @@ type certificate struct {
 // outputs wrong in every reconcile and set them again, in vain.
 const testCertOutputs = "/cert-output/test-cert"
 
+// serverDataDir is server.data_dir in a server container. It is not in the
+// bind mount either: sigils refuses a data_dir whose mode lets other users
+// in, and WSLC reports 0777. sigils creates it private in /var/lib/sigils,
+// which the image makes writable to the user of the container.
+const serverDataDir = "/var/lib/sigils/data"
+
 var stack *e2eStack
 
 func detectContainerRuntime() (containerRuntime, error) {
@@ -208,10 +214,8 @@ func (s *e2eStack) newDeployment(dir, alias, clientName, suffix string, port int
 		serverPort:      port,
 		certs:           []certificate{{name: "test-cert", domain: alias + ".example.com"}},
 	}
-	for _, sub := range []string{"server-data", "client-data"} {
-		if err := os.MkdirAll(d.hostPath(sub), 0o700); err != nil {
-			return nil, err
-		}
+	if err := os.MkdirAll(d.hostPath("client-data"), 0o700); err != nil {
+		return nil, err
 	}
 	return d, nil
 }
@@ -490,7 +494,7 @@ dns_providers:
     skip_propagation_check: true
 
 certificates:
-%s`, d.containerPath("server-data"), d.alias, tlsFiles, dnsHookPath, certs.String())
+%s`, serverDataDir, d.alias, tlsFiles, dnsHookPath, certs.String())
 	// test-cert's on_change program appends the sha256 of fullchain.pem to
 	// hook.log, one line per run. client.yaml expands ${VAR} in every value,
 	// so the program has no $ in it.

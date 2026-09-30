@@ -1464,7 +1464,8 @@ func TestGetCertBundle_Unauthorized(t *testing.T) {
 // transaction instead of failing with SQLITE_BUSY.
 func buildFileDeps(t *testing.T) (Deps, *store.DB) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "sigils.db")
+	// A directory that store.Open creates: it refuses one that is not private.
+	path := filepath.Join(t.TempDir(), "data", "sigils.db")
 	db, err := store.Open(path + "?_pragma=busy_timeout(10000)")
 	if err != nil {
 		t.Fatalf("open db: %v", err)

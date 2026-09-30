@@ -16,6 +16,7 @@ import (
 
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/sigil/internal/securefile"
 	"github.com/Oganneson-Studio/sigil/internal/version"
 )
 
@@ -44,10 +45,12 @@ func TestRunServesItsEvents(t *testing.T) {
 	defer upstream.Close()
 	serverURL := "https://" + upstream.Addr().String()
 	socket := testIPCSocket(t)
-	path := filepath.Join(t.TempDir(), "client.yaml")
+	// Run refuses directories that accounts it does not trust may write to,
+	// as the temporary directory may be: securefile creates these two private.
+	path := filepath.Join(t.TempDir(), "etc", "client.yaml")
 	raw := fmt.Sprintf("client:\n  name: web-1\n  server_url: %q\n  data_dir: %q\n  ipc_socket: %q\n",
-		serverURL, t.TempDir(), socket)
-	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		serverURL, filepath.Join(t.TempDir(), "data"), socket)
+	if err := securefile.WriteFile(path, []byte(raw)); err != nil {
 		t.Fatal(err)
 	}
 

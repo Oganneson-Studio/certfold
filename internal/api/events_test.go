@@ -231,7 +231,8 @@ func TestClientLookupFailureIsAServerError(t *testing.T) {
 func TestBundleReadFailureIsAServerError(t *testing.T) {
 	logs := setupLogs(t)
 	deps := buildDeps(t)
-	path := filepath.Join(t.TempDir(), "sigils.db")
+	// A directory that store.Open creates: it refuses one that is not private.
+	path := filepath.Join(t.TempDir(), "data", "sigils.db")
 	db, err := store.Open(path)
 	if err != nil {
 		t.Fatal(err)

@@ -293,9 +293,15 @@ func UnpackClients(fsys fs.FS, dataDir string, w io.Writer) (int, error) {
 	// The service is installed before it first runs, so data_dir may not
 	// exist yet. Created with the default permissions, it would let a local
 	// user put a binary of their own there for the install scripts to hand
-	// out to every new client.
-	if err := securefile.EnsurePrivateDirectory(dataDir); err != nil {
-		return 0, fmt.Errorf("private directory %s: %w", dataDir, err)
+	// out to every new client. One that exists is checked as store.Open
+	// checks it, and left as it is: it may be a directory like /var/lib.
+	if _, err := os.Stat(dataDir); errors.Is(err, fs.ErrNotExist) {
+		if err := securefile.EnsurePrivateDirectory(dataDir); err != nil {
+			return 0, fmt.Errorf("private directory %s: %w", dataDir, err)
+		}
+	}
+	if err := securefile.CheckPrivateDirectory(dataDir); err != nil {
+		return 0, fmt.Errorf("data directory: %w", err)
 	}
 	destDir := filepath.Join(dataDir, "binaries")
 	if err := os.MkdirAll(destDir, 0o755); err != nil {

@@ -615,7 +615,7 @@ func TestOpen_Idempotent(t *testing.T) {
 }
 
 func TestOpen_MigratesV1ClientIdentitySchema(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sigil-v1.db")
+	path := filepath.Join(privateDirectory(t), "sigil-v1.db")
 	raw, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
@@ -661,7 +661,7 @@ func TestOpen_MigratesV1ClientIdentitySchema(t *testing.T) {
 }
 
 func TestOpen_MigratesV3IssuanceStatusSchema(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sigil-v3.db")
+	path := filepath.Join(privateDirectory(t), "sigil-v3.db")
 	raw, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
@@ -738,7 +738,7 @@ func TestOpen_MigratesV3IssuanceStatusSchema(t *testing.T) {
 // the server stopped pushing, and keeps every client with the rest of its
 // record.
 func TestOpen_MigratesV4DropsClientPushColumns(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sigil-v4.db")
+	path := filepath.Join(privateDirectory(t), "sigil-v4.db")
 	raw, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)

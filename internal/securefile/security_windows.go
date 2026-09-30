@@ -3,10 +3,12 @@
 package securefile
 
 import (
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -16,8 +18,9 @@ import (
 
 // CreateTemp creates a new file in dir, named by replacing the last "*" in
 // pattern with a random string as os.CreateTemp does, and opens it for reading
-// and writing. The file is created with a protected DACL that grants full
-// access to SYSTEM, Administrators and the current user and read access to
+// and writing. The file is created with the security of privateDescriptor,
+// which grants full access to the trustees, which include the current user
+// only when it runs without Administrators enabled, and read access to
 // readers, and inherits nothing from dir. Windows checks access only when a
 // handle is opened, so tightening the DACL after creation would let another
 // account open the empty file first and read what is written to it later.
@@ -55,10 +58,33 @@ func secureDirectory(path string) error {
 	return applyProtectedDACL(path, true)
 }
 
+// mkdirPrivate creates the directory path with the security of
+// privateDescriptor, so that it is private, and has the owner that the
+// checks require, from the moment it exists.
+func mkdirPrivate(path string) error {
+	descriptor, err := privateDescriptor(true)
+	if err != nil {
+		return err
+	}
+	attributes := windows.SecurityAttributes{SecurityDescriptor: descriptor}
+	attributes.Length = uint32(unsafe.Sizeof(attributes))
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return err
+	}
+	if err := windows.CreateDirectory(name, &attributes); err != nil {
+		return &os.PathError{Op: "mkdir", Path: path, Err: err}
+	}
+	return nil
+}
+
 func secureFile(path string) error {
 	return applyProtectedDACL(path, false)
 }
 
+// applyProtectedDACL gives the existing file or directory at path the DACL
+// of privateDescriptor. It keeps the owner: making Administrators the owner
+// of a directory another account created would hide who did from the checks.
 func applyProtectedDACL(path string, inherit bool) error {
 	descriptor, err := privateDescriptor(inherit)
 	if err != nil {
@@ -82,23 +108,32 @@ func applyProtectedDACL(path string, inherit bool) error {
 	return nil
 }
 
-// privateDescriptor builds a protected DACL with full access for SYSTEM,
-// Administrators and the current user and read access for readers. For a
-// directory, inherit passes every entry on to the files and directories
-// created in it.
+// privateDescriptor builds a protected DACL with full access for the trustees
+// and read access for readers. For a directory, inherit passes every entry on
+// to the files and directories created in it.
+//
+// In a process with Administrators enabled, it also makes Administrators the
+// owner, as ipc.Listen does for its pipe. The owner would otherwise be the
+// default owner of the process token, which is Administrators for an
+// elevated administrator but can be changed by what starts the process:
+// under Git Bash, MSYS makes it the user's own account, which the checks do
+// not trust in such a process.
 func privateDescriptor(inherit bool, readers ...*windows.SID) (*windows.SECURITY_DESCRIPTOR, error) {
-	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	full, admin, err := trustees()
 	if err != nil {
-		return nil, fmt.Errorf("get current user: %w", err)
+		return nil, err
 	}
 	flags := ""
 	if inherit {
 		flags = "OICI"
 	}
-	sddl := fmt.Sprintf(
-		"D:P(A;%s;FA;;;SY)(A;%s;FA;;;BA)(A;%s;FA;;;%s)",
-		flags, flags, flags, user.User.Sid.String(),
-	)
+	sddl := "D:P"
+	if admin {
+		sddl = "O:BA" + sddl
+	}
+	for _, trustee := range full {
+		sddl += fmt.Sprintf("(A;%s;FA;;;%s)", flags, trustee.String())
+	}
 	for _, reader := range readers {
 		sddl += fmt.Sprintf("(A;%s;FR;;;%s)", flags, reader.String())
 	}
@@ -107,6 +142,174 @@ func privateDescriptor(inherit bool, readers ...*windows.SID) (*windows.SECURITY
 		return nil, fmt.Errorf("build security descriptor: %w", err)
 	}
 	return descriptor, nil
+}
+
+// trustees returns the accounts that get full control of what securefile
+// creates: SYSTEM, Administrators and, when the process runs without
+// Administrators enabled, its user. An elevated administrator reaches the
+// files through Administrators. An entry for their own account would give
+// the same access to their programs that run without elevation, and would
+// be an account that the services, which run as LocalSystem, do not trust
+// in the directories an administrator created when installing them. admin
+// reports whether the process has Administrators enabled.
+func trustees() (sids []*windows.SID, admin bool, err error) {
+	system, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	if err != nil {
+		return nil, false, fmt.Errorf("build the SID of SYSTEM: %w", err)
+	}
+	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		return nil, false, fmt.Errorf("build the SID of Administrators: %w", err)
+	}
+	// A null token checks the token of the calling thread.
+	admin, err = windows.Token(0).IsMember(admins)
+	if err != nil {
+		return nil, false, fmt.Errorf("check membership of Administrators: %w", err)
+	}
+	if admin {
+		return []*windows.SID{system, admins}, true, nil
+	}
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return nil, false, fmt.Errorf("get current user: %w", err)
+	}
+	return []*windows.SID{system, admins, user.User.Sid}, false, nil
+}
+
+// writeAccess is the access to a directory that lets an account put files or
+// directories in it, delete or rename it or what is in it, or change its DACL
+// or owner. 0x40 is FILE_DELETE_CHILD, which x/sys/windows does not define;
+// FILE_WRITE_DATA and FILE_APPEND_DATA are FILE_ADD_FILE and
+// FILE_ADD_SUBDIRECTORY on a directory.
+const writeAccess windows.ACCESS_MASK = windows.FILE_WRITE_DATA | windows.FILE_APPEND_DATA | 0x40 |
+	windows.DELETE | windows.WRITE_DAC | windows.WRITE_OWNER | windows.GENERIC_WRITE | windows.GENERIC_ALL
+
+func checkDirectory(path string) error {
+	err := checkAccess(path, writeAccess, "write to it or change its permissions")
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func checkPrivateDirectory(path string) error {
+	return checkAccess(path, ^windows.ACCESS_MASK(0), "access it")
+}
+
+// checkAccess returns an error unless a trustee owns the directory at path
+// and its DACL grants no other account any of forbidden. what says what
+// forbidden lets an account do, for the error.
+func checkAccess(path string, forbidden windows.ACCESS_MASK, what string) error {
+	descriptor, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return fmt.Errorf("read the owner and DACL of %s: %w", path, err)
+	}
+	trusted, _, err := trustees()
+	if err != nil {
+		return err
+	}
+	return checkSecurity(path, descriptor, trusted, forbidden, what)
+}
+
+// checkSecurity checks descriptor, the security of the directory at path, as
+// checkAccess describes. An entry for CREATOR OWNER passes: it grants nothing
+// on the directory, and only on what its owner creates in it, which no one
+// but a trustee may do. A folder created in C:\ProgramData inherits one.
+func checkSecurity(path string, descriptor *windows.SECURITY_DESCRIPTOR, trusted []*windows.SID, forbidden windows.ACCESS_MASK, what string) error {
+	owner, _, err := descriptor.Owner()
+	if err != nil {
+		return fmt.Errorf("read the owner of %s: %w", path, err)
+	}
+	dacl, _, err := descriptor.DACL()
+	if err != nil {
+		return fmt.Errorf("read the DACL of %s: %w", path, err)
+	}
+	var others []*windows.SID
+	if dacl == nil {
+		// A null DACL grants everyone full access.
+		everyone, err := windows.CreateWellKnownSid(windows.WinWorldSid)
+		if err != nil {
+			return fmt.Errorf("build the SID of Everyone: %w", err)
+		}
+		others = append(others, everyone)
+	} else {
+		creatorOwner, err := windows.CreateWellKnownSid(windows.WinCreatorOwnerSid)
+		if err != nil {
+			return fmt.Errorf("build the SID of CREATOR OWNER: %w", err)
+		}
+		for i := range uint32(dacl.AceCount) {
+			var ace *windows.ACCESS_ALLOWED_ACE
+			if err := windows.GetAce(dacl, i, &ace); err != nil {
+				return fmt.Errorf("read the DACL of %s: %w", path, err)
+			}
+			switch ace.Header.AceType {
+			case windows.ACCESS_DENIED_ACE_TYPE:
+				continue
+			case windows.ACCESS_ALLOWED_ACE_TYPE:
+			default:
+				// The SID of other types is not where ACCESS_ALLOWED_ACE has it.
+				return fmt.Errorf("%s has an access control entry of type %d, which sigil does not check; remove it", path, ace.Header.AceType)
+			}
+			sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+			if ace.Mask&forbidden == 0 || sid.Equals(creatorOwner) || slices.ContainsFunc(trusted, sid.Equals) ||
+				slices.ContainsFunc(others, sid.Equals) {
+				continue
+			}
+			others = append(others, sid)
+		}
+	}
+	ownerTrusted := slices.ContainsFunc(trusted, owner.Equals)
+	if ownerTrusted && len(others) == 0 {
+		return nil
+	}
+	var problems, commands []string
+	if !ownerTrusted {
+		problems = append(problems, fmt.Sprintf("is owned by %s, and only %s may own it", accountName(owner), accountNames(trusted)))
+		commands = append(commands, fmt.Sprintf(`icacls "%s" /setowner *S-1-5-32-544`, path))
+	}
+	if len(others) > 0 {
+		names := make([]string, len(others))
+		// Quoted, as PowerShell reads (OI) as an expression.
+		fix := fmt.Sprintf(`icacls "%s" /inheritance:r /grant:r`, path)
+		for _, trustee := range trusted {
+			fix += fmt.Sprintf(` "*%s:(OI)(CI)F"`, trustee)
+		}
+		fix += " /remove:g"
+		for i, other := range others {
+			names[i] = accountName(other)
+			fix += " *" + other.String()
+		}
+		problems = append(problems, fmt.Sprintf("lets %s %s, and only %s may", strings.Join(names, ", "), what, accountNames(trusted)))
+		commands = append(commands, fix)
+	}
+	return directoryError(path, problems, !ownerTrusted, commands)
+}
+
+// accountName returns the name of the account sid stands for, or the SID when
+// it has none.
+func accountName(sid *windows.SID) string {
+	account, domain, _, err := sid.LookupAccount("")
+	switch {
+	case err != nil:
+		return sid.String()
+	case domain == "":
+		return account
+	default:
+		return domain + `\` + account
+	}
+}
+
+// accountNames lists the names of sids for an error.
+func accountNames(sids []*windows.SID) string {
+	names := make([]string, len(sids))
+	for i, sid := range sids {
+		names[i] = accountName(sid)
+	}
+	if len(names) == 1 {
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }
 
 func replaceFile(source, destination string) error {

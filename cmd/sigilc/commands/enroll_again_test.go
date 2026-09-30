@@ -8,7 +8,17 @@ import (
 	"testing"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/sigil/internal/securefile"
 )
+
+// privateConfigPath returns the path of a client.yaml in a directory that
+// does not exist yet. Enrollment refuses a directory that accounts it does
+// not trust may write to, as the temporary directory may be: enroll and
+// securefile create this one private.
+func privateConfigPath(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "etc", "client.yaml")
+}
 
 // reloadHint is the part of the line that enroll prints when it replaced the
 // identity of a client.yaml that was there before.
@@ -22,7 +32,7 @@ const reloadHint = "until `sigilc reload` or a restart of the sigilc service"
 // say that a running daemon goes on with the identity it loaded.
 func TestEnrollAgainKeepsConfigWithServiceVariables(t *testing.T) {
 	srv := newSigningEnrollServer(t)
-	cfgPath := filepath.Join(t.TempDir(), "client.yaml")
+	cfgPath := privateConfigPath(t)
 	const passwordRef = "${SIGIL_TEST_SERVICE_ONLY_PASSWORD}"
 	existing := fmt.Sprintf(`client:
   name: web-1
@@ -35,7 +45,7 @@ certificates:
         path: /etc/ssl/api.p12
         password: %s
 `, srv.URL, t.TempDir(), passwordRef)
-	if err := os.WriteFile(cfgPath, []byte(existing), 0o600); err != nil {
+	if err := securefile.WriteFile(cfgPath, []byte(existing)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -68,7 +78,7 @@ certificates:
 // which writes client.yaml, does not tell of a daemon that cannot run yet.
 func TestEnrollFirstTimeSaysNothingOfReload(t *testing.T) {
 	srv := newSigningEnrollServer(t)
-	cfgPath := filepath.Join(t.TempDir(), "client.yaml")
+	cfgPath := privateConfigPath(t)
 	out, err := runSigilcErr(t, "--config", cfgPath, "enroll", "--token", srv.token(t, "web-1"))
 	if err != nil {
 		t.Fatalf("enroll: %v", err)
@@ -88,9 +98,9 @@ func TestEnrollRefusesAnotherClientsConfig(t *testing.T) {
 		{"web-1", "https://other.example.com"},
 	} {
 		t.Run(tc.name+" at "+tc.serverURL, func(t *testing.T) {
-			cfgPath := filepath.Join(t.TempDir(), "client.yaml")
+			cfgPath := privateConfigPath(t)
 			existing := fmt.Sprintf("client:\n  name: %s\n  server_url: %q\n", tc.name, tc.serverURL)
-			if err := os.WriteFile(cfgPath, []byte(existing), 0o600); err != nil {
+			if err := securefile.WriteFile(cfgPath, []byte(existing)); err != nil {
 				t.Fatal(err)
 			}
 			before := srv.requests.Load()

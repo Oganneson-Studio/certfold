@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/sigil/internal/securefile"
 	"github.com/Oganneson-Studio/sigil/pkg/proto"
 )
 
@@ -100,7 +101,10 @@ func newSigningEnrollServer(t *testing.T) *refusingEnrollServer {
 // client.yaml of a failed enrollment must not reach this path.
 func TestEnrollSuccessKeepsConfig(t *testing.T) {
 	srv := newSigningEnrollServer(t)
-	cfgPath := filepath.Join(t.TempDir(), "client.yaml")
+	// Enrollment refuses a directory that accounts it does not trust may
+	// write to, as the temporary directory may be: securefile creates this
+	// one private.
+	cfgPath := filepath.Join(t.TempDir(), "etc", "client.yaml")
 	if err := runEnrollCommand(cfgPath, srv.token(t, "web-1")); err != nil {
 		t.Fatalf("enroll: %v", err)
 	}
@@ -118,7 +122,12 @@ func TestEnrollSuccessKeepsConfig(t *testing.T) {
 // enrollment removes the client.yaml it wrote and nothing beside it.
 func TestEnrollFailureLeavesTheRestOfTheDirectory(t *testing.T) {
 	srv := newRefusingEnrollServer(t)
-	dir := t.TempDir()
+	// Enrollment refuses a directory that accounts it does not trust may
+	// write to, as the temporary directory may be.
+	dir := filepath.Join(t.TempDir(), "etc")
+	if err := securefile.EnsurePrivateDirectory(dir); err != nil {
+		t.Fatal(err)
+	}
 	other := filepath.Join(dir, "other.pem")
 	if err := os.WriteFile(other, []byte("kept"), 0o600); err != nil {
 		t.Fatal(err)

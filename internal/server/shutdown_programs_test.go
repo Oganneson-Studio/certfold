@@ -149,7 +149,7 @@ func TestRunKillsExecDNSProgramsWhenItAbandonsIssuance(t *testing.T) {
 		return heartbeat() != before
 	}
 
-	path := filepath.Join(t.TempDir(), "server.yaml")
+	path := filepath.Join(privateDir(t), "server.yaml")
 	raw := fmt.Sprintf(`server:
   listen: "127.0.0.1:%d"
   data_dir: %q
@@ -169,7 +169,7 @@ certificates:
     domains: ["api.example.com"]
     ca: "fake"
     dns_provider: "hook"
-`, freeTCPPort(t), t.TempDir(), testIPCSocket(t), directory, exe)
+`, freeTCPPort(t), privateDir(t), testIPCSocket(t), directory, exe)
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
 	}

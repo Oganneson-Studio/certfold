@@ -2,6 +2,7 @@ package commands
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -10,7 +11,7 @@ import (
 )
 
 func TestEventsPrintsDaemonEvents(t *testing.T) {
-	socket, listen, _ := startDaemon(t, t.TempDir(), "https://sigil.example.com")
+	socket, listen, _ := startDaemon(t, filepath.Join(t.TempDir(), "data"), "https://sigil.example.com")
 
 	text := runSigils(t, "--ipc", socket, "events")
 	first, _, _ := strings.Cut(text, "\n")

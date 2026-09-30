@@ -26,6 +26,7 @@ import (
 
 	"github.com/Oganneson-Studio/sigil/internal/ca"
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
+	"github.com/Oganneson-Studio/sigil/internal/securefile"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
@@ -43,6 +44,19 @@ func testIPCSocket(t *testing.T) string {
 	return filepath.Join(dir, "s.sock")
 }
 
+// privateDir returns a new directory that no account but the trustees of
+// securefile may access, as Run requires of data_dir and of the directory of
+// server.yaml. The temporary directory is not one on Windows, where it
+// inherits an entry for the user, which an elevated process does not trust.
+func privateDir(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "private")
+	if err := securefile.EnsurePrivateDirectory(dir); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func freeTCPPort(t *testing.T) int {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -57,7 +71,7 @@ func freeTCPPort(t *testing.T) int {
 // contacts the ACME directory.
 func writeServerConfig(t *testing.T, listen, dataDir, ipcSocket string, dnsResolvers ...string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "server.yaml")
+	path := filepath.Join(privateDir(t), "server.yaml")
 	var resolvers string
 	if len(dnsResolvers) > 0 {
 		list, err := json.Marshal(dnsResolvers)
@@ -85,7 +99,7 @@ certificates: []
 }
 
 func TestRunServesUntilCancelled(t *testing.T) {
-	dataDir := t.TempDir()
+	dataDir := privateDir(t)
 	// Bootstrap the mini-CA up front so the probe can verify the listener.
 	miniCA, err := ca.Bootstrap(dataDir)
 	if err != nil {
@@ -151,7 +165,7 @@ func enrollClient(t *testing.T, miniCA *ca.MiniCA, dataDir, name string) tls.Cer
 // a GET /v1/sync that waits for a change, instead of letting it hold up the
 // shutdown.
 func TestRunAnswersWaitingSyncAtShutdown(t *testing.T) {
-	dataDir := t.TempDir()
+	dataDir := privateDir(t)
 	miniCA, err := ca.Bootstrap(dataDir)
 	if err != nil {
 		t.Fatal(err)
@@ -248,7 +262,7 @@ func TestRunSetsConfiguredDNSResolvers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resolver.Close()
-	dataDir := t.TempDir()
+	dataDir := privateDir(t)
 	miniCA, err := ca.Bootstrap(dataDir)
 	if err != nil {
 		t.Fatal(err)
@@ -348,7 +362,7 @@ func TestRunFailsFastOnBusyHTTPSWithoutTouchingIPC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := writeServerConfig(t, busy.Addr().String(), t.TempDir(), socket)
+	path := writeServerConfig(t, busy.Addr().String(), privateDir(t), socket)
 
 	start := time.Now()
 	err = Run(context.Background(), path, setupLogs(t, io.Discard))

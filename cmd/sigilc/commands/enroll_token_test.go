@@ -71,7 +71,7 @@ func TestEnrollNeedsAToken(t *testing.T) {
 // takes the token from SIGILC_TOKEN, as the install scripts pass it.
 func TestEnrollTakesTokenFromEnvironment(t *testing.T) {
 	srv := newSigningEnrollServer(t)
-	cfgPath := filepath.Join(t.TempDir(), "client.yaml")
+	cfgPath := privateConfigPath(t)
 	t.Setenv("SIGILC_TOKEN", srv.token(t, "web-1"))
 	if _, err := runSigilcErr(t, "--config", cfgPath, "enroll"); err != nil {
 		t.Fatalf("enroll with SIGILC_TOKEN: %v", err)
