@@ -306,36 +306,14 @@ func TestExecProviderKillsProgramAfterTimeout(t *testing.T) {
 	}
 }
 
-// TestExecProviderKillsProgramWhenItsContextEnds covers sigils giving up on an
-// issuance at shutdown: the ctx the provider was built with ends, and its
-// running program is killed, not waited for.
-func TestExecProviderKillsProgramWhenItsContextEnds(t *testing.T) {
-	captureLog(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	provider, err := buildDNSProvider(ctx, config.DNSProvider{Type: "exec", Command: hookProvider(t, "sleep").argv})
-	if err != nil {
-		t.Fatal(err)
-	}
-	time.AfterFunc(200*time.Millisecond, cancel)
-
-	start := time.Now()
-	err = provider.Present("example.com", "token", "token.thumbprint")
-	if elapsed := time.Since(start); elapsed > 10*time.Second {
-		t.Fatalf("Present returned after %v, want it soon after ctx ended", elapsed)
-	}
-	if err == nil || !strings.Contains(err.Error(), context.Canceled.Error()) {
-		t.Fatalf("Present error = %v, want the cancellation", err)
-	}
-}
-
-// TestExecProviderKillsTheProcessesItsProgramStarted covers a program killed
-// on timeout while a process it started runs. Programs are often interpreters,
-// such as /bin/sh or powershell.exe, whose children, such as a curl without
-// --max-time, do the work; one left running could set the record after lego
-// has cleaned it up.
+// TestExecProviderKillsTheProcessesItsProgramStarted covers sigils giving up
+// on an issuance at shutdown: the ctx the provider was built with ends, and
+// its running program is killed, not waited for, along with the processes it
+// started. Programs are often interpreters, such as /bin/sh or
+// powershell.exe, whose children, such as a curl without --max-time, do the
+// work; one left running could set the record after lego has cleaned it up.
+// A timeout reaches the same kill.
 func TestExecProviderKillsTheProcessesItsProgramStarted(t *testing.T) {
-	setHookBounds(t, 3*time.Second, 100*time.Millisecond)
 	captureLog(t)
 	dir := t.TempDir()
 	t.Setenv(testHookDirEnv, dir)
@@ -343,15 +321,31 @@ func TestExecProviderKillsTheProcessesItsProgramStarted(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(dir, "stop"), nil, 0o600)
 		time.Sleep(200 * time.Millisecond) // let a surviving child see it and exit
 	})
-	p := hookProvider(t, "spawn")
-
-	err := p.Present("example.com", "token", "token.thumbprint")
-	if err == nil || !strings.Contains(err.Error(), "timed out after 3s") {
-		t.Fatalf("Present error = %v, want the timeout", err)
-	}
 	heartbeat := func() string {
 		data, _ := os.ReadFile(filepath.Join(dir, "heartbeat"))
 		return string(data)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	provider, err := buildDNSProvider(ctx, config.DNSProvider{Type: "exec", Command: hookProvider(t, "spawn").argv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		// Once the program's child runs, or after 10 seconds.
+		for deadline := time.Now().Add(10 * time.Second); heartbeat() == "" && time.Now().Before(deadline); {
+			time.Sleep(20 * time.Millisecond)
+		}
+		cancel()
+	}()
+
+	start := time.Now()
+	err = provider.Present("example.com", "token", "token.thumbprint")
+	if elapsed := time.Since(start); elapsed > 15*time.Second {
+		t.Fatalf("Present returned after %v, want it soon after ctx ended", elapsed)
+	}
+	if err == nil || !strings.Contains(err.Error(), context.Canceled.Error()) {
+		t.Fatalf("Present error = %v, want the cancellation", err)
 	}
 	if heartbeat() == "" {
 		t.Fatal("the program's child never ran")
@@ -360,7 +354,7 @@ func TestExecProviderKillsTheProcessesItsProgramStarted(t *testing.T) {
 	before := heartbeat()
 	time.Sleep(300 * time.Millisecond)
 	if heartbeat() != before {
-		t.Fatal("a process the exec program started is still running after the timeout killed the program")
+		t.Fatal("a process the exec program started is still running after the program was killed")
 	}
 }
 
