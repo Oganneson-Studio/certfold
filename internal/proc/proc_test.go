@@ -213,6 +213,17 @@ func TestRunDoesNotWaitForOutputHeldOpen(t *testing.T) {
 	}
 }
 
+// TestRunKeepsErrWaitDelayWhenTheTimeoutPassesMeanwhile covers a program that
+// exits 0 by itself, leaving a process that holds its output, while the
+// timeout passes during waitDelay: the program was not killed, so Run reports
+// exec.ErrWaitDelay, which on_change takes for success, and not the timeout.
+func TestRunKeepsErrWaitDelayWhenTheTimeoutPassesMeanwhile(t *testing.T) {
+	_, err := Run(context.Background(), testArgv(t, "orphan"), 3*time.Second, 6*time.Second)
+	if !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("Run error = %v, want exec.ErrWaitDelay", err)
+	}
+}
+
 func TestRunReportsTheTimeout(t *testing.T) {
 	newHeartbeat(t)
 
