@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -433,7 +435,14 @@ func (m *Model) handleTabKey(msg tea.KeyMsg) {
 		case m.tab == tabCertificates && key.Matches(msg, k.Renew):
 			name := row[0]
 			m.ask("renew", "Renew certificate "+strconv.Quote(name)+" now? sigils orders a new certificate from the CA.",
-				func(ctx context.Context) error { return b.RenewCert(ctx, name) })
+				func(ctx context.Context) error {
+					err := b.RenewCert(ctx, name)
+					if errors.Is(err, context.DeadlineExceeded) {
+						// The IPC client gave up waiting; the daemon did not.
+						return fmt.Errorf("%w; the renewal may still finish in the daemon: see `sigils events` or `sigils cert show %s`", err, name)
+					}
+					return err
+				})
 		case m.tab == tabClients && key.Matches(msg, k.Delete):
 			name := row[0]
 			m.ask("delete", "Delete client "+strconv.Quote(name)+"? This revokes its access immediately.",

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"os/signal"
 	"strings"
 	"syscall"
 	"time"
@@ -156,7 +158,15 @@ func runCertRenew(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
-	if err := c.RenewCert(commandContext(cmd), args[0]); err != nil {
+	// Ctrl-C ends the wait rather than the process, so that the error can
+	// say what becomes of the renewal: once it runs, the daemon finishes it
+	// and stores the certificate whether anyone waits or not.
+	ctx, stop := signal.NotifyContext(commandContext(cmd), os.Interrupt)
+	defer stop()
+	if err := c.RenewCert(ctx, args[0]); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("%w; the renewal may still finish in the daemon: see `sigils events` or `sigils cert show %s`", err, args[0])
+		}
 		return err
 	}
 	if asJSON, _ := cmd.Root().PersistentFlags().GetBool("json"); asJSON {

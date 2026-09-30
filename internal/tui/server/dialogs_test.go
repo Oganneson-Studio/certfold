@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -43,6 +45,17 @@ func TestConfirmationActsOnlyOnY(t *testing.T) {
 				t.Error("the confirmation stayed open after y")
 			}
 		})
+	}
+}
+
+// A renewal that the IPC client gave up waiting for, after five minutes, may
+// still finish in the daemon, and the status line says so.
+func TestRenewalNotWaitedForMayStillFinish(t *testing.T) {
+	fake := newFake(3)
+	fake.setActionErr(fmt.Errorf("ipc request: %w", context.DeadlineExceeded))
+	m, _ := press(t, onTab(t, fake, tabCertificates), "R", "y")
+	if !shows(m, "the renewal may still finish in the daemon: see `sigils events` or `sigils cert show mail`") {
+		t.Errorf("status after a renewal that timed out: %q", m.View())
 	}
 }
 
