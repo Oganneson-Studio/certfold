@@ -219,8 +219,10 @@ func TestInstallPs1WaitsForTheDaemon(t *testing.T) {
 }
 
 // TestInstallPs1LeavesTheTokenAlone checks what install.ps1 must not do: turn
-// off the checks of TLS, or use $Token anywhere but where it takes, asks for
-// and hands on the token. PowerShell names variables regardless of case.
+// off the checks of TLS, touch the TLS settings of .NET, which only the usage
+// comments name, compile code of its own, or use $Token, in any scope,
+// anywhere but where it takes, asks for and hands on the token. PowerShell
+// names variables and types regardless of case.
 func TestInstallPs1LeavesTheTokenAlone(t *testing.T) {
 	script := getInstallScript(t, "/install.ps1").Body.String()
 	for _, bad := range []string{"ServerCertificateValidationCallback", "SkipCertificateCheck"} {
@@ -228,7 +230,17 @@ func TestInstallPs1LeavesTheTokenAlone(t *testing.T) {
 			t.Errorf("script contains %q:\n%s", bad, script)
 		}
 	}
-	onlyOn(t, script, regexp.MustCompile(`(?i)\$\{?token\b`),
+	_, withToken := InstallCommands(installTestURL, "<TOKEN>")
+	_, askToken := installCommands(installTestURL, "", "")
+	_, upgrade := installCommands(installTestURL, "", " -Upgrade")
+	usage := map[string]bool{"#   " + withToken: true, "#   " + askToken: true, "#   " + upgrade: true}
+	for _, line := range strings.Split(script, "\n") {
+		lower := strings.ToLower(line)
+		if (strings.Contains(lower, "servicepointmanager") || strings.Contains(lower, "add-type")) && !usage[line] {
+			t.Errorf("line %q touches the TLS settings of .NET or compiles code", line)
+		}
+	}
+	onlyOn(t, script, regexp.MustCompile(`(?i)(\$\{?|:)token\b`),
 		"param([string]$Token, [switch]$Upgrade)",
 		"if ($Upgrade -and $Token) {",
 		"if (-not $Upgrade -and -not $Token) {",
@@ -336,19 +348,28 @@ func TestInstallShWaitsForTheDaemon(t *testing.T) {
 }
 
 // TestInstallShLeavesTheTokenAlone checks what install.sh must not do: trace
-// its commands, export variables to every program it runs, run curl in any
-// other way than the one download over https, or use $TOKEN anywhere but
-// where it takes and hands on the token.
+// its commands, export variables to every program it runs, in any spelling,
+// run curl in any other way than the one download over https, or use the
+// token, as $TOKEN or as an argument, anywhere but where it takes and hands
+// it on.
 func TestInstallShLeavesTheTokenAlone(t *testing.T) {
 	script := getInstallScript(t, "/install.sh").Body.String()
-	for _, bad := range []string{"set -x", "--insecure", "export"} {
+	for _, bad := range []string{"--insecure", "export"} {
 		if strings.Contains(script, bad) {
 			t.Errorf("script contains %q:\n%s", bad, script)
 		}
 	}
-	if k := regexp.MustCompile(`(^|\s)-k\b`).FindString(script); k != "" {
-		t.Errorf("script contains %q:\n%s", k, script)
+	for _, bad := range []string{
+		`(^|\s)-k\b`,
+		`\bset\s+-\S*[xa]`,
+		`\bset\s+-o\s+(xtrace|allexport)`,
+		`\$\{?[*@]`,
+	} {
+		if found := regexp.MustCompile(bad).FindString(script); found != "" {
+			t.Errorf("script contains %q:\n%s", found, script)
+		}
 	}
+	onlyOn(t, script, regexp.MustCompile(`\$\{?2\b`), `      TOKEN="$2"`)
 	// Outside comments, curl runs only to download sigilc.
 	const download = `curl -q -fsSL --proto '=https' --proto-redir '=https' "$SERVER_URL/download/sigilc?os=$OS&arch=$ARCH" -o "$TMP"`
 	for _, line := range strings.Split(script, "\n") {

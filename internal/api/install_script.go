@@ -51,7 +51,7 @@ service_failed() {
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --token)
-      if [ "$#" -lt 2 ] || [ -z "$2" ]; then usage; fi
+      if [ "$#" -lt 2 ]; then usage; fi
       TOKEN="$2"
       shift 2
       ;;
