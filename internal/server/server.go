@@ -144,7 +144,7 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 		},
 		Tokens: &ipc.TokenControlDeps{
 			Create: func(ctx context.Context, req ipc.CreateTokenRequest) (ipc.CreateTokenResponse, error) {
-				return createToken(ctx, enrollSrv, db.Clients, runtimeConfig.Current(), req)
+				return createToken(ctx, enrollSrv, db, runtimeConfig.Current(), req)
 			},
 		},
 		Events: logs.Events,
@@ -211,11 +211,16 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 }
 
 // createToken issues an enrollment token bound to the public base URL of the
-// running configuration, the URL clients use to reach this server. It refuses
-// the name of an enrolled client unless req.Replace is set: enrollment
-// replaces the client of the name, so a mistyped name would hand another
-// host's certificates and keys to the new one without a word.
-func createToken(ctx context.Context, enrollSrv *enroll.Server, clients *store.ClientRepo, cfg *config.ServerConfig, req ipc.CreateTokenRequest) (ipc.CreateTokenResponse, error) {
+// running configuration, the URL clients use to reach this server.
+//
+// Enrollment replaces the client of the token's name, so a name typed twice,
+// or the name of another host, would hand one host's certificates and keys
+// to another without a word. Unless req.Replace is set, createToken refuses
+// the name of an enrolled client, and a name with an unused token that has
+// not expired, whose host would replace the one that enrolls first. With
+// req.Replace, it revokes the unused tokens of the name, which would replace
+// the host that enrolls with the new one.
+func createToken(ctx context.Context, enrollSrv *enroll.Server, db *store.DB, cfg *config.ServerConfig, req ipc.CreateTokenRequest) (ipc.CreateTokenResponse, error) {
 	name, ttl := req.Name, req.TTL
 	if ttl <= 0 {
 		return ipc.CreateTokenResponse{}, fmt.Errorf("token lifetime must be positive, got %s", ttl)
@@ -237,15 +242,40 @@ func createToken(ctx context.Context, enrollSrv *enroll.Server, clients *store.C
 			return ipc.CreateTokenResponse{}, fmt.Errorf("server.public_url must be set: the URL derived from server.listen %w", err)
 		}
 	}
+	tokens, err := db.Tokens.List(ctx, nil)
+	if err != nil {
+		return ipc.CreateTokenResponse{}, fmt.Errorf("list enrollment tokens: %w", err)
+	}
+	var unused []*store.TokenRecord
+	for _, tok := range tokens {
+		if tok.Name == name && tok.UsedAt.IsZero() {
+			unused = append(unused, tok)
+		}
+	}
 	if !req.Replace {
-		_, err := clients.Get(ctx, name, nil)
+		_, err := db.Clients.Get(ctx, name, nil)
 		if err == nil {
 			return ipc.CreateTokenResponse{}, fmt.Errorf("client %q is already enrolled: the host that enrolls with a token for this name replaces it, "+
-				"takes over its certificates and locks the enrolled host out; create the token with --replace if that is intended", name)
+				"takes over its certificates and locks the enrolled host out; %w", name, ipc.ErrReplaceRequired)
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return ipc.CreateTokenResponse{}, fmt.Errorf("look up client %q: %w", name, err)
 		}
+		now := time.Now()
+		for _, tok := range unused {
+			if now.Before(tok.ExpiresAt) {
+				return ipc.CreateTokenResponse{}, fmt.Errorf("enrollment token %s for %q is unused: of the hosts that enroll with tokens for one name, "+
+					"each replaces the one before, takes over its certificates and locks it out; %w", tok.TokenID, name, ipc.ErrReplaceRequired)
+			}
+		}
+	}
+	// A replacement revokes the unused tokens of the name: whichever host
+	// enrolled with one of them last would replace the host of the new one.
+	for _, tok := range unused {
+		if err := db.Tokens.Delete(ctx, tok.TokenID, nil); err != nil {
+			return ipc.CreateTokenResponse{}, fmt.Errorf("revoke enrollment token %s: %w", tok.TokenID, err)
+		}
+		slog.Info("enrollment token revoked", "token", tok.TokenID)
 	}
 	token, err := enrollSrv.Create(ctx, serverURL, name, ttl)
 	if err != nil {
@@ -261,6 +291,7 @@ func createToken(ctx context.Context, enrollSrv *enroll.Server, clients *store.C
 		Token:               token,
 		TokenID:             payload.TokenID,
 		ExpiresAt:           payload.ExpiresAt,
+		Revoked:             len(unused),
 		ServerURL:           serverURL,
 		PublicURLConfigured: cfg.Server.PublicURL != "",
 	}, nil

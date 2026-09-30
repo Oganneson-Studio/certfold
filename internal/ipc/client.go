@@ -76,16 +76,30 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		detail := strings.TrimSpace(string(message))
-		if detail != "" {
-			return fmt.Errorf("ipc %s %s: server returned %d: %s", method, path, resp.StatusCode, detail)
+		text := fmt.Sprintf("ipc %s %s: server returned %d", method, path, resp.StatusCode)
+		if detail := strings.TrimSpace(string(message)); detail != "" {
+			text += ": " + detail
 		}
-		return fmt.Errorf("ipc %s %s: server returned %d", method, path, resp.StatusCode)
+		return &statusError{code: resp.StatusCode, text: text}
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
 	}
 	return nil
+}
+
+// statusError is an answer of the daemon with an error status.
+type statusError struct {
+	code int
+	text string
+}
+
+func (e *statusError) Error() string { return e.text }
+
+// Is reports status 409 as ErrReplaceRequired, the only error the daemon
+// answers with it.
+func (e *statusError) Is(target error) bool {
+	return target == ErrReplaceRequired && e.code == http.StatusConflict
 }
 
 // ListCerts returns the configured certificates and their issuance state.

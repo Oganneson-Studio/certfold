@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -223,6 +224,7 @@ type tokenCreateResult struct {
 	Token          string    `json:"token"`
 	TokenID        string    `json:"token_id"`
 	ExpiresAt      time.Time `json:"expires_at"`
+	Revoked        int       `json:"revoked,omitempty"`
 	InstallSh      string    `json:"install_sh"`
 	InstallWindows string    `json:"install_ps1"`
 }
@@ -242,6 +244,9 @@ func runTokenCreate(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
 	created, err := c.CreateToken(commandContext(cmd), ipc.CreateTokenRequest{Name: name, TTL: ttl, Replace: replace})
+	if errors.Is(err, ipc.ErrReplaceRequired) {
+		return fmt.Errorf("create token: %w; to create it anyway, add --replace, which also revokes the unused tokens of %q", err, name)
+	}
 	if err != nil {
 		return fmt.Errorf("create token: %w", err)
 	}
@@ -266,9 +271,13 @@ func runTokenCreate(cmd *cobra.Command, _ []string) error {
 			Token:          created.Token,
 			TokenID:        created.TokenID,
 			ExpiresAt:      created.ExpiresAt,
+			Revoked:        created.Revoked,
 			InstallSh:      sh,
 			InstallWindows: ps1,
 		})
+	}
+	if created.Revoked > 0 {
+		fmt.Fprintf(out, "Revoked:  %d unused token(s) for %q\n", created.Revoked, name)
 	}
 	fmt.Fprintf(out, "Token ID: %s\n", created.TokenID)
 	fmt.Fprintf(out, "Expires:  %s\n", formatTime(created.ExpiresAt, timeLayout))

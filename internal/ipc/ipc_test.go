@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -432,6 +433,28 @@ func TestCreateTokenReportsDaemonRejection(t *testing.T) {
 	_, err := newTestClient(ts).CreateToken(context.Background(), CreateTokenRequest{Name: "Web 1", TTL: time.Hour})
 	if err == nil || !strings.Contains(err.Error(), `invalid client name "Web 1"`) || !strings.Contains(err.Error(), "422") {
 		t.Fatalf("CreateToken error = %v, want the daemon's reason with status 422", err)
+	}
+	if errors.Is(err, ErrReplaceRequired) {
+		t.Errorf("CreateToken error %v is ErrReplaceRequired", err)
+	}
+}
+
+// The daemon's refusal of a name that needs a replacement reaches the caller
+// as ErrReplaceRequired, with the daemon's reason, so that the CLI and the
+// TUI can each say how to replace.
+func TestCreateTokenReportsReplaceRequired(t *testing.T) {
+	const reason = `client "web-1" is already enrolled`
+	h := &ipcHandlers{deps: ServerDeps{Tokens: &TokenControlDeps{
+		Create: func(context.Context, CreateTokenRequest) (CreateTokenResponse, error) {
+			return CreateTokenResponse{}, fmt.Errorf("%s; %w", reason, ErrReplaceRequired)
+		},
+	}}}
+	ts := httptest.NewServer(buildIPCRouter(h))
+	defer ts.Close()
+
+	_, err := newTestClient(ts).CreateToken(context.Background(), CreateTokenRequest{Name: "web-1", TTL: time.Hour})
+	if !errors.Is(err, ErrReplaceRequired) || !strings.Contains(err.Error(), reason) || !strings.Contains(err.Error(), "409") {
+		t.Fatalf("CreateToken error = %v, want ErrReplaceRequired with the daemon's reason and status 409", err)
 	}
 }
 

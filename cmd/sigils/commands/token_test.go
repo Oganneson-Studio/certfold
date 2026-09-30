@@ -290,6 +290,30 @@ func TestTokenCreatePassesReplace(t *testing.T) {
 	}
 }
 
+// TestTokenCreateSaysHowToReplace covers the daemon's refusal of a name that
+// an enrolled client or an unused token has: the error says to add
+// --replace, and a replacement says how many unused tokens it revoked.
+func TestTokenCreateSaysHowToReplace(t *testing.T) {
+	socket := serveTokens(t, func(_ context.Context, req ipc.CreateTokenRequest) (ipc.CreateTokenResponse, error) {
+		if !req.Replace {
+			return ipc.CreateTokenResponse{}, fmt.Errorf("enrollment token t1 for %q is unused; %w", req.Name, ipc.ErrReplaceRequired)
+		}
+		return ipc.CreateTokenResponse{Token: "token", TokenID: "0123456789abcdef0123456789abcdef", ExpiresAt: time.Now().Add(req.TTL),
+			Revoked: 2, ServerURL: "https://sigil.example.com", PublicURLConfigured: true}, nil
+	})
+	_, _, err := tokenCreate(socket, "--name", "web-1")
+	if !errors.Is(err, ipc.ErrReplaceRequired) || !strings.Contains(err.Error(), `add --replace, which also revokes the unused tokens of "web-1"`) {
+		t.Errorf("token create for a name that needs a replacement: error = %v, want one that says to add --replace", err)
+	}
+	stdout, _, err := tokenCreate(socket, "--name", "web-1", "--replace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout, "Revoked:  2 unused token(s) for \"web-1\"\n") {
+		t.Errorf("token create --replace printed:\n%s\nwant the number of tokens it revoked", stdout)
+	}
+}
+
 // TestTokenCreatePrintsJSON covers token create --json, which prints what a
 // script needs: the token, its ID and expiry, and the install commands.
 func TestTokenCreatePrintsJSON(t *testing.T) {

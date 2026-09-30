@@ -177,7 +177,11 @@ func (h *ipcHandlers) createToken(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// The daemon's reason (for example an invalid client name) is what
 		// the operator needs to see.
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		status := http.StatusUnprocessableEntity
+		if errors.Is(err, ErrReplaceRequired) {
+			status = http.StatusConflict
+		}
+		http.Error(w, err.Error(), status)
 		return
 	}
 	writeJSON(w, http.StatusCreated, resp)

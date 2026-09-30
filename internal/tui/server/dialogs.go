@@ -94,19 +94,25 @@ func (m *Model) updateForm(msg tea.KeyMsg) tea.Cmd {
 				return createdMsg{name: name, token: token, err: err}
 			}
 		}
-		// The daemon refuses the name of an enrolled client unless asked to
-		// replace it. The clients are those of the last refresh; one enrolled
-		// since then gets the daemon's refusal.
-		if slices.ContainsFunc(m.clients, func(c *ipc.ClientInfo) bool { return c.Name == name }) {
-			m.confirm = &confirmation{
-				verb: "replace",
-				prompt: "Client " + strconv.Quote(name) + " is enrolled. The host that enrolls with a token for this name " +
-					"replaces it, takes over its certificates and locks the enrolled host out. Create the token?",
-				run: create(true),
-			}
-			return nil
+		// The daemon refuses the name of an enrolled client, or of an unused
+		// token, unless asked to replace. The lists are those of the last
+		// refresh; a client or token that is newer gets the daemon's refusal.
+		var taken string
+		switch {
+		case slices.ContainsFunc(m.clients, func(c *ipc.ClientInfo) bool { return c.Name == name }):
+			taken = "Client " + strconv.Quote(name) + " is enrolled. "
+		case slices.ContainsFunc(m.tokens, func(t *ipc.TokenInfo) bool { return t.Name == name && tokenStatus(t, time.Now()) == "unused" }):
+			taken = "An enrollment token for " + strconv.Quote(name) + " is unused. "
+		default:
+			return create(false)
 		}
-		return create(false)
+		m.confirm = &confirmation{
+			verb: "replace",
+			prompt: taken + "The host that enrolls with a token for this name replaces the one before it, takes over its " +
+				"certificates and locks it out. Create the token, and revoke the unused tokens for this name?",
+			run: create(true),
+		}
+		return nil
 	default:
 		value := &f.name
 		if f.onTTL {

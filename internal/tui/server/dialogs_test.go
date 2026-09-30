@@ -132,6 +132,30 @@ func TestTokenForEnrolledNameAsksFirst(t *testing.T) {
 	}
 }
 
+// TestTokenForNameWithUnusedTokenAsksFirst covers a new token for a name
+// with an unused token: of the two hosts that enroll with them, the second
+// replaces the first, so the TUI asks as for an enrolled client. A token
+// that was used or has expired enrolls no host.
+func TestTokenForNameWithUnusedTokenAsksFirst(t *testing.T) {
+	fake := newFake(3)
+	m, _ := press(t, onTab(t, fake, tabTokens), "n", "web-6", "enter")
+	if m.confirm == nil || !shows(m, `An enrollment token for "web-6" is unused.`) || len(fake.changes()) != 0 {
+		t.Fatalf("token for web-6, whose token is unused: confirmation %v, calls %q; want a confirmation and no call", m.confirm, fake.changes())
+	}
+	press(t, m, "y")
+	if calls := fake.changes(); !slices.Equal(calls, []string{"CreateToken web-6 1h0m0s replace"}) {
+		t.Errorf("y: backend calls %q, want the token created as a replacement", calls)
+	}
+
+	for _, name := range []string{"web-5", "web-4"} { // used, expired
+		fake := newFake(3)
+		m, _ := press(t, onTab(t, fake, tabTokens), "n", name, "enter")
+		if calls := fake.changes(); m.confirm != nil || !slices.Equal(calls, []string{"CreateToken " + name + " 1h0m0s"}) {
+			t.Errorf("token for %s: confirmation %v, calls %q; want the token created at once", name, m.confirm, calls)
+		}
+	}
+}
+
 func TestNewTokenShownOnlyInItsBox(t *testing.T) {
 	fake := newFake(3)
 	m, _ := press(t, onTab(t, fake, tabTokens), "n", "web-9", "enter")

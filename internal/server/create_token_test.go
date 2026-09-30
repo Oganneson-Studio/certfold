@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -42,7 +43,7 @@ func TestCreateTokenRequiresAHostClientsCanReach(t *testing.T) {
 	}
 	for i, tt := range tests {
 		cfg := &config.ServerConfig{Server: config.ServerSection{Listen: tt.listen, PublicURL: tt.publicURL}}
-		resp, err := createToken(ctx, enrollSrv, db.Clients, cfg, ipc.CreateTokenRequest{Name: fmt.Sprintf("web-%d", i), TTL: time.Hour})
+		resp, err := createToken(ctx, enrollSrv, db, cfg, ipc.CreateTokenRequest{Name: fmt.Sprintf("web-%d", i), TTL: time.Hour})
 		if tt.wantURL == "" {
 			want := fmt.Sprintf("server.public_url must be set: server.listen %q names no host clients can reach", tt.listen)
 			if err == nil || err.Error() != want {
@@ -90,9 +91,9 @@ func TestCreateTokenRequiresReplaceForAnEnrolledName(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = createToken(ctx, enrollSrv, db.Clients, cfg, ipc.CreateTokenRequest{Name: "web-1", TTL: time.Hour})
-	if err == nil || !strings.Contains(err.Error(), `client "web-1" is already enrolled`) || !strings.Contains(err.Error(), "--replace") {
-		t.Fatalf("token for an enrolled name: error = %v, want one that asks for --replace", err)
+	_, err = createToken(ctx, enrollSrv, db, cfg, ipc.CreateTokenRequest{Name: "web-1", TTL: time.Hour})
+	if !errors.Is(err, ipc.ErrReplaceRequired) || !strings.Contains(err.Error(), `client "web-1" is already enrolled`) {
+		t.Fatalf("token for an enrolled name: error = %v, want one that asks for a replacement", err)
 	}
 	if tokens, err := db.Tokens.List(ctx, nil); err != nil || len(tokens) != 0 {
 		t.Fatalf("stored %d tokens for the refused name (err %v)", len(tokens), err)
@@ -102,7 +103,7 @@ func TestCreateTokenRequiresReplaceForAnEnrolledName(t *testing.T) {
 		{Name: "web-1", TTL: time.Hour, Replace: true},
 		{Name: "web-2", TTL: time.Hour},
 	} {
-		if _, err := createToken(ctx, enrollSrv, db.Clients, cfg, req); err != nil {
+		if _, err := createToken(ctx, enrollSrv, db, cfg, req); err != nil {
 			t.Errorf("createToken(%+v): %v", req, err)
 		}
 	}

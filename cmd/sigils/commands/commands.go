@@ -106,10 +106,10 @@ func newTokenCmd() *cobra.Command {
 		Short: "Create an enrollment token and print one-line install commands",
 		RunE:  runTokenCreate,
 	}
-	create.Flags().String("name", "", "client name; the name of an enrolled client needs --replace")
+	create.Flags().String("name", "", "client name; the name of an enrolled client, or one with an unused token, needs --replace")
 	create.Flags().Duration("expires", 0, "token lifetime, at most 168h (default 1h)")
-	create.Flags().Bool("replace", false, "create a token for the name of an enrolled client: the host that enrolls with it "+
-		"replaces the client, takes over its certificates and locks the enrolled host out")
+	create.Flags().Bool("replace", false, "create a token for the name of an enrolled client, or one with an unused token, and revoke "+
+		"the unused tokens: the host that enrolls with it replaces the client, takes over its certificates and locks the enrolled host out")
 	_ = create.MarkFlagRequired("name")
 
 	cmd.AddCommand(
