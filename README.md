@@ -146,6 +146,17 @@ sudo rm -rf /var/lib/sigilc
 sudo sigils client remove <name>
 ```
 
+To uninstall on Windows (elevated PowerShell):
+
+```powershell
+sigilc service stop
+sigilc service uninstall
+Remove-Item -Recurse -Force 'C:\Program Files\Sigil'
+Remove-Item -Recurse -Force 'C:\ProgramData\Sigil'
+# on the server, to revoke access:
+sigils client remove <name>
+```
+
 On Windows, run the daemons as services (LocalSystem) or from an elevated prompt. The CLI only talks to a named pipe owned by SYSTEM or Administrators, so a low-privilege process cannot impersonate the daemon.
 
 To register `sigils` as a Windows service:
@@ -322,7 +333,7 @@ Values in `server.yaml` and `client.yaml` can reference environment variables as
 
 ## Private key outputs on Windows
 
-Outputs that contain a private key (`pem-key`, `pem-bundle`, `pkcs12`) are created with a protected ACL that grants access only to SYSTEM and Administrators. `mode` is not applied on Windows and cannot widen that ACL. To let a service such as IIS or nginx read a key, set `owner` on that output to the service's account name or SID; that account gets read access but does not become the file's owner. `owner` only takes effect on private-key outputs; on other formats it is silently ignored.
+Outputs that contain a private key (`pem-key`, `pem-bundle`, `pkcs12`) are created with a protected ACL that grants full access to SYSTEM and Administrators (and the current user when the process runs without elevation). `mode` is not applied on Windows and cannot widen that ACL. To let a service such as IIS or nginx read a key, set `owner` on that output to the service's account name or SID; that account gets read access but does not become the file's owner. `owner` only takes effect on private-key outputs; on other formats it is silently ignored.
 
 On Windows, reconciliation compares only the content of each output, not its ACL or ownership. A key file whose ACL was loosened, or that inherits its directory's ACL because another tool or an earlier build wrote it, keeps that ACL until its content changes at the next renewal. Removing `owner` from the configuration likewise leaves the previous account and its read access in place, on Unix as well. To apply the configuration at once, delete the file; the next round recreates it.
 
@@ -396,7 +407,7 @@ Under systemd, `service install` writes a unit with `Restart=on-failure`, `Resta
 
 ## Current limitations
 
-- With `--token` / `-Token`, the token appears in the process command line. Omit the flag and let the script prompt for it to keep it off the command line. `sigilc enroll` without `--token` reads the `SIGILC_TOKEN` environment variable.
+- With `--token` / `-Token`, the token appears in the process command line; see [One-line installation](#one-line-installation) for how to avoid this.
 - The container E2E issues certificates through the `exec` DNS provider; lego's built-in cloud DNS providers are not covered by an E2E.
 - Reconciliation does not compare Windows ACLs; see [Private key outputs on Windows](#private-key-outputs-on-windows).
 - Two output paths that name the same file, one relative and one absolute, are not detected as duplicates.
@@ -424,7 +435,8 @@ C:\ProgramData\Sigil is owned by DESKTOP\Alice, and only SYSTEM, Administrators 
 On Linux, if the data directory was created with mode `0755`:
 
 ```
-/var/lib/sigils gives the group or others access. ...
+/var/lib/sigils has mode 0755, and only its owner may have access to it. Check the files in it, then run:
+  chmod 700 "/var/lib/sigils"
 ```
 
 The simplest fix in both cases is to remove the directory and let the daemon recreate it. After that, run `service install` if the service was uninstalled.
