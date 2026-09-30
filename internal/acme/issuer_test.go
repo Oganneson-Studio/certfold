@@ -982,6 +982,48 @@ func TestDamagedStoredRegistrationIsRepairedWithTheSameAccount(t *testing.T) {
 	}
 }
 
+// cancellingAccounts is an account store that cancels the issuance's ctx as
+// soon as the account is read: shutdown, or an IPC caller that leaves, while
+// lego registers the account, which it does not interrupt.
+type cancellingAccounts struct {
+	*store.AccountRepo
+	cancel context.CancelFunc
+}
+
+func (s cancellingAccounts) Get(ctx context.Context, ca string, tx *sql.Tx) (*store.AccountRecord, error) {
+	defer s.cancel()
+	return s.AccountRepo.Get(ctx, ca, tx)
+}
+
+// An account the CA has registered is stored even when the caller leaves
+// during the registration: its key is otherwise lost, and the next issuance
+// registers another account, which a CA that binds accounts to a one-time
+// external account binding refuses.
+func TestRegisteredAccountIsStoredWhenTheCallerLeaves(t *testing.T) {
+	server := newFakeACME(t, 1)
+	db := openAccountStore(t)
+	cfg, spec := renewalInfoConfig(server.URL + "/dir")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// The fake CA fails the order, after the account is registered.
+	_, _ = (&Issuer{accounts: cancellingAccounts{db.Accounts, cancel}}).Issue(ctx, cfg, spec, nil)
+	_, _ = NewIssuer(db.Accounts).Issue(context.Background(), cfg, spec, nil)
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	for _, problem := range server.problems {
+		t.Errorf("fake ACME server: %s", problem)
+	}
+	if len(server.keys) != 1 {
+		t.Fatalf("the CA registered %d accounts, want 1: the first registration was not stored", len(server.keys))
+	}
+	_, key, account := storedAccount(t, db)
+	if account != server.accounts[0] || !key.PublicKey.Equal(server.keys[account]) {
+		t.Errorf("stored account %q is not the one the CA registered first, %q", account, server.accounts[0])
+	}
+}
+
 // ---------------------------------------------------------------------------
 // newResult
 // ---------------------------------------------------------------------------

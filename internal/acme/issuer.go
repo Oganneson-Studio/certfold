@@ -297,7 +297,9 @@ func (i *Issuer) accountClient(ctx context.Context, cfg *config.ServerConfig, sp
 	}
 	rec.Email = cfg.ACME.Email
 	rec.RegistrationJSON = string(regJSON)
-	if err := i.accounts.Upsert(ctx, rec, nil); err != nil {
+	// The CA holds the account now, whether or not the caller is still
+	// there: lego does not stop for ctx, and a key that is not stored is lost.
+	if err := i.accounts.Upsert(context.WithoutCancel(ctx), rec, nil); err != nil {
 		return nil, fmt.Errorf("store account: %w", err)
 	}
 	return client, nil
