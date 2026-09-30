@@ -163,10 +163,6 @@ func runFetch(cmd *cobra.Command, _ []string) error {
 // TUI default
 // ---------------------------------------------------------------------------
 
-func runDefaultTUI(cmd *cobra.Command, args []string) error {
-	return runClientTUI(cmd, args)
-}
-
 func runClientTUI(cmd *cobra.Command, _ []string) error {
 	ipcClient, err := dialDaemon(cmd)
 	if err != nil {

@@ -154,7 +154,7 @@ func daemonNotRunning(err error) bool {
 }
 
 func runCertRenew(cmd *cobra.Command, args []string) error {
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -177,7 +177,7 @@ func runCertRenew(cmd *cobra.Command, args []string) error {
 }
 
 func runClientShow(cmd *cobra.Command, args []string) error {
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}

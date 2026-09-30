@@ -42,9 +42,6 @@ type serverReloadResult struct {
 }
 
 func runReload(cmd *cobra.Command, _ []string) error {
-	if cmd == nil {
-		return fmt.Errorf("command context unavailable")
-	}
 	c, err := dialReloadServer(cmd)
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
@@ -90,7 +87,7 @@ func runConfigValidate(cmd *cobra.Command, _ []string) error {
 
 func runCertList(cmd *cobra.Command, _ []string) error {
 	asJSON, _ := cmd.Root().PersistentFlags().GetBool("json")
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -115,7 +112,7 @@ func runCertList(cmd *cobra.Command, _ []string) error {
 
 func runCertShow(cmd *cobra.Command, args []string) error {
 	asJSON, _ := cmd.Root().PersistentFlags().GetBool("json")
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -158,7 +155,7 @@ func runCertShow(cmd *cobra.Command, args []string) error {
 
 func runClientList(cmd *cobra.Command, _ []string) error {
 	asJSON, _ := cmd.Root().PersistentFlags().GetBool("json")
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -184,7 +181,7 @@ func runClientList(cmd *cobra.Command, _ []string) error {
 }
 
 func runClientRemove(cmd *cobra.Command, args []string) error {
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -240,7 +237,7 @@ func runTokenCreate(cmd *cobra.Command, _ []string) error {
 
 	// The running daemon owns the store and the mini-CA, and binds the token
 	// to the public URL of the configuration it runs.
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -285,7 +282,7 @@ func runTokenCreate(cmd *cobra.Command, _ []string) error {
 
 func runTokenList(cmd *cobra.Command, _ []string) error {
 	asJSON, _ := cmd.Root().PersistentFlags().GetBool("json")
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -316,7 +313,7 @@ func runTokenList(cmd *cobra.Command, _ []string) error {
 }
 
 func runTokenRevoke(cmd *cobra.Command, args []string) error {
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -332,7 +329,7 @@ func runTokenRevoke(cmd *cobra.Command, args []string) error {
 // ---------------------------------------------------------------------------
 
 func runServerTUI(cmd *cobra.Command, _ []string) error {
-	c, err := dialIPC(serverIPCSocket(cmd))
+	c, err := ipc.NewClient(serverIPCSocket(cmd))
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -344,16 +341,12 @@ func runServerTUI(cmd *cobra.Command, _ []string) error {
 // helpers
 // ---------------------------------------------------------------------------
 
-func dialIPC(path string) (*ipc.Client, error) {
-	return ipc.NewClient(path)
-}
-
 type serverReloader interface {
 	ReloadServer(context.Context) error
 }
 
 var dialServerReloader = func(path string) (serverReloader, error) {
-	return dialIPC(path)
+	return ipc.NewClient(path)
 }
 
 func printJSON(v any) error {

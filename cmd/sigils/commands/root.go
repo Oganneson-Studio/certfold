@@ -14,11 +14,11 @@ Run without arguments to open the TUI management panel.
 Use subcommands to manage certificates, clients, and enrollment tokens.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE:          runDefaultTUI,
+		RunE:          runServerTUI,
 	}
 
 	cmd.PersistentFlags().String("config", "", "path to server.yaml (default: $SIGILS_CONFIG, else platform-specific)")
-	cmd.PersistentFlags().String("ipc", "", "IPC socket path (default: platform-specific)")
+	cmd.PersistentFlags().String("ipc", "", "IPC socket path (default: server.ipc_socket in the config, else platform-specific)")
 	cmd.PersistentFlags().Bool("json", false, "emit machine-readable JSON output")
 
 	cmd.AddCommand(

@@ -8,10 +8,6 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/version"
 )
 
-func runDefaultTUI(cmd *cobra.Command, args []string) error {
-	return runServerTUI(cmd, args)
-}
-
 func newServeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "serve",

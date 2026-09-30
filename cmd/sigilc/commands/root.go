@@ -14,11 +14,11 @@ Run without arguments to open the TUI status panel.
 Use 'enroll' to bootstrap a new client against a sigils instance.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE:          runDefaultTUI,
+		RunE:          runClientTUI,
 	}
 
 	cmd.PersistentFlags().String("config", "", "path to client.yaml (default: $SIGILC_CONFIG, else platform-specific)")
-	cmd.PersistentFlags().String("ipc", "", "IPC socket path (default: platform-specific)")
+	cmd.PersistentFlags().String("ipc", "", "IPC socket path (default: client.ipc_socket in the config, else platform-specific)")
 
 	cmd.AddCommand(
 		newServeCmd(),
