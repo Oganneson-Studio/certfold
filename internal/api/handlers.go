@@ -1,13 +1,12 @@
 package api
 
 import (
-	"crypto/sha256"
 	"crypto/x509"
 	"database/sql"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -22,6 +21,7 @@ import (
 
 	"github.com/Oganneson-Studio/sigil/internal/ca"
 	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/sigil/internal/enroll"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 	"github.com/Oganneson-Studio/sigil/pkg/proto"
 )
@@ -30,6 +30,15 @@ import (
 // last_seen. A variable so that tests can shorten it.
 var lastSeenInterval = time.Minute
 
+// downloadWriteTimeout is how long GET /download/sigilc may take to send the
+// binary. Anyone can download it, so a reader that slow holds a connection
+// that long.
+const downloadWriteTimeout = 10 * time.Minute
+
+// renewInterval is the least time between two identity renewals of one
+// client. sigilc renews its identity about every 60 days.
+const renewInterval = time.Minute
+
 type handlers struct {
 	deps Deps
 
@@ -37,10 +46,25 @@ type handlers struct {
 	// last_seen was last written, or is being written.
 	seenMu   sync.Mutex
 	lastSeen map[string]time.Time
+
+	// syncMu guards syncing, which counts for each client its GET /v1/sync
+	// requests in progress.
+	syncMu  sync.Mutex
+	syncing map[string]int
+
+	// renewMu guards renewed, which holds for each client the time of its
+	// last identity renewal, or of the one in progress.
+	renewMu sync.Mutex
+	renewed map[string]time.Time
 }
 
 func newHandlers(deps Deps) *handlers {
-	return &handlers{deps: deps, lastSeen: make(map[string]time.Time)}
+	return &handlers{
+		deps:     deps,
+		lastSeen: make(map[string]time.Time),
+		syncing:  make(map[string]int),
+		renewed:  make(map[string]time.Time),
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -57,13 +81,36 @@ func readJSON(r *http.Request, v any) error {
 	return json.NewDecoder(r.Body).Decode(v)
 }
 
+// parseCSR reads the CSR of an enrollment or identity renewal: one PEM
+// CERTIFICATE REQUEST block and nothing else, signed by its own key. The
+// error is the answer to the client.
+func parseCSR(csrPEM string) (*x509.CertificateRequest, error) {
+	block, rest := pem.Decode([]byte(csrPEM))
+	if block == nil || block.Type != "CERTIFICATE REQUEST" || len(strings.TrimSpace(string(rest))) != 0 {
+		return nil, errors.New("invalid CSR PEM")
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil || csr.CheckSignature() != nil {
+		return nil, errors.New("invalid CSR")
+	}
+	return csr, nil
+}
+
+// serverError answers 500 and logs msg with the slog attributes args: the
+// client learns only that the server failed, so the log is the one place
+// that says why.
+func serverError(w http.ResponseWriter, msg string, args ...any) {
+	slog.Error(msg, args...)
+	http.Error(w, "internal error", http.StatusInternalServerError)
+}
+
 // ---------------------------------------------------------------------------
 // GET /install.sh
 // ---------------------------------------------------------------------------
 
 func (h *handlers) installSh(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/x-shellscript")
-	renderInstallSh(w, h.deps.serverConfig().PublicBaseURL())
+	renderInstallSh(w, h.deps.CurrentServer().PublicBaseURL())
 }
 
 // ---------------------------------------------------------------------------
@@ -74,7 +121,7 @@ func (h *handlers) installSh(w http.ResponseWriter, r *http.Request) {
 // it: the token is the -Token argument of the command that runs the script.
 func (h *handlers) installPs1(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	renderInstallPs1(w, h.deps.serverConfig().PublicBaseURL())
+	renderInstallPs1(w, h.deps.CurrentServer().PublicBaseURL())
 }
 
 // ---------------------------------------------------------------------------
@@ -99,7 +146,7 @@ func (h *handlers) downloadSigilc(w http.ResponseWriter, r *http.Request) {
 	if goos == "windows" {
 		name += ".exe"
 	}
-	baseDir := filepath.Join(h.deps.DataDir, "binaries")
+	baseDir := filepath.Join(h.deps.CurrentServer().Server.DataDir, "binaries")
 	path := filepath.Join(baseDir, name)
 	rel, err := filepath.Rel(baseDir, path)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -108,32 +155,30 @@ func (h *handlers) downloadSigilc(w http.ResponseWriter, r *http.Request) {
 	}
 
 	f, err := os.Open(path)
+	if os.IsNotExist(err) {
+		http.Error(w, "binary not found for requested platform", http.StatusNotFound)
+		return
+	}
 	if err != nil {
-		if os.IsNotExist(err) {
-			http.Error(w, "binary not found for requested platform", http.StatusNotFound)
-		} else {
-			http.Error(w, "internal error", http.StatusInternalServerError)
-		}
+		serverError(w, "open sigilc binary failed", "error", err)
 		return
 	}
 	defer f.Close()
-
-	// Serve sha256 if requested.
-	if r.URL.Query().Get("sha256") == "1" {
-		data, err := io.ReadAll(f)
-		if err != nil {
-			http.Error(w, "read error", http.StatusInternalServerError)
-			return
-		}
-		sum := sha256.Sum256(data)
-		w.Header().Set("Content-Type", "text/plain")
-		fmt.Fprintf(w, "%x", sum[:])
+	info, err := f.Stat()
+	if err != nil {
+		serverError(w, "open sigilc binary failed", "error", err)
 		return
 	}
 
+	// sigilc is about 20 MB, which a link below about 5 Mbit/s does not carry
+	// within the server's WriteTimeout. Only this response's deadline moves,
+	// as in GET /v1/sync; httptest.ResponseRecorder does not support
+	// deadlines.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(downloadWriteTimeout))
+	// Set before ServeContent, which would otherwise sniff the type.
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, name))
 	w.Header().Set("Content-Type", "application/octet-stream")
-	_, _ = io.Copy(w, f)
+	http.ServeContent(w, r, name, info.ModTime(), f)
 }
 
 func validPlatformPart(s string) bool {
@@ -168,37 +213,49 @@ func (h *handlers) enroll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "token and csr are required", http.StatusBadRequest)
 		return
 	}
+	csr, err := parseCSR(req.CSR)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	ctx := r.Context()
 
 	// Verify token via enroll.Server (decodes base64, checks secret hash, expiry, replay).
 	name, tokenID, err := h.deps.EnrollServer.Verify(ctx, req.Token)
-	if err != nil {
-		http.Error(w, "invalid token", http.StatusUnauthorized)
+	// A token that can no longer enroll says why, to its holder and to the
+	// log; enroll.Server says it only once the secret checks out.
+	refuse := func(err error) {
+		slog.Warn("enrollment refused", "client", name, "token", tokenID, "error", err)
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+	}
+	switch {
+	case errors.Is(err, enroll.ErrInvalidToken):
+		// Anyone can send one, so it goes unlogged.
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	case errors.Is(err, enroll.ErrTokenUsed), errors.Is(err, enroll.ErrTokenExpired):
+		refuse(err)
+		return
+	case err != nil:
+		serverError(w, "enrollment failed", "error", err)
 		return
 	}
-
-	// Parse CSR.
-	block, _ := pem.Decode([]byte(req.CSR))
-	if block == nil {
-		http.Error(w, "invalid CSR PEM", http.StatusBadRequest)
-		return
-	}
-	csrDER := block.Bytes
 
 	// Sign the client cert, mark token used, record client — all via enroll.Server.
-	certDER, err := h.deps.EnrollServer.SignClientCert(ctx, csrDER, name, tokenID)
+	certDER, err := h.deps.EnrollServer.SignClientCert(ctx, csr, name, tokenID)
+	if errors.Is(err, enroll.ErrTokenUsed) {
+		refuse(err)
+		return
+	}
 	if err != nil {
-		http.Error(w, "sign error", http.StatusInternalServerError)
+		serverError(w, "enrollment failed", "client", name, "token", tokenID, "error", err)
 		return
 	}
 	slog.Info("client enrolled", "client", name, "token", tokenID)
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	writeJSON(w, http.StatusOK, proto.EnrollResponse{
-		CACert:     string(h.deps.MiniCA.CertPEM()),
-		ClientCert: string(certPEM),
-	})
+	writeJSON(w, http.StatusOK, proto.EnrollResponse{ClientCert: string(certPEM)})
 }
 
 // ---------------------------------------------------------------------------
@@ -214,7 +271,7 @@ func (h *handlers) getCertBundle(w http.ResponseWriter, r *http.Request) {
 	clientName := cert.Subject.CommonName
 	certName := chi.URLParam(r, "name")
 
-	cfg := h.deps.serverConfig()
+	cfg := h.deps.CurrentServer()
 	spec, subscribed := subscribedSpecs(cfg, clientName)[certName]
 	if !subscribed {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -228,7 +285,7 @@ func (h *handlers) getCertBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		serverError(w, "read certificate failed", "client", clientName, "cert", certName, "error", err)
 		return
 	}
 	if !certRecordMatchesSpec(rec, cfg, spec) {
@@ -254,37 +311,57 @@ func (h *handlers) renewIdentity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	clientName := cert.Subject.CommonName
+
+	// Each renewal syncs the serial file to disk and logs an event, so a
+	// client that renewed in a loop would flush the event ring within
+	// seconds. As with last_seen, the claim stands whatever the renewal
+	// returns, and sigilc backs off on the 429.
+	now := time.Now()
+	h.renewMu.Lock()
+	last, seen := h.renewed[clientName]
+	allowed := !seen || now.Sub(last) >= renewInterval
+	if allowed {
+		h.renewed[clientName] = now
+	}
+	h.renewMu.Unlock()
+	if !allowed {
+		http.Error(w, "identity renewed less than a minute ago", http.StatusTooManyRequests)
+		return
+	}
+
 	var req proto.RenewIdentityRequest
 	if err := readJSON(r, &req); err != nil || req.CSR == "" {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	block, rest := pem.Decode([]byte(req.CSR))
-	if block == nil || block.Type != "CERTIFICATE REQUEST" || len(strings.TrimSpace(string(rest))) != 0 {
-		http.Error(w, "invalid CSR PEM", http.StatusBadRequest)
-		return
-	}
-	csr, err := x509.ParseCertificateRequest(block.Bytes)
-	if err != nil || csr.CheckSignature() != nil {
-		http.Error(w, "invalid CSR", http.StatusBadRequest)
+	csr, err := parseCSR(req.CSR)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	clientName := cert.Subject.CommonName
 	certDER, err := h.deps.MiniCA.Sign(csr, clientName)
 	if err != nil {
-		http.Error(w, "sign error", http.StatusInternalServerError)
+		serverError(w, "client identity renewal failed", "client", clientName, "error", err)
 		return
 	}
 	issued, err := x509.ParseCertificate(certDER)
 	if err != nil {
-		http.Error(w, "sign error", http.StatusInternalServerError)
+		serverError(w, "client identity renewal failed", "client", clientName, "error", err)
 		return
 	}
-	if err := h.deps.DB.Clients.StagePendingIdentity(
-		r.Context(), clientName, ca.Fingerprint(certDER), issued.NotAfter,
-	); err != nil {
-		http.Error(w, "store error", http.StatusInternalServerError)
+	err = h.deps.DB.Clients.StagePendingIdentity(
+		r.Context(), clientName, ca.Fingerprint(cert.Raw), ca.Fingerprint(certDER), issued.NotAfter,
+	)
+	if err == sql.ErrNoRows {
+		// The identity that asked was replaced, or its client removed,
+		// since the check of this request.
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if err != nil {
+		serverError(w, "client identity renewal failed", "client", clientName, "error", err)
 		return
 	}
 	slog.Info("client identity renewal issued", "client", clientName, "not_after", issued.NotAfter)
@@ -308,11 +385,11 @@ func subscribedSpecs(cfg *config.ServerConfig, clientName string) map[string]con
 	return out
 }
 
+// certRecordMatchesSpec reports whether rec was issued for spec as cfg has
+// it. The fingerprint covers the CA and its directory, the domains and the
+// key type.
 func certRecordMatchesSpec(rec *store.CertRecord, cfg *config.ServerConfig, spec config.CertificateSpec) bool {
-	return rec != nil &&
-		rec.CA == spec.CA &&
-		slices.Equal(rec.Domains, spec.Domains) &&
-		rec.SpecFingerprint == config.CertificateSpecFingerprint(cfg, spec)
+	return rec != nil && rec.SpecFingerprint == config.CertificateSpecFingerprint(cfg, spec)
 }
 
 func (h *handlers) requireActiveClient(next http.Handler) http.Handler {
@@ -326,8 +403,12 @@ func (h *handlers) requireActiveClient(next http.Handler) http.Handler {
 		fingerprint := ca.Fingerprint(cert.Raw)
 		now := time.Now()
 		rec, err := h.deps.DB.Clients.Get(r.Context(), clientName, nil)
-		if err != nil {
+		if err == sql.ErrNoRows {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if err != nil {
+			serverError(w, "look up client failed", "client", clientName, "error", err)
 			return
 		}
 		if rec.Fingerprint != fingerprint {
@@ -335,18 +416,25 @@ func (h *handlers) requireActiveClient(next http.Handler) http.Handler {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-			if err := h.deps.DB.Clients.PromotePendingIdentity(
-				r.Context(), clientName, fingerprint, now,
-			); err != nil {
+			err := h.deps.DB.Clients.PromotePendingIdentity(r.Context(), clientName, fingerprint, now)
+			switch {
+			case err == nil:
+				slog.Info("client identity switched", "client", clientName)
+			case err == sql.ErrNoRows:
 				// A concurrent first use of the same identity may have
 				// promoted it since the lookup above.
 				current, err := h.deps.DB.Clients.Get(r.Context(), clientName, nil)
+				if err != nil && err != sql.ErrNoRows {
+					serverError(w, "look up client failed", "client", clientName, "error", err)
+					return
+				}
 				if err != nil || current.Fingerprint != fingerprint {
 					http.Error(w, "unauthorized", http.StatusUnauthorized)
 					return
 				}
-			} else {
-				slog.Info("client identity switched", "client", clientName)
+			default:
+				serverError(w, "promote client identity failed", "client", clientName, "error", err)
+				return
 			}
 		}
 

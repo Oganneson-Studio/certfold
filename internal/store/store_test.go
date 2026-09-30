@@ -115,6 +115,41 @@ func TestCertRepo_List(t *testing.T) {
 	}
 }
 
+func TestCertRepo_ListSummariesLeavesOutTheMaterial(t *testing.T) {
+	db := openTestDB(t)
+	notAfter := time.Now().UTC().Truncate(time.Second).Add(90 * 24 * time.Hour)
+	for _, name := range []string{"beta", "alpha"} {
+		if err := db.Certs.Upsert(ctx, &CertRecord{
+			Name:            name,
+			CA:              "letsencrypt",
+			Domains:         []string{name + ".example.com"},
+			SpecFingerprint: "sha256:SPEC-" + name,
+			FullchainPEM:    "chain-" + name,
+			KeyPEM:          "key-" + name,
+			NotAfter:        notAfter,
+			Fingerprint:     "sha256:" + name,
+		}, nil); err != nil {
+			t.Fatalf("Upsert %s: %v", name, err)
+		}
+	}
+
+	list, err := db.Certs.ListSummaries(ctx)
+	if err != nil {
+		t.Fatalf("ListSummaries: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("ListSummaries returned %d records, want 2", len(list))
+	}
+	for i, name := range []string{"alpha", "beta"} {
+		want := CertRecord{Name: name, SpecFingerprint: "sha256:SPEC-" + name, Fingerprint: "sha256:" + name, NotAfter: notAfter}
+		if got := *list[i]; got.Name != want.Name || got.SpecFingerprint != want.SpecFingerprint ||
+			got.Fingerprint != want.Fingerprint || !got.NotAfter.Equal(want.NotAfter) ||
+			got.FullchainPEM != "" || got.KeyPEM != "" {
+			t.Errorf("ListSummaries[%d] = %+v, want %+v without the PEM material", i, got, want)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ClientRepo
 // ---------------------------------------------------------------------------
@@ -192,7 +227,11 @@ func TestClientRepo_PendingIdentityPromotion(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Clients.StagePendingIdentity(ctx, "web-1", "sha256:new", now.Add(time.Hour)); err != nil {
+	// Only the active identity stages its replacement.
+	if err := db.Clients.StagePendingIdentity(ctx, "web-1", "sha256:replaced", "sha256:new", now.Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("staging for a fingerprint that is not active: error = %v, want sql.ErrNoRows", err)
+	}
+	if err := db.Clients.StagePendingIdentity(ctx, "web-1", "sha256:old", "sha256:new", now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	staged, err := db.Clients.Get(ctx, "web-1", nil)
@@ -227,7 +266,7 @@ func TestClientRepo_ExpiredPendingIdentityCannotPromote(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Clients.StagePendingIdentity(ctx, "web-1", "sha256:new", now.Add(-time.Second)); err != nil {
+	if err := db.Clients.StagePendingIdentity(ctx, "web-1", "sha256:old", "sha256:new", now.Add(-time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Clients.PromotePendingIdentity(ctx, "web-1", "sha256:new", now); !errors.Is(err, sql.ErrNoRows) {
@@ -245,7 +284,7 @@ func TestClientRepo_MarkSeenTouchesOnlyMatchingIdentity(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Clients.StagePendingIdentity(ctx, "web-1", "sha256:pending", now.Add(time.Hour)); err != nil {
+	if err := db.Clients.StagePendingIdentity(ctx, "web-1", "sha256:active", "sha256:pending", now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 

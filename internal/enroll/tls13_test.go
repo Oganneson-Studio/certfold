@@ -21,12 +21,12 @@ func TestPostEnrollRequiresTLS13(t *testing.T) {
 	ts.StartTLS()
 	defer ts.Close()
 
-	token := encodeTestToken(t, tokenPayload{ServerURL: ts.URL, Name: "web-1", CACert: testServerCertPEM(t, ts)})
+	token := encodeTestToken(t, Token{ServerURL: ts.URL, Name: "web-1", CACert: testServerCertPEM(t, ts)})
 	kc, err := GenerateKeyAndCSR("web-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = PostEnroll(ts.URL, token, kc.CSRDER)
+	_, err = postEnroll(t, token, kc.CSRDER)
 	if err == nil || !strings.Contains(err.Error(), "protocol version") {
 		t.Fatalf("PostEnroll to a TLS 1.2 server: error = %v, want a protocol version error", err)
 	}

@@ -87,14 +87,20 @@ func (r *ClientRepo) Upsert(ctx context.Context, rec *ClientRecord, tx *sql.Tx) 
 	return err
 }
 
-// StagePendingIdentity records a newly issued client certificate without
-// invalidating the currently active identity. The pending fingerprint is
-// promoted on the first authenticated request that presents it.
-func (r *ClientRepo) StagePendingIdentity(ctx context.Context, name, fingerprint string, notAfter time.Time) error {
+// StagePendingIdentity records a newly issued client certificate, pending,
+// without invalidating the currently active identity. The pending fingerprint
+// is promoted on the first authenticated request that presents it.
+//
+// It stages only while active is still the client's active fingerprint: the
+// identity that asked for the renewal may have been replaced since, by a new
+// enrollment of the name, and must not stage a certificate on the record of
+// its replacement. It returns sql.ErrNoRows when no client has that name and
+// active fingerprint.
+func (r *ClientRepo) StagePendingIdentity(ctx context.Context, name, active, pending string, notAfter time.Time) error {
 	result, err := r.db.ExecContext(ctx, `
 		UPDATE clients
 		SET pending_fingerprint=?, pending_not_after=?
-		WHERE name=?`, fingerprint, notAfter.UTC().Format(time.RFC3339), name)
+		WHERE name=? AND fingerprint=?`, pending, notAfter.UTC().Format(time.RFC3339), name, active)
 	if err != nil {
 		return err
 	}

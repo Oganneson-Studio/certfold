@@ -20,24 +20,17 @@ const maxAPIRequestBody = 1 << 20
 
 // Deps bundles all the dependencies an API server needs.
 type Deps struct {
-	ServerCfg     *config.ServerConfig
+	// CurrentServer returns the running configuration, which a reload
+	// replaces. Required.
 	CurrentServer func() *config.ServerConfig
 	DB            *store.DB
 	MiniCA        *ca.MiniCA
-	DataDir       string
 	EnrollServer  *enroll.Server
 	// Changes wakes the GET /v1/sync requests waiting for a change. Required.
 	Changes *Changes
 	// Done is closed when the daemon shuts down, so that waiting GET /v1/sync
 	// requests answer at once instead of holding up the shutdown.
 	Done <-chan struct{}
-}
-
-func (d Deps) serverConfig() *config.ServerConfig {
-	if d.CurrentServer != nil {
-		return d.CurrentServer()
-	}
-	return d.ServerCfg
 }
 
 // New builds an http.Server configured for mTLS.
@@ -47,9 +40,7 @@ func (d Deps) serverConfig() *config.ServerConfig {
 // by a public CA (or the mini-CA during development). Clients are verified
 // against the mini-CA.
 func New(deps Deps, getCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)) *http.Server {
-	h := newHandlers(deps)
-	r := buildRouter(h)
-	cfg := deps.serverConfig()
+	r := buildRouter(newHandlers(deps))
 
 	pool := x509.NewCertPool()
 	pool.AddCert(deps.MiniCA.Cert())
@@ -66,29 +57,13 @@ func New(deps Deps, getCertificate func(*tls.ClientHelloInfo) (*tls.Certificate,
 	}
 
 	return &http.Server{
-		Addr:              cfg.Server.Listen,
+		Addr:              deps.CurrentServer().Server.Listen,
 		Handler:           r,
 		TLSConfig:         tlsCfg,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20,
-	}
-}
-
-// NewInsecure builds a plain HTTP server (for tests only).
-func NewInsecure(deps Deps) *http.Server {
-	h := newHandlers(deps)
-	cfg := deps.serverConfig()
-	return &http.Server{
-		Addr:              cfg.Server.Listen,
-		Handler:           buildRouter(h),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20,
 	}
 }
 

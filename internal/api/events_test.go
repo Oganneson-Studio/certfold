@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"database/sql"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -15,12 +16,17 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Oganneson-Studio/sigil/internal/enroll"
 	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/sigil/internal/store"
 	"github.com/Oganneson-Studio/sigil/pkg/proto"
 )
 
@@ -67,7 +73,7 @@ func TestRouterLogsPanicsAsEvents(t *testing.T) {
 func TestIdentityRenewalEvents(t *testing.T) {
 	logs := setupLogs(t)
 	deps := buildDeps(t)
-	handler := NewInsecure(deps).Handler
+	handler := newHandler(deps)
 	oldIdentity := makeEnrolledClientCert(t, deps, "web-1")
 
 	newKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -142,11 +148,114 @@ func TestLastSeenWriteFailureIsAnErrorEvent(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, syncRequest(identity, ""))
+	newHandler(deps).ServeHTTP(rec, syncRequest(identity, ""))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	if got := eventLines(logs); len(got) != 1 || !strings.HasPrefix(got[0], "ERROR record last_seen failed client=web-1 error=") {
 		t.Fatalf("events = %q, want one ERROR record last_seen failed", got)
+	}
+}
+
+// A token that can no longer enroll is refused with its reason, which is
+// logged as a WARN event naming the client and the token ID. A token that
+// is not one gets the generic refusal and no event: anyone can send one.
+func TestEnrollmentRefusalsSayWhy(t *testing.T) {
+	logs := setupLogs(t)
+	deps := buildDeps(t)
+	ctx := context.Background()
+	used, err := deps.EnrollServer.Create(ctx, "https://sigil.example.com:8443", "web-1", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired, err := deps.EnrollServer.Create(ctx, "https://sigil.example.com:8443", "web-2", -time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenID := func(tokenStr string) string {
+		payload, err := enroll.DecodeToken(tokenStr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return payload.TokenID
+	}
+	handler := newHandler(deps)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, enrollRequest(t, used))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first enrollment: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	for _, tt := range []struct{ name, token, body string }{
+		{"used", used, "enrollment token was already used"},
+		{"expired", expired, "enrollment token has expired"},
+		{"not a token", "not-a-token", "invalid token"},
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, enrollRequest(t, tt.token))
+		if rec.Code != http.StatusUnauthorized || strings.TrimSpace(rec.Body.String()) != tt.body {
+			t.Errorf("enrollment with a token %s: status = %d, body = %q; want 401 %q", tt.name, rec.Code, rec.Body.String(), tt.body)
+		}
+	}
+	want := []string{
+		"INFO client enrolled client=web-1 token=" + tokenID(used),
+		`WARN enrollment refused client=web-1 token=` + tokenID(used) + ` error="enrollment token was already used"`,
+		`WARN enrollment refused client=web-2 token=` + tokenID(expired) + ` error="enrollment token has expired"`,
+	}
+	if got := eventLines(logs); !slices.Equal(got, want) {
+		t.Fatalf("events = %q, want %q", got, want)
+	}
+}
+
+// A client whose lookup fails is not known to be unauthorized: the server
+// answers 500 and logs why, where it once answered 401 and logged nothing.
+func TestClientLookupFailureIsAServerError(t *testing.T) {
+	logs := setupLogs(t)
+	deps := buildDeps(t)
+	identity := makeEnrolledClientCert(t, deps, "web-1")
+	if err := deps.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	newHandler(deps).ServeHTTP(rec, syncRequest(identity, ""))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, body = %s; want 500", rec.Code, rec.Body.String())
+	}
+	if got := eventLines(logs); len(got) != 1 || !strings.HasPrefix(got[0], "ERROR look up client failed client=web-1 error=") {
+		t.Fatalf("events = %q, want one ERROR look up client failed", got)
+	}
+}
+
+// A handler past authentication that fails on the store logs why as well.
+func TestBundleReadFailureIsAServerError(t *testing.T) {
+	logs := setupLogs(t)
+	deps := buildDeps(t)
+	path := filepath.Join(t.TempDir(), "sigils.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	deps.DB = db
+	identity := makeEnrolledClientCert(t, deps, "web-1")
+	seedCert(t, deps, deps.CurrentServer(), deps.CurrentServer().Certificates[0], "sha256:API")
+	// A row that the store cannot read back.
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`UPDATE certificates SET domains_json='{' WHERE name='api-prod'`); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	newHandler(deps).ServeHTTP(rec, simulateMTLS(httptest.NewRequest(http.MethodGet, "/v1/certificates/api-prod/bundle", nil), identity))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, body = %s; want 500", rec.Code, rec.Body.String())
+	}
+	if got := eventLines(logs); len(got) != 1 || !strings.HasPrefix(got[0], "ERROR read certificate failed client=web-1 cert=api-prod error=") {
+		t.Fatalf("events = %q, want one ERROR read certificate failed", got)
 	}
 }

@@ -24,7 +24,7 @@ func TestCreateTokenRequiresAHostClientsCanReach(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrollSrv := enroll.NewServer(db.Tokens, db.Clients, miniCA)
+	enrollSrv := enroll.NewServer(db, miniCA)
 	ctx := context.Background()
 
 	tests := []struct {

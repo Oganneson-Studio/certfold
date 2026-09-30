@@ -1,5 +1,3 @@
-// Package enroll implements the one-time-token bootstrap protocol that
-// exchanges a token for an mTLS client certificate.
 package enroll
 
 import (
@@ -11,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -19,8 +18,9 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
-// tokenPayload is the JSON structure embedded inside the opaque token string.
-type tokenPayload struct {
+// Token is what an enrollment token carries: its string is this structure
+// in JSON, base64url-encoded.
+type Token struct {
 	ServerURL string    `json:"server_url"`
 	Name      string    `json:"name"`
 	TokenID   string    `json:"token_id"`
@@ -31,14 +31,13 @@ type tokenPayload struct {
 
 // Server handles server-side token creation and verification.
 type Server struct {
-	tokens  *store.TokenRepo
-	clients *store.ClientRepo
-	miniCA  *ca.MiniCA
+	db     *store.DB
+	miniCA *ca.MiniCA
 }
 
-// NewServer creates a Server.
-func NewServer(tokens *store.TokenRepo, clients *store.ClientRepo, miniCA *ca.MiniCA) *Server {
-	return &Server{tokens: tokens, clients: clients, miniCA: miniCA}
+// NewServer creates a Server that keeps tokens and clients in db.
+func NewServer(db *store.DB, miniCA *ca.MiniCA) *Server {
+	return &Server{db: db, miniCA: miniCA}
 }
 
 // Create generates a new one-time enrollment token for name with the given TTL.
@@ -62,7 +61,7 @@ func (s *Server) Create(ctx context.Context, serverURL, name string, ttl time.Du
 	secret := hex.EncodeToString(secretBytes)
 	expiresAt := time.Now().UTC().Add(ttl)
 
-	payload := tokenPayload{
+	payload := Token{
 		ServerURL: serverURL,
 		Name:      name,
 		TokenID:   tokenID,
@@ -77,7 +76,7 @@ func (s *Server) Create(ctx context.Context, serverURL, name string, ttl time.Du
 		ExpiresAt:  expiresAt,
 		CreatedAt:  time.Now().UTC(),
 	}
-	if err := s.tokens.Upsert(ctx, rec, nil); err != nil {
+	if err := s.db.Tokens.Upsert(ctx, rec, nil); err != nil {
 		return "", fmt.Errorf("store token: %w", err)
 	}
 	raw, err := json.Marshal(payload)
@@ -87,76 +86,92 @@ func (s *Server) Create(ctx context.Context, serverURL, name string, ttl time.Du
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-// Verify decodes and validates a token string. Returns the client name on success.
-// Does NOT mark the token as used — the caller should call MarkUsed after signing.
+// Reasons that Verify and SignClientCert refuse a token. ErrTokenUsed and
+// ErrTokenExpired come only for a token whose secret checks out, so they tell
+// nothing to anyone who does not hold the whole token; any other flaw of a
+// token is ErrInvalidToken.
+var (
+	ErrInvalidToken = errors.New("invalid token")
+	ErrTokenUsed    = errors.New("enrollment token was already used")
+	ErrTokenExpired = errors.New("enrollment token has expired")
+)
+
+// Verify decodes and validates a token string. Returns the client name and
+// token ID on success, and with ErrTokenUsed and ErrTokenExpired as well.
+// Does NOT mark the token as used: SignClientCert does.
 func (s *Server) Verify(ctx context.Context, tokenStr string) (name string, tokenID string, err error) {
-	payload, err := decodeToken(tokenStr)
+	payload, err := DecodeToken(tokenStr)
 	if err != nil {
-		return "", "", fmt.Errorf("decode: %w", err)
+		return "", "", ErrInvalidToken
 	}
 
-	rec, err := s.tokens.Get(ctx, payload.TokenID, nil)
+	rec, err := s.db.Tokens.Get(ctx, payload.TokenID, nil)
 	if err == sql.ErrNoRows {
-		return "", "", fmt.Errorf("invalid token")
+		return "", "", ErrInvalidToken
 	}
 	if err != nil {
-		return "", "", fmt.Errorf("lookup: %w", err)
-	}
-	if !rec.UsedAt.IsZero() {
-		return "", "", fmt.Errorf("token already used")
-	}
-	if time.Now().After(rec.ExpiresAt) {
-		return "", "", fmt.Errorf("token expired")
+		return "", "", fmt.Errorf("look up token: %w", err)
 	}
 	if tokenPayloadHash(payload) != rec.SecretHash {
-		return "", "", fmt.Errorf("invalid token")
+		return "", "", ErrInvalidToken
+	}
+	if !rec.UsedAt.IsZero() {
+		return rec.Name, rec.TokenID, ErrTokenUsed
+	}
+	if time.Now().After(rec.ExpiresAt) {
+		return rec.Name, rec.TokenID, ErrTokenExpired
 	}
 	return rec.Name, rec.TokenID, nil
 }
 
-// SignClientCert signs a DER-encoded CSR for the given client name and records
-// the client in the clients table. Returns the signed certificate DER bytes.
-func (s *Server) SignClientCert(ctx context.Context, csrDER []byte, name, tokenID string) ([]byte, error) {
-	csr, err := x509.ParseCertificateRequest(csrDER)
-	if err != nil {
-		return nil, fmt.Errorf("parse CSR: %w", err)
-	}
+// SignClientCert signs csr for the given client name, consumes the token and
+// records the client in the clients table. Returns the signed certificate DER
+// bytes.
+func (s *Server) SignClientCert(ctx context.Context, csr *x509.CertificateRequest, name, tokenID string) ([]byte, error) {
 	certDER, err := s.miniCA.Sign(csr, name)
 	if err != nil {
 		return nil, fmt.Errorf("sign: %w", err)
 	}
-	if err := s.tokens.MarkUsed(ctx, tokenID, nil); err != nil {
+	// The token is consumed only together with the record of its client, so
+	// an enrollment that fails to record it leaves the token for another
+	// attempt. The token goes first: of two enrollments with one token, the
+	// second fails there, before it could replace the fingerprint of the
+	// first.
+	tx, err := s.db.BeginTx(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := s.db.Tokens.MarkUsed(ctx, tokenID, tx); errors.Is(err, store.ErrTokenAlreadyUsed) {
+		// Another enrollment with the token got there since Verify.
+		return nil, ErrTokenUsed
+	} else if err != nil {
 		return nil, fmt.Errorf("mark used: %w", err)
 	}
-	fp := ca.Fingerprint(certDER)
-	if err := s.clients.Upsert(ctx, &store.ClientRecord{
+	if err := s.db.Clients.Upsert(ctx, &store.ClientRecord{
 		Name:        name,
-		Fingerprint: fp,
+		Fingerprint: ca.Fingerprint(certDER),
 		EnrolledAt:  time.Now().UTC(),
-	}, nil); err != nil {
+	}, tx); err != nil {
 		return nil, fmt.Errorf("record client: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
 	}
 	return certDER, nil
 }
 
-// DecodeToken decodes and checks an enrollment token as decodeToken does, and
-// returns the payload. The client uses ServerURL to know which server to POST
-// the CSR to.
-func DecodeToken(tokenStr string) (*tokenPayload, error) {
-	return decodeToken(tokenStr)
-}
-
-// decodeToken base64url-decodes and JSON-unmarshals a token string, and checks
+// DecodeToken base64url-decodes and JSON-unmarshals a token string, and checks
 // the client name and the server URL it carries under the rules Create and
 // server.public_url follow. sigilc writes both to client.yaml and prints
 // them, so a token that another program made must not bring it control
 // characters.
-func decodeToken(tokenStr string) (*tokenPayload, error) {
+func DecodeToken(tokenStr string) (*Token, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(tokenStr)
 	if err != nil {
 		return nil, fmt.Errorf("base64: %w", err)
 	}
-	var p tokenPayload
+	var p Token
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, fmt.Errorf("json: %w", err)
 	}
@@ -174,6 +189,6 @@ func sha256hex(s string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func tokenPayloadHash(p *tokenPayload) string {
+func tokenPayloadHash(p *Token) string {
 	return sha256hex(p.Secret + "\x00" + p.ServerURL + "\x00" + p.Name + "\x00" + p.CACert)
 }

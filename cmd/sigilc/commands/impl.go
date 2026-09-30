@@ -88,7 +88,7 @@ func runEnroll(cmd *cobra.Command, _ []string) (err error) {
 		return fmt.Errorf("generate key: %w", err)
 	}
 
-	resp, err := enroll.PostEnroll(payload.ServerURL, tokenStr, kc.CSRDER)
+	clientCert, err := enroll.PostEnroll(payload, tokenStr, kc.CSRDER)
 	if err != nil {
 		// The error can quote the network, such as the DNS names in the
 		// certificate of a man in the middle: a newline there must not start
@@ -96,7 +96,7 @@ func runEnroll(cmd *cobra.Command, _ []string) (err error) {
 		return fmt.Errorf("enroll: %s", logging.OneLine(err.Error()))
 	}
 
-	if err := enroll.SaveIdentity(cfgPath, resp.CACert, resp.ClientCert, string(kc.KeyPEM)); err != nil {
+	if err := enroll.SaveIdentity(cfgPath, payload.CACert, clientCert, string(kc.KeyPEM)); err != nil {
 		return fmt.Errorf("save identity: %w", err)
 	}
 
