@@ -132,7 +132,8 @@ func TestInstallPs1KeepsTokenOffCommandLines(t *testing.T) {
 // TestInstallPs1ReplacesSigilc checks the steps of install.ps1, which are
 // those of install.sh (TestInstallShReplacesSigilc). Windows does not let a
 // sigilc.exe that runs be replaced, so the service stops first; ReplaceFile
-// then puts the new one in place in one step.
+// then puts the new one in place in one step. A download or a downloaded
+// sigilc that fails leaves no sigilc.download.exe behind.
 func TestInstallPs1ReplacesSigilc(t *testing.T) {
 	script := getInstallScript(t, "/install.ps1").Body.String()
 	if strings.Contains(script, "-OutFile $Dest") {
@@ -143,12 +144,15 @@ func TestInstallPs1ReplacesSigilc(t *testing.T) {
 		"\n$Service = Get-Service -Name sigilc -ErrorAction SilentlyContinue\n",
 		"\nif ($Upgrade -and -not $Service) {\n    throw ",
 		"\nNew-Item ",
+		"\ntry {\n",
 		" -OutFile $Download\n",
-		"\n& $Download version\n",
-		"\nif ($Service) {\n    Write-Host 'Stopping service...'\n    Stop-Service -Name sigilc\n}\n",
-		"\nif (Test-Path -LiteralPath $Dest) {\n",
-		"\n    [IO.File]::Replace($Download, $Dest, [NullString]::Value)\n} else {\n"+
-			"    Move-Item -LiteralPath $Download -Destination $Dest\n}\n",
+		"\n    & $Download version\n",
+		"\n    if ($Service) {\n        Write-Host 'Stopping service...'\n        Stop-Service -Name sigilc\n    }\n",
+		"\n    if (Test-Path -LiteralPath $Dest) {\n",
+		"\n        [IO.File]::Replace($Download, $Dest, [NullString]::Value)\n    } else {\n"+
+			"        Move-Item -LiteralPath $Download -Destination $Dest\n    }\n",
+		"\n} finally {\n",
+		"\n    if (Test-Path -LiteralPath $Download) { Remove-Item -LiteralPath $Download }\n}\n",
 		"\nif (-not $Upgrade) {\n",
 		"\n        & $Dest enroll\n",
 		"\n    if ($Service) {\n",

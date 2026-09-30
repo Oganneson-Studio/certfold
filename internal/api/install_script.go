@@ -200,21 +200,26 @@ if ($Upgrade -and -not $Service) {
 
 New-Item -ItemType Directory -Force -Path (Split-Path $Dest) | Out-Null
 
-Write-Host "Downloading sigilc for windows/$Arch..."
-Invoke-WebRequest -UseBasicParsing -Uri "$ServerURL/download/sigilc?os=windows&arch=$Arch" -OutFile $Download
-# A sigilc that does not run fails here, before anything changes.
-& $Download version
-if ($LASTEXITCODE -ne 0) { throw "the downloaded sigilc failed with exit code $LASTEXITCODE" }
+try {
+    Write-Host "Downloading sigilc for windows/$Arch..."
+    Invoke-WebRequest -UseBasicParsing -Uri "$ServerURL/download/sigilc?os=windows&arch=$Arch" -OutFile $Download
+    # A sigilc that does not run fails here, before anything changes.
+    & $Download version
+    if ($LASTEXITCODE -ne 0) { throw "the downloaded sigilc failed with exit code $LASTEXITCODE" }
 
-if ($Service) {
-    Write-Host 'Stopping service...'
-    Stop-Service -Name sigilc
-}
-if (Test-Path -LiteralPath $Dest) {
-    # PowerShell would pass $null to it as an empty path.
-    [IO.File]::Replace($Download, $Dest, [NullString]::Value)
-} else {
-    Move-Item -LiteralPath $Download -Destination $Dest
+    if ($Service) {
+        Write-Host 'Stopping service...'
+        Stop-Service -Name sigilc
+    }
+    if (Test-Path -LiteralPath $Dest) {
+        # PowerShell would pass $null to it as an empty path.
+        [IO.File]::Replace($Download, $Dest, [NullString]::Value)
+    } else {
+        Move-Item -LiteralPath $Download -Destination $Dest
+    }
+} finally {
+    # What a download or a sigilc that failed left.
+    if (Test-Path -LiteralPath $Download) { Remove-Item -LiteralPath $Download }
 }
 
 if (-not $Upgrade) {
