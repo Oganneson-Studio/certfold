@@ -9,7 +9,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.3-0.20260925173824-7e8af9b09c4b
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/go-acme/lego/v4 v4.35.2
-	github.com/go-chi/chi/v5 v5.2.5
+	github.com/go-chi/chi/v5 v5.3.0
 	github.com/kardianos/service v1.3.0
 	github.com/miekg/dns v1.1.72
 	github.com/spf13/cobra v1.10.2
@@ -95,7 +95,7 @@ require (
 	golang.org/x/tools v0.50.0 // indirect
 	google.golang.org/api v0.276.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
-	google.golang.org/grpc v1.83.1 // indirect
+	google.golang.org/grpc v1.83.2 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/ini.v1 v1.67.1 // indirect
 	modernc.org/libc v1.72.0 // indirect
