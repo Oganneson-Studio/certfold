@@ -6,7 +6,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/exp/teatest/v2"
 
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 )
@@ -27,9 +26,13 @@ func newTestBackend() *fakeBackend {
 }
 
 func TestClientModel_QuitKey(t *testing.T) {
-	tm := teatest.NewTestModel(t, New(newTestBackend()), teatest.WithInitialTermSize(100, 30))
-	tm.Send(tea.KeyPressMsg{Code: 'q', Text: "q"})
-	tm.WaitFinished(t, teatest.WithFinalTimeout(3*time.Second))
+	_, cmd := step(t, newModel(t, newTestBackend()), tea.KeyPressMsg{Code: 'q', Text: "q"})
+	if cmd == nil {
+		t.Fatal("q returned no command")
+	}
+	if msg := cmd(); msg != (tea.QuitMsg{}) {
+		t.Errorf("the command of q returned %#v, want tea.QuitMsg", msg)
+	}
 }
 
 func TestClientModel_ViewContainsClientName(t *testing.T) {

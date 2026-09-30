@@ -3,10 +3,8 @@ package server
 import (
 	"strings"
 	"testing"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/exp/teatest/v2"
 
 	"github.com/Oganneson-Studio/sigil/internal/ipc"
 )
@@ -24,9 +22,13 @@ func TestModel_InitialTabIsOverview(t *testing.T) {
 }
 
 func TestModel_QuitKey(t *testing.T) {
-	tm := teatest.NewTestModel(t, newTestModel(t), teatest.WithInitialTermSize(100, 30))
-	tm.Send(tea.KeyPressMsg{Code: 'q', Text: "q"})
-	tm.WaitFinished(t, teatest.WithFinalTimeout(3*time.Second))
+	_, cmd := newTestModel(t).Update(tea.KeyPressMsg{Code: 'q', Text: "q"})
+	if cmd == nil {
+		t.Fatal("q returned no command")
+	}
+	if msg := cmd(); msg != (tea.QuitMsg{}) {
+		t.Errorf("the command of q returned %#v, want tea.QuitMsg", msg)
+	}
 }
 
 func TestModel_TabSwitchByNumber(t *testing.T) {
