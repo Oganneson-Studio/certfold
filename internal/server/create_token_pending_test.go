@@ -46,8 +46,9 @@ func TestCreateTokenRequiresReplaceForANamePendingEnrollment(t *testing.T) {
 		t.Fatalf("second token for web-1 while the first is unused: error = %v, want one that asks for a replacement", err)
 	}
 	// A token that has expired unused, or has been used by a client since
-	// removed, enrolls no host, and needs no replacement; a replacement
-	// leaves the used one alone.
+	// removed, enrolls no host, and needs no replacement. A token created
+	// without replace revokes neither, and a replacement leaves the used
+	// one alone.
 	now := time.Now()
 	for _, tok := range []*store.TokenRecord{
 		{TokenID: "0123456789abcdef0123456789abcdef", Name: "web-2", ExpiresAt: now.Add(-time.Minute), CreatedAt: now.Add(-time.Hour)},
@@ -56,8 +57,15 @@ func TestCreateTokenRequiresReplaceForANamePendingEnrollment(t *testing.T) {
 		if err := db.Tokens.Upsert(ctx, tok, nil); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := createToken(ctx, enrollSrv, db, cfg, ipc.CreateTokenRequest{Name: tok.Name, TTL: time.Hour}); err != nil {
+		resp, err := createToken(ctx, enrollSrv, db, cfg, ipc.CreateTokenRequest{Name: tok.Name, TTL: time.Hour})
+		if err != nil {
 			t.Fatalf("token for %s, whose other token enrolls no host: %v", tok.Name, err)
+		}
+		if resp.Revoked != 0 {
+			t.Errorf("token for %s without replace revoked %d tokens", tok.Name, resp.Revoked)
+		}
+		if _, err := db.Tokens.Get(ctx, tok.TokenID, nil); err != nil {
+			t.Errorf("token for %s without replace deleted token %s: %v", tok.Name, tok.TokenID, err)
 		}
 	}
 	if resp, err := createToken(ctx, enrollSrv, db, cfg, ipc.CreateTokenRequest{Name: "web-3", TTL: time.Hour, Replace: true}); err != nil || resp.Revoked != 1 {

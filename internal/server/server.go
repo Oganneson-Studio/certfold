@@ -269,13 +269,18 @@ func createToken(ctx context.Context, enrollSrv *enroll.Server, db *store.DB, cf
 			}
 		}
 	}
-	// A replacement revokes the unused tokens of the name: whichever host
-	// enrolled with one of them last would replace the host of the new one.
-	for _, tok := range unused {
-		if err := db.Tokens.Delete(ctx, tok.TokenID, nil); err != nil {
-			return ipc.CreateTokenResponse{}, fmt.Errorf("revoke enrollment token %s: %w", tok.TokenID, err)
+	revoked := 0
+	if req.Replace {
+		// A replacement revokes the unused tokens of the name: whichever
+		// host enrolled with one of them last would replace the host of the
+		// new one.
+		for _, tok := range unused {
+			if err := db.Tokens.Delete(ctx, tok.TokenID, nil); err != nil {
+				return ipc.CreateTokenResponse{}, fmt.Errorf("revoke enrollment token %s: %w", tok.TokenID, err)
+			}
+			slog.Info("enrollment token revoked", "token", tok.TokenID)
+			revoked++
 		}
-		slog.Info("enrollment token revoked", "token", tok.TokenID)
 	}
 	token, err := enrollSrv.Create(ctx, serverURL, name, ttl)
 	if err != nil {
@@ -291,7 +296,7 @@ func createToken(ctx context.Context, enrollSrv *enroll.Server, db *store.DB, cf
 		Token:               token,
 		TokenID:             payload.TokenID,
 		ExpiresAt:           payload.ExpiresAt,
-		Revoked:             len(unused),
+		Revoked:             revoked,
 		ServerURL:           serverURL,
 		PublicURLConfigured: cfg.Server.PublicURL != "",
 	}, nil
