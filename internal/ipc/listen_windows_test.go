@@ -43,6 +43,87 @@ func acceptAll(t *testing.T, l net.Listener) {
 	})
 }
 
+// listenTaken calls Listen on name, which another listener holds, and returns
+// its error. The owner of that pipe can be read only while it waits in
+// Accept, which acceptAll starts in a goroutine, so Listen is called again
+// while it finds every instance of the pipe busy.
+func listenTaken(t *testing.T, name string) error {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		l, err := Listen(name)
+		if err == nil {
+			l.Close()
+			t.Fatal("Listen took a pipe name another listener holds")
+		}
+		if !errors.Is(err, windows.ERROR_PIPE_BUSY) || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A program that takes the pipe name before the service starts keeps the
+// daemon from starting; the error names the pipe and its owner.
+func TestListenNamesOwnerOfTakenPipe(t *testing.T) {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := testPipeName()
+	l, err := winio.ListenPipe(name, &winio.PipeConfig{
+		SecurityDescriptor: "O:" + user.User.Sid.String() + "D:P(A;;GA;;;WD)",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	acceptAll(t, l)
+
+	err = listenTaken(t, name)
+	want := fmt.Sprintf("ipc listen pipe %s: pipe is owned by %s rather than LocalSystem or Administrators", name, user.User.Sid)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Listen error = %v, want %s", err, want)
+	}
+}
+
+// A pipe that never waits for a client has no instance to open, so its
+// owner cannot be read.
+func TestListenReportsTakenPipeWithUnreadableOwner(t *testing.T) {
+	name := testPipeName()
+	l, err := winio.ListenPipe(name, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	_, err = Listen(name)
+	want := fmt.Sprintf("ipc listen pipe %s: another process holds the pipe name, and its owner cannot be read", name)
+	if err == nil || !strings.Contains(err.Error(), want) || !errors.Is(err, windows.ERROR_PIPE_BUSY) {
+		t.Fatalf("Listen error = %v, want %s: all pipe instances are busy", err, want)
+	}
+}
+
+func TestListenRefusesPipeOfRunningDaemon(t *testing.T) {
+	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admin, err := windows.Token(0).IsMember(admins); err != nil || !admin {
+		t.Skip("only SYSTEM and elevated administrators can read the owner of the pipe of Listen")
+	}
+	name := testPipeName()
+	l, err := Listen(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acceptAll(t, l)
+
+	err = listenTaken(t, name)
+	if want := fmt.Sprintf("ipc listen pipe %s: another daemon is already running on this pipe", name); err == nil || err.Error() != want {
+		t.Fatalf("second Listen error = %v, want %s", err, want)
+	}
+}
+
 func TestCheckPipeOwner(t *testing.T) {
 	tests := []struct {
 		name  string

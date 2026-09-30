@@ -245,6 +245,12 @@ func newTestClient(t *testing.T, cfg *config.ClientConfig) *Client {
 	return c
 }
 
+// loaded returns a load function for Reload that gives cfg, as reading
+// client.yaml would.
+func loaded(cfg *config.ClientConfig) func() (*config.ClientConfig, error) {
+	return func() (*config.ClientConfig, error) { return cfg, nil }
+}
+
 // seedStore writes a store that holds bundles, as an earlier run left it.
 func seedStore(t *testing.T, dataDir string, bundles ...*proto.CertBundle) {
 	t.Helper()
@@ -798,6 +804,149 @@ func TestRenewIdentityPersistsBeforeRuntimeSwitch(t *testing.T) {
 	}
 }
 
+// renewalTransport answers POST /v1/identity/renew with the certificate that
+// issue signs for the public key of the CSR.
+func renewalTransport(issue func(publicKey any) (string, error)) http.RoundTripper {
+	return roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body proto.RenewIdentityRequest
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			return nil, err
+		}
+		block, _ := pem.Decode([]byte(body.CSR))
+		if block == nil {
+			return nil, errors.New("no CSR")
+		}
+		csr, err := x509.ParseCertificateRequest(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		certPEM, err := issue(csr.PublicKey)
+		if err != nil {
+			return nil, err
+		}
+		data, err := json.Marshal(proto.RenewIdentityResponse{ClientCert: certPEM})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(bytes.NewReader(data)), Request: req}, nil
+	})
+}
+
+// TestRenewalAcceptsIdentityFromServerAhead covers a client whose clock is
+// behind the server's by more than the minute the mini-CA backdates: the
+// renewed certificate is not yet valid by the client's clock, and the
+// renewal must succeed all the same, or it fails until the current identity
+// expires.
+func TestRenewalAcceptsIdentityFromServerAhead(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	authority := newTestIdentityCA(t, now)
+	cfg := buildTestCfg(t, "https://sigil.example.test")
+	cfg.Client.IdentityRenewBefore = 30 * 24 * time.Hour
+	withIdentity(t, cfg, authority, now, now.Add(24*time.Hour))
+	c, err := New(cfg, WithIdentitySaver(func(string, string, string) error { return nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.now = func() time.Time { return now }
+	// The server's clock is 10 minutes ahead: NotBefore is 9 minutes from now.
+	serverNow := now.Add(10 * time.Minute)
+	var issued string
+	c.http = &http.Client{Transport: renewalTransport(func(k any) (string, error) {
+		certPEM, err := authority.sign("web-1", k, serverNow, serverNow.Add(90*24*time.Hour), 3)
+		issued = certPEM
+		return certPEM, err
+	})}
+
+	c.pullMu.Lock()
+	err = c.renewIdentityLocked(context.Background())
+	c.pullMu.Unlock()
+	if err != nil {
+		t.Fatalf("renewal of an identity not yet valid by the local clock: %v", err)
+	}
+	c.cfgMu.RLock()
+	running := c.cfg.Identity.ClientCert
+	c.cfgMu.RUnlock()
+	if running != issued {
+		t.Fatal("the running identity is not the renewed one")
+	}
+}
+
+// TestRenewalKeepsCurrentIdentityWhenRenewedOneIsRefused covers renewed
+// identities that sigils would not accept, and one that did not reach
+// client.yaml: the running identity must stay as it was, and only a renewed
+// identity that passes the checks may be saved.
+func TestRenewalKeepsCurrentIdentityWhenRenewedOneIsRefused(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	authority := newTestIdentityCA(t, now)
+	other := newTestIdentityCA(t, now)
+	serverAuthOnly := func(publicKey any) (string, error) {
+		template := &x509.Certificate{
+			SerialNumber: big.NewInt(3),
+			Subject:      pkix.Name{CommonName: "web-1"},
+			NotBefore:    now.Add(-time.Minute),
+			NotAfter:     now.Add(90 * 24 * time.Hour),
+			KeyUsage:     x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		}
+		der, err := x509.CreateCertificate(rand.Reader, template, authority.cert, publicKey, authority.key)
+		if err != nil {
+			return "", err
+		}
+		return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), nil
+	}
+	for _, tc := range []struct {
+		name     string
+		issue    func(publicKey any) (string, error)
+		saveErr  error
+		wantSave bool
+	}{
+		{name: "another client's name", issue: func(k any) (string, error) {
+			return authority.sign("web-2", k, now, now.Add(90*24*time.Hour), 3)
+		}},
+		{name: "another CA", issue: func(k any) (string, error) {
+			return other.sign("web-1", k, now, now.Add(90*24*time.Hour), 3)
+		}},
+		{name: "not for client authentication", issue: serverAuthOnly},
+		{name: "not saved", issue: func(k any) (string, error) {
+			return authority.sign("web-1", k, now, now.Add(90*24*time.Hour), 3)
+		}, saveErr: errors.New("disk full"), wantSave: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := buildTestCfg(t, "https://sigil.example.test")
+			cfg.Client.IdentityRenewBefore = 30 * 24 * time.Hour
+			withIdentity(t, cfg, authority, now, now.Add(24*time.Hour))
+			current := cfg.Identity
+			saved := false
+			c, err := New(cfg, WithIdentitySaver(func(string, string, string) error {
+				saved = true
+				return tc.saveErr
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.now = func() time.Time { return now }
+			c.http = &http.Client{Transport: renewalTransport(tc.issue)}
+
+			c.pullMu.Lock()
+			err = c.renewIdentityLocked(context.Background())
+			c.pullMu.Unlock()
+			if err == nil {
+				t.Fatal("renewal succeeded, want it refused")
+			}
+			if saved != tc.wantSave {
+				t.Fatalf("identity saver called = %v, want %v", saved, tc.wantSave)
+			}
+			c.cfgMu.RLock()
+			running := c.cfg.Identity
+			c.cfgMu.RUnlock()
+			if running != current {
+				t.Fatal("the running identity changed after a refused renewal")
+			}
+		})
+	}
+}
+
 // TestFetchNamedCertificateForcesOnlyThatBundle covers sigilc fetch --cert:
 // it downloads the named certificate again, and only it, but unchanged
 // material neither rewrites outputs nor runs on_change.
@@ -848,6 +997,15 @@ func TestFetchRejectsBadBundle(t *testing.T) {
 			renewed.KeyPEM = newTestBundle(t, "api-prod").KeyPEM
 			return renewed
 		}},
+		// The outputs take the first certificate as the leaf.
+		{name: "key of a later certificate", bad: func(t *testing.T, renewed proto.CertBundle) proto.CertBundle {
+			renewed.FullchainPEM = newTestBundle(t, "api-prod").FullchainPEM + renewed.FullchainPEM
+			return renewed
+		}},
+		{name: "chain certificate that does not parse", bad: func(_ *testing.T, renewed proto.CertBundle) proto.CertBundle {
+			renewed.FullchainPEM += string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not DER")}))
+			return renewed
+		}},
 		{name: "another certificate's name", bad: func(_ *testing.T, renewed proto.CertBundle) proto.CertBundle {
 			renewed.Name = "api-stage"
 			return renewed
@@ -890,6 +1048,93 @@ func TestFetchRejectsBadBundle(t *testing.T) {
 			}
 			if status := c.Status(); status.LastError != err.Error() || statusFingerprints(status)["api-prod"] != old.Fingerprint {
 				t.Fatalf("status = %+v", status)
+			}
+		})
+	}
+}
+
+// TestOutputsHoldOnlyCertificatesAndKey covers a bundle whose fullchain starts
+// with the private key and carries text, and whose key carries a
+// certificate: tls.X509KeyPair accepts it, since it skips what is not a
+// certificate or a key. Outputs readable by everyone must not get the key,
+// and no output may get anything but the blocks it is for.
+func TestOutputsHoldOnlyCertificatesAndKey(t *testing.T) {
+	bundle := newTestBundle(t, "api-prod")
+	inter := newTestBundle(t, "inter")
+	sent := *bundle
+	sent.FullchainPEM = bundle.KeyPEM + bundle.FullchainPEM + "subject=CN = inter\n" + inter.FullchainPEM + "\x1b[2J"
+	sent.KeyPEM = inter.FullchainPEM + bundle.KeyPEM
+	ts := httptest.NewServer(newFakeServer(&sent).handler())
+	t.Cleanup(ts.Close)
+	cfg := buildTestCfg(t, ts.URL)
+	dir := t.TempDir()
+	outputs := map[string]string{
+		"pem-cert":      bundle.FullchainPEM,
+		"pem-fullchain": bundle.FullchainPEM + inter.FullchainPEM,
+		"pem-key":       bundle.KeyPEM,
+		"pem-bundle":    bundle.FullchainPEM + inter.FullchainPEM + bundle.KeyPEM,
+	}
+	var specs []config.OutputSpec
+	for format := range outputs {
+		specs = append(specs, config.OutputSpec{Format: format, Path: filepath.Join(dir, format)})
+	}
+	cfg.Certificates["api-prod"] = config.CertificateOutputs{Outputs: specs}
+	c := newTestClient(t, cfg)
+
+	if err := c.Fetch(context.Background(), ""); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	for format, want := range outputs {
+		if got := fileContent(filepath.Join(dir, format)); got != want {
+			t.Errorf("%s output = %q, want %q", format, got, want)
+		}
+	}
+}
+
+// TestAnswersAreBounded covers a server that sends a view or a bundle longer
+// than maxResponseBytes: sigilc stops reading it and reports the answer,
+// rather than reading on for as long as the server sends. The documents are
+// valid JSON, padded with whitespace between their tokens.
+func TestAnswersAreBounded(t *testing.T) {
+	padding := strings.Repeat(" ", maxResponseBytes)
+	for _, tc := range []struct {
+		name    string
+		serve   func(w http.ResponseWriter, r *http.Request, bundle *proto.CertBundle) bool
+		wantErr string
+	}{
+		{name: "view", wantErr: "sync: decode", serve: func(w http.ResponseWriter, r *http.Request, _ *proto.CertBundle) bool {
+			if r.URL.Path != "/v1/sync" {
+				return false
+			}
+			w.Header().Set("ETag", `"v1"`)
+			_, _ = io.WriteString(w, "["+padding+"]")
+			return true
+		}},
+		{name: "bundle", wantErr: `bundle "api-prod": decode`, serve: func(w http.ResponseWriter, r *http.Request, bundle *proto.CertBundle) bool {
+			if r.URL.Path != "/v1/certificates/api-prod/bundle" {
+				return false
+			}
+			data, err := json.Marshal(bundle)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return true
+			}
+			_, _ = io.WriteString(w, "{"+padding+string(data[1:]))
+			return true
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bundle := newTestBundle(t, "api-prod")
+			api := newFakeServer(bundle).handler()
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !tc.serve(w, r, bundle) {
+					api.ServeHTTP(w, r)
+				}
+			}))
+			t.Cleanup(ts.Close)
+			c := newTestClient(t, buildTestCfg(t, ts.URL))
+			if err := c.Fetch(context.Background(), ""); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Fetch error = %v, want %q", err, tc.wantErr)
 			}
 		})
 	}
@@ -949,15 +1194,18 @@ func TestReconcileFailureSkipsHook(t *testing.T) {
 }
 
 // TestHookPendingWriteIsRetried covers a hook_pending bit whose write failed:
-// it must reach certs.json once the disk works again, or a restart would
-// lose the on_change run it records.
+// the program does not run until the bit is on disk, and the bit must reach
+// certs.json once the disk works again, or a restart would lose the
+// on_change run it records.
 func TestHookPendingWriteIsRetried(t *testing.T) {
 	bundle := newTestBundle(t, "api-prod")
 	cfg := buildTestCfg(t, "https://sigil.example.test")
 	fullchainOutput(cfg, t.TempDir(), "api-prod", "/usr/sbin/reload")
 	seedStore(t, cfg.Client.DataDir, bundle)
 	c := newTestClient(t, cfg)
+	runs := 0
 	c.hook = func(_ context.Context, certName string, _ []string) error {
+		runs++
 		return fmt.Errorf("on_change of certificate %s: exit status 1", certName)
 	}
 	// A directory where certs.json belongs fails every write of the store.
@@ -975,6 +1223,9 @@ func TestHookPendingWriteIsRetried(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "save store") {
 		t.Fatalf("reconcile error = %v, want the failed write of the store", err)
 	}
+	if runs != 0 {
+		t.Fatal("on_change ran while its hook_pending bit was not on disk")
+	}
 
 	// The disk works again, and the program keeps failing.
 	if err := os.Remove(storePath); err != nil {
@@ -986,6 +1237,9 @@ func TestHookPendingWriteIsRetried(t *testing.T) {
 	c.pullMu.Lock()
 	_ = c.reconcileLocked()
 	c.pullMu.Unlock()
+	if runs != 1 {
+		t.Fatalf("on_change ran %d times once its bit was on disk, want 1", runs)
+	}
 	if !readStore(t, cfg.Client.DataDir)["api-prod"].HookPending {
 		t.Fatal("hook_pending is only in memory: a restart would lose the failed on_change run")
 	}
@@ -1152,6 +1406,44 @@ func TestRunRestoresOutputsBeforeFirstAnswer(t *testing.T) {
 	waitFor(t, "the output restored from the store", func() bool { return fileContent(outPath) == bundle.FullchainPEM })
 }
 
+// TestRunRemovesLeftoverTemps covers the temporary files that a sigilc
+// stopped while it wrote an output or the store leaves behind: Run removes
+// them before its first reconcile, and nothing else.
+func TestRunRemovesLeftoverTemps(t *testing.T) {
+	bundle := newTestBundle(t, "api-prod")
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(ts.Close)
+	cfg := buildTestCfg(t, ts.URL)
+	outDir := t.TempDir()
+	outPath := fullchainOutput(cfg, outDir, "api-prod")
+	seedStore(t, cfg.Client.DataDir, bundle)
+	leftovers := []string{
+		filepath.Join(outDir, ".sigil-tmp-123"),
+		filepath.Join(cfg.Client.DataDir, ".sigil-private-456"),
+	}
+	kept := filepath.Join(outDir, "other.pem")
+	for _, path := range append(leftovers, kept) {
+		if err := os.WriteFile(path, []byte("left"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := newTestClient(t, cfg)
+
+	startRun(t, c)
+	waitFor(t, "the output restored from the store", func() bool { return fileContent(outPath) == bundle.FullchainPEM })
+	for _, path := range leftovers {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s was left: %v", path, err)
+		}
+	}
+	if fileContent(kept) != "left" {
+		t.Errorf("%s was removed", kept)
+	}
+}
+
 // TestStoppingRunKillsHook checks that on_change programs run under the ctx
 // of Run: stopping the daemon kills a running program instead of waiting for
 // it to end.
@@ -1223,7 +1515,7 @@ func TestHooksAfterRunEndsAreCancelled(t *testing.T) {
 	updated := *cfg
 	updated.Certificates = map[string]config.CertificateOutputs{}
 	fullchainOutput(&updated, t.TempDir(), "api-prod", "/usr/sbin/reload")
-	if err := c.Reload(&updated); err != nil {
+	if err := c.Reload(loaded(&updated)); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 	if !ran {
@@ -1478,7 +1770,7 @@ func TestReloadReconcilesAndRestartsSync(t *testing.T) {
 		}}}
 		n := len(fs.syncRequests())
 		reloadedAt := time.Now()
-		if err := c.Reload(&updated); err != nil {
+		if err := c.Reload(loaded(&updated)); err != nil {
 			t.Fatalf("Reload: %v", err)
 		}
 		if got := fileContent(addedPath); got != bundle.FullchainPEM {
@@ -1510,7 +1802,7 @@ func TestReloadReconcilesAndRestartsSync(t *testing.T) {
 		n := len(fs.syncRequests())
 		reloadedAt := time.Now()
 		updated := *cfg
-		if err := c.Reload(&updated); err != nil {
+		if err := c.Reload(loaded(&updated)); err != nil {
 			t.Fatalf("Reload: %v", err)
 		}
 		next := fs.syncAt(t, n)
@@ -1519,6 +1811,37 @@ func TestReloadReconcilesAndRestartsSync(t *testing.T) {
 		}
 		t.Logf("full pull %v after Reload", next.at.Sub(reloadedAt))
 	})
+}
+
+// TestFetchWakesLoopFromBackoff covers sigilc fetch while the loop backs off
+// from a failed round: once the fetch succeeds, the loop waits for a change
+// again at once, not when its backoff ends.
+func TestFetchWakesLoopFromBackoff(t *testing.T) {
+	setBackoff(t, time.Minute, time.Minute)
+	fs := newFakeServer(newTestBundle(t, "api-prod"))
+	var failing atomic.Bool
+	failing.Store(true)
+	fs.syncStatus = func(string) int {
+		if failing.Load() {
+			return http.StatusServiceUnavailable
+		}
+		return 0
+	}
+	ts := httptest.NewServer(fs.handler())
+	t.Cleanup(ts.Close)
+	c := newTestClient(t, buildTestCfg(t, ts.URL))
+	startRun(t, c)
+	waitFor(t, "a failed round", func() bool { return len(fs.syncRequests()) >= 1 })
+
+	failing.Store(false)
+	n := len(fs.syncRequests())
+	if err := c.Fetch(context.Background(), ""); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	// Request n is the fetch's; the loop's follows it.
+	if next := fs.syncAt(t, n+1); next.ifNoneMatch == "" {
+		t.Fatal("the loop's request after the fetch carried no If-None-Match")
+	}
 }
 
 // TestReloadDiscardsAnswerThatArrivedDuringReload covers an answer to the
@@ -1563,7 +1886,7 @@ func TestReloadDiscardsAnswerThatArrivedDuringReload(t *testing.T) {
 		OnChange: []string{"/usr/sbin/reload"},
 	}}
 	reloaded := make(chan error, 1)
-	go func() { reloaded <- c.Reload(&updated) }()
+	go func() { reloaded <- c.Reload(loaded(&updated)) }()
 	select {
 	case <-entered:
 	case <-time.After(10 * time.Second):
@@ -1881,7 +2204,7 @@ func TestReloadAppliesRuntimeConfig(t *testing.T) {
 	updated := buildTestCfg(t, "https://new.example.com")
 	updated.Client.Name = "web-2"
 	updated.Client.DataDir = cfg.Client.DataDir
-	if err := c.Reload(updated); err != nil {
+	if err := c.Reload(loaded(updated)); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 	status := c.Status()
@@ -1909,7 +2232,7 @@ func TestReloadKeepsReconcileErrorsInStatus(t *testing.T) {
 		Outputs: []config.OutputSpec{{Format: "pem-key", Path: filepath.Join(blocker, "api.key")}},
 	}}
 
-	if err := c.Reload(&updated); err != nil {
+	if err := c.Reload(loaded(&updated)); err != nil {
 		t.Fatalf("Reload returned %v, want the reconcile error in the status only", err)
 	}
 	status := c.Status()
@@ -1935,7 +2258,7 @@ func TestReloadRejectsRestartOnlyChanges(t *testing.T) {
 			updated := *cfg
 			updated.Client.ServerURL = "https://new.example.com"
 			tc.change(&updated.Client)
-			if err := c.Reload(&updated); err == nil || !strings.Contains(err.Error(), tc.field) {
+			if err := c.Reload(loaded(&updated)); err == nil || !strings.Contains(err.Error(), tc.field) {
 				t.Fatalf("Reload error = %v, want %s to require a restart", err, tc.field)
 			}
 			if got := c.Status().ServerURL; got != cfg.Client.ServerURL {
@@ -1945,23 +2268,135 @@ func TestReloadRejectsRestartOnlyChanges(t *testing.T) {
 	}
 }
 
+// TestReloadDuringRenewalKeepsTheRenewedIdentity covers sigilc reload while
+// an identity renewal waits for the server. The renewal writes the renewed
+// identity to client.yaml, then switches to it; a reload that read
+// client.yaml before would apply the identity the renewal replaced, which
+// sigils refuses once the renewed one was presented, until sigilc restarts.
+func TestReloadDuringRenewalKeepsTheRenewedIdentity(t *testing.T) {
+	now := time.Now()
+	authority := newTestIdentityCA(t, now)
+	fs := newFakeServer()
+	renewing := make(chan struct{})
+	proceed := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.Handle("/", fs.handler())
+	mux.HandleFunc("/v1/identity/renew", func(w http.ResponseWriter, r *http.Request) {
+		var req proto.RenewIdentityRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		block, _ := pem.Decode([]byte(req.CSR))
+		if block == nil {
+			http.Error(w, "no CSR", http.StatusBadRequest)
+			return
+		}
+		csr, err := x509.ParseCertificateRequest(block.Bytes)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		close(renewing)
+		<-proceed
+		certPEM, err := authority.sign("web-1", csr.PublicKey, now, now.Add(90*24*time.Hour), 3)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, proto.RenewIdentityResponse{ClientCert: certPEM})
+	})
+	ts := newMTLSServer(t, authority, now, mux)
+
+	cfg := buildTestCfg(t, ts.URL)
+	cfg.Client.IdentityRenewBefore = 30 * 24 * time.Hour
+	// Due for renewal: it expires within identity_renew_before.
+	withIdentity(t, cfg, authority, now, now.Add(24*time.Hour))
+	// onDisk stands in for client.yaml: the identity saver writes it, and the
+	// reload reads it, as agent.Run wires them.
+	var diskMu sync.Mutex
+	onDisk := *cfg
+	c, err := New(cfg, WithIdentitySaver(func(caCert, clientCert, clientKey string) error {
+		diskMu.Lock()
+		defer diskMu.Unlock()
+		onDisk.Identity = config.IdentitySection{CACert: caCert, ClientCert: clientCert, ClientKey: clientKey}
+		return nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The fetch renews the identity under pullMu; the server holds the POST.
+	fetched := make(chan error, 1)
+	go func() { fetched <- c.Fetch(context.Background(), "") }()
+	<-renewing
+	reloaded := make(chan error, 1)
+	go func() {
+		reloaded <- c.Reload(func() (*config.ClientConfig, error) {
+			diskMu.Lock()
+			defer diskMu.Unlock()
+			read := onDisk
+			return &read, nil
+		})
+	}()
+	time.Sleep(100 * time.Millisecond) // let the reload wait for pullMu
+	close(proceed)
+
+	if err := <-fetched; err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if err := <-reloaded; err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	diskMu.Lock()
+	saved := onDisk.Identity.ClientCert
+	diskMu.Unlock()
+	c.cfgMu.RLock()
+	running := c.cfg.Identity.ClientCert
+	c.cfgMu.RUnlock()
+	if running != saved {
+		t.Fatal("after a reload during a renewal, sigilc runs with the identity the renewal replaced")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+// TestSplitBundle covers what the outputs get of stored material: the
+// CERTIFICATE blocks of the fullchain, the first as the leaf, and the first
+// private key block of the key, each encoded again. Text around them, PEM
+// headers and other blocks, such as a private key in the fullchain, reach no
+// output, and material without a certificate or a key is refused.
 func TestSplitBundle(t *testing.T) {
-	full := "-----BEGIN CERTIFICATE-----\nleaf\n-----END CERTIFICATE-----\n" +
-		"-----BEGIN CERTIFICATE-----\ninter\n-----END CERTIFICATE-----\n"
-	cb := splitBundle(storedCert{FullchainPEM: full, KeyPEM: "key"})
+	leaf, inter := newTestBundle(t, "leaf"), newTestBundle(t, "inter")
+	withHeader, _ := pem.Decode([]byte(leaf.FullchainPEM))
+	withHeader.Headers = map[string]string{"Comment": "leaf"}
+	full := "junk\n" + leaf.KeyPEM + string(pem.EncodeToMemory(withHeader)) +
+		"subject=CN = inter\n" + inter.FullchainPEM + "trailing text"
+	key := "junk\n" + inter.FullchainPEM + leaf.KeyPEM + inter.KeyPEM + "trailing text"
 
-	if string(cb.CertPEM) != "-----BEGIN CERTIFICATE-----\nleaf\n-----END CERTIFICATE-----\n" {
-		t.Errorf("CertPEM: %q", cb.CertPEM)
+	got, err := splitBundle(storedCert{FullchainPEM: full, KeyPEM: key})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if string(cb.ChainPEM) != "-----BEGIN CERTIFICATE-----\ninter\n-----END CERTIFICATE-----\n" {
-		t.Errorf("ChainPEM: %q", cb.ChainPEM)
+	if string(got.CertPEM) != leaf.FullchainPEM {
+		t.Errorf("CertPEM: %q", got.CertPEM)
 	}
-	if string(cb.KeyPEM) != "key" {
-		t.Errorf("KeyPEM: %q", cb.KeyPEM)
+	if string(got.ChainPEM) != inter.FullchainPEM {
+		t.Errorf("ChainPEM: %q", got.ChainPEM)
+	}
+	if string(got.KeyPEM) != leaf.KeyPEM {
+		t.Errorf("KeyPEM: %q", got.KeyPEM)
+	}
+
+	for _, bad := range []storedCert{
+		{FullchainPEM: leaf.KeyPEM, KeyPEM: leaf.KeyPEM},
+		{FullchainPEM: leaf.FullchainPEM, KeyPEM: leaf.FullchainPEM},
+	} {
+		if _, err := splitBundle(bad); err == nil {
+			t.Errorf("splitBundle(%+v) succeeded, want an error", bad)
+		}
 	}
 }
 

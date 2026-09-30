@@ -15,6 +15,8 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -34,6 +36,12 @@ const jitterPct = 0.1 // ±10 % of the backoff after a failed round
 // The loop's GET /v1/sync, which the server may hold for longer, does not use
 // it. A variable only so tests can shorten it.
 var httpTimeout = 30 * time.Second
+
+// maxResponseBytes bounds how much of the body of an answer from sigils
+// sigilc reads: a renewed identity, a bundle, or a view, which lists some
+// 5000 certificates in 1 MiB. A server that sends more cannot make sigilc
+// hold it all in memory.
+const maxResponseBytes = 1 << 20
 
 // Client is the sigilc runtime.
 type Client struct {
@@ -70,8 +78,11 @@ type Client struct {
 	// set after Run returns, so a fetch or reload that takes pullMu after
 	// that cancels its programs at once instead of leaving them to outlive
 	// the daemon. Guarded by pullMu.
-	runCtx   context.Context
-	reloadCh chan struct{}
+	runCtx context.Context
+	// wake ends the loop's sleep after a round with an error. Reload and an
+	// IPC fetch without an error send to it: the loop pulls again at once
+	// rather than when its backoff ends.
+	wake chan struct{}
 
 	statusMu sync.RWMutex
 	status   RuntimeStatus
@@ -111,8 +122,9 @@ type RuntimeStatus struct {
 	Certs []CertStatus
 }
 
-// CertStatus describes a stored certificate. NotAfter is that of its first
-// certificate, or zero if it cannot be parsed. RenewAt is when that
+// CertStatus describes a stored certificate. NotAfter is that of its leaf,
+// the one leafPEM returns and the outputs hold, or zero if it cannot be
+// parsed. RenewAt is when that
 // certificate is due for renewal under the ratio rule of internal/renewal, or
 // zero if renewal.RenewAt fails for it; sigils renews it later when its CA
 // suggests a later renewal window through ARI. Outputs is the number of
@@ -140,10 +152,10 @@ func New(cfg *config.ClientConfig, options ...Option) (*Client, error) {
 		return nil, fmt.Errorf("load certificate store: %w", err)
 	}
 	c := &Client{
-		cfg:      cfg,
-		http:     httpClient,
-		store:    certs,
-		reloadCh: make(chan struct{}, 1),
+		cfg:   cfg,
+		http:  httpClient,
+		store: certs,
+		wake:  make(chan struct{}, 1),
 		status: RuntimeStatus{
 			Name:      cfg.Client.Name,
 			ServerURL: cfg.Client.ServerURL,
@@ -158,13 +170,14 @@ func New(cfg *config.ClientConfig, options ...Option) (*Client, error) {
 	return c, nil
 }
 
-// Run reconciles the outputs with the store, then runs the sync loop until
-// ctx is cancelled.
+// Run removes the temporary files an earlier sigilc left behind, reconciles
+// the outputs with the store, then runs the sync loop until ctx is cancelled.
 func (c *Client) Run(ctx context.Context) error {
 	// Restore the outputs before the first request: they come back even
 	// while the server is unreachable.
 	c.pullMu.Lock()
 	c.runCtx = ctx
+	c.removeLeftoverTempsLocked()
 	c.recordReconcile(c.reconcileLocked())
 	c.pullMu.Unlock()
 
@@ -176,12 +189,46 @@ func (c *Client) Run(ctx context.Context) error {
 	return err
 }
 
+// removeLeftoverTempsLocked removes the temporary files that a sigilc stopped
+// while it wrote left behind: those of output.Reconcile, named .sigil-tmp-*,
+// next to every output configured, and those of securefile.WriteFile, named
+// .sigil-private-*, in the data directory. Every write of this process holds
+// pullMu, so none of them is its own. The directory of client.yaml is left
+// alone, since sigilc enroll may be writing there.
+func (c *Client) removeLeftoverTempsLocked() {
+	removeTemps(c.cfg.Client.DataDir, ".sigil-private-")
+	dirs := make(map[string]bool)
+	for _, certificate := range c.cfg.Certificates {
+		for _, spec := range certificate.Outputs {
+			dirs[filepath.Dir(spec.Path)] = true
+		}
+	}
+	for dir := range dirs {
+		removeTemps(dir, ".sigil-tmp-")
+	}
+}
+
+// removeTemps removes the entries of dir whose names start with prefix. A
+// directory that cannot be read has none to remove.
+func removeTemps(dir, prefix string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), prefix) {
+			_ = os.Remove(filepath.Join(dir, entry.Name()))
+		}
+	}
+}
+
 // Fetch runs a full pull in the caller's goroutine. It asks GET /v1/sync for
 // the view without If-None-Match, downloads the certificates whose
 // fingerprints changed, and name as well when it is not empty, then
 // reconciles every output with the store and runs the pending on_change
 // programs. A failed step does not stop the later ones; Fetch returns their
-// joined errors, which read as LastError does.
+// joined errors, which read as LastError does. A fetch without an error wakes
+// the loop from a backoff.
 func (c *Client) Fetch(ctx context.Context, name string) error {
 	c.pullMu.Lock()
 	defer c.pullMu.Unlock()
@@ -220,6 +267,12 @@ func (c *Client) Fetch(ctx context.Context, name string) error {
 	c.recordPullLocked(answeredAt, err)
 	if err != nil {
 		return printableError{err}
+	}
+	// The loop may be backing off from a round that failed, while a change
+	// could come at any moment; it waits for one again at once.
+	select {
+	case c.wake <- struct{}{}:
+	default:
 	}
 	return nil
 }
@@ -276,13 +329,13 @@ func (c *Client) renewIdentityLocked(ctx context.Context) error {
 		return fmt.Errorf("renewal server returned %d", resp.StatusCode)
 	}
 	var renewal proto.RenewIdentityResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&renewal); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&renewal); err != nil {
 		return fmt.Errorf("decode renewal response: %w", err)
 	}
 	updated := cfgSnapshot
 	updated.Identity.ClientCert = renewal.ClientCert
 	updated.Identity.ClientKey = string(keyAndCSR.KeyPEM)
-	newHTTPClient, err := validateRenewedIdentity(&updated, c.now())
+	newHTTPClient, err := validateRenewedIdentity(&updated)
 	if err != nil {
 		return err
 	}
@@ -306,7 +359,7 @@ func (c *Client) renewIdentityLocked(ctx context.Context) error {
 	return nil
 }
 
-func validateRenewedIdentity(cfg *config.ClientConfig, now time.Time) (*http.Client, error) {
+func validateRenewedIdentity(cfg *config.ClientConfig) (*http.Client, error) {
 	client, err := buildHTTPClient(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("validate renewed key pair: %w", err)
@@ -326,9 +379,15 @@ func validateRenewedIdentity(cfg *config.ClientConfig, now time.Time) (*http.Cli
 	if !roots.AppendCertsFromPEM([]byte(cfg.Identity.CACert)) {
 		return nil, fmt.Errorf("parse identity CA certificate")
 	}
+	// Checked at its own NotBefore, not by this host's clock: the mini-CA
+	// backdates by a minute, so a clock behind the server's by more than that
+	// would fail every renewal until the current identity expires. The
+	// validity says nothing here: buildHTTPClient made sure the certificate
+	// holds the key made for this request, so it cannot be an old one
+	// replayed.
 	if _, err := leaf.Verify(x509.VerifyOptions{
 		Roots:       roots,
-		CurrentTime: now,
+		CurrentTime: leaf.NotBefore,
 		KeyUsages:   []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}); err != nil {
 		return nil, fmt.Errorf("verify renewed certificate: %w", err)
@@ -352,7 +411,7 @@ func (c *Client) getBundle(ctx context.Context, name string) (*proto.CertBundle,
 		return nil, fmt.Errorf("server returned %d", resp.StatusCode)
 	}
 	var b proto.CertBundle
-	if err := json.NewDecoder(resp.Body).Decode(&b); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&b); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
 	}
 	return &b, nil
@@ -365,11 +424,14 @@ func (c *Client) getBundle(ctx context.Context, name string) (*proto.CertBundle,
 // When Reconcile rewrites the content of an output of a certificate that has
 // an on_change program, the certificate gets hook_pending; repairing only the
 // mode or owner of an output does not set it. The new bits are written to the
-// store before any program runs. A program does not run while its
-// certificate's outputs failed to reconcile, since they may be incomplete. A
-// program that exits 0 clears the bit, and so does the lack of a program; a
-// failure keeps it, so the program runs again after the next reconcile. The
-// cleared bits are written once all programs have run.
+// store before any program runs, and no program runs while that write fails:
+// a program runs only once the store records that it must, so that a sigilc
+// stopped while the program runs runs it again after a restart. A program
+// does not run while its certificate's outputs failed to reconcile, since
+// they may be incomplete. A program that exits 0 clears the bit, and so does
+// the lack of a program; a failure keeps it, so the program runs again after
+// the next reconcile. The cleared bits are written once all programs have
+// run.
 //
 // It logs the event "outputs rewritten" for each certificate whose outputs it
 // rewrote, when Reconcile reports a change, and "on_change succeeded" for each
@@ -386,7 +448,11 @@ func (c *Client) reconcileLocked() error {
 			continue
 		}
 		cert := c.store[name]
-		changed, err := output.Reconcile(splitBundle(cert), outputs)
+		material, err := splitBundle(cert)
+		changed := false
+		if err == nil {
+			changed, err = output.Reconcile(material, outputs)
+		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("outputs of certificate %s: %w", name, err))
 			failed[name] = true
@@ -402,7 +468,7 @@ func (c *Client) reconcileLocked() error {
 	}
 	if pending || c.storeUnsaved {
 		if err := c.writeStoreLocked(); err != nil {
-			errs = append(errs, err)
+			return errors.Join(append(errs, err)...)
 		}
 	}
 
@@ -465,9 +531,15 @@ func (c *Client) Status() RuntimeStatus {
 	return status
 }
 
-// Reload applies a newly parsed client configuration. Changing the IPC socket
-// or the data directory requires a service restart: the command process owns
-// the IPC listener, and New read the store from the data directory.
+// Reload applies the client configuration that load reads, as
+// config.LoadClient reads client.yaml. Changing the IPC socket or the data
+// directory requires a service restart: the command process owns the IPC
+// listener, and New read the store from the data directory.
+//
+// load runs under pullMu. An identity renewal writes client.yaml and switches
+// to the renewed identity under pullMu, so a configuration read before could
+// hold the identity that a renewal replaced in the meantime, which sigils
+// refuses once the renewed one was presented.
 //
 // Once the new configuration is applied, Reload logs the event "configuration
 // reloaded". Before it returns, it reconciles the outputs with the store under
@@ -476,14 +548,18 @@ func (c *Client) Status() RuntimeStatus {
 // applied by then. Reload then clears the etag, cancels the loop's request in
 // flight, which was made with the old configuration, and wakes the loop from
 // a backoff, so the loop pulls the whole view at once.
-func (c *Client) Reload(cfg *config.ClientConfig) error {
+func (c *Client) Reload(load func() (*config.ClientConfig, error)) error {
+	c.pullMu.Lock()
+	defer c.pullMu.Unlock()
+	cfg, err := load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
 	httpClient, err := buildHTTPClient(cfg)
 	if err != nil {
 		return printableError{err}
 	}
 
-	c.pullMu.Lock()
-	defer c.pullMu.Unlock()
 	c.cfgMu.Lock()
 	if cfg.Client.IPCSocket != c.cfg.Client.IPCSocket {
 		c.cfgMu.Unlock()
@@ -509,7 +585,7 @@ func (c *Client) Reload(cfg *config.ClientConfig) error {
 		c.syncCancel()
 	}
 	select {
-	case c.reloadCh <- struct{}{}:
+	case c.wake <- struct{}{}:
 	default:
 	}
 	return nil
@@ -608,16 +684,17 @@ func certStatuses(certs map[string]storedCert, cfg *config.ClientConfig) []CertS
 	out := make([]CertStatus, 0, len(certs))
 	for _, name := range slices.Sorted(maps.Keys(certs)) {
 		cert := certs[name]
+		leaf := leafPEM(cert)
 		configured := cfg.Certificates[name]
 		status := CertStatus{
 			Name:        name,
 			Fingerprint: cert.Fingerprint,
-			NotAfter:    leafNotAfter(cert.FullchainPEM),
+			NotAfter:    leafNotAfter(leaf),
 			Outputs:     len(configured.Outputs),
 			OnChange:    len(configured.OnChange) > 0,
 			HookPending: cert.HookPending,
 		}
-		if renewAt, err := renewal.RenewAt(cert.FullchainPEM); err == nil {
+		if renewAt, err := renewal.RenewAt(leaf); err == nil {
 			status.RenewAt = renewAt
 		}
 		out = append(out, status)
@@ -625,10 +702,10 @@ func certStatuses(certs map[string]storedCert, cfg *config.ClientConfig) []CertS
 	return out
 }
 
-// leafNotAfter returns the NotAfter of the first certificate in
-// fullchainPEM, or the zero time if it cannot be parsed.
-func leafNotAfter(fullchainPEM string) time.Time {
-	block, _ := pem.Decode([]byte(fullchainPEM))
+// leafNotAfter returns the NotAfter of the certificate in the first PEM block
+// of certPEM, or the zero time if it cannot be parsed.
+func leafNotAfter(certPEM string) time.Time {
+	block, _ := pem.Decode([]byte(certPEM))
 	if block == nil {
 		return time.Time{}
 	}
@@ -639,20 +716,60 @@ func leafNotAfter(fullchainPEM string) time.Time {
 	return leaf.NotAfter
 }
 
-// splitBundle splits the stored fullchain (cert + intermediates) into CertPEM
-// and ChainPEM. It treats the first PEM block as the leaf cert and the rest as
-// the chain.
-func splitBundle(cert storedCert) *output.CertBundle {
-	full := []byte(cert.FullchainPEM)
-	block, rest := pem.Decode(full)
-	certPEM := full
-	if block != nil {
-		certPEM = pem.EncodeToMemory(block)
+// certificateBlocks returns the CERTIFICATE blocks of fullchainPEM in order,
+// each encoded again without PEM headers.
+func certificateBlocks(fullchainPEM string) [][]byte {
+	var certs [][]byte
+	rest := []byte(fullchainPEM)
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			return certs
+		}
+		if block.Type == "CERTIFICATE" {
+			certs = append(certs, pem.EncodeToMemory(&pem.Block{Type: block.Type, Bytes: block.Bytes}))
+		}
 	}
-	return &output.CertBundle{
-		CertPEM:  certPEM,
-		ChainPEM: rest,
-		KeyPEM:   []byte(cert.KeyPEM),
+}
+
+// leafPEM returns the leaf of cert that the outputs hold, the first
+// CERTIFICATE block of its fullchain, or "" if it has none.
+func leafPEM(cert storedCert) string {
+	certs := certificateBlocks(cert.FullchainPEM)
+	if len(certs) == 0 {
+		return ""
+	}
+	return string(certs[0])
+}
+
+// splitBundle returns what the outputs of cert hold: the CERTIFICATE blocks
+// of its fullchain, the first as the leaf and the others as the chain, and the
+// first private key block of its key, the blocks tls.X509KeyPair takes. Each
+// is encoded again without PEM headers, so nothing else that sigils sent
+// reaches an output: neither text around the blocks nor another block, such
+// as a private key in the fullchain, which would make a pem-cert output,
+// readable by everyone, hold the key. checkBundle has refused the material
+// unless the key belongs to this leaf.
+func splitBundle(cert storedCert) (*output.CertBundle, error) {
+	certs := certificateBlocks(cert.FullchainPEM)
+	if len(certs) == 0 {
+		return nil, errors.New("no certificate in the fullchain")
+	}
+	rest := []byte(cert.KeyPEM)
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			return nil, errors.New("no private key")
+		}
+		if block.Type == "PRIVATE KEY" || strings.HasSuffix(block.Type, " PRIVATE KEY") {
+			return &output.CertBundle{
+				CertPEM:  certs[0],
+				ChainPEM: bytes.Join(certs[1:], nil),
+				KeyPEM:   pem.EncodeToMemory(&pem.Block{Type: block.Type, Bytes: block.Bytes}),
+			}, nil
+		}
 	}
 }
 

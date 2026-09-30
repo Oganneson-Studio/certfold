@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"path/filepath"
+	"strings"
 	"time"
 
 	legolog "github.com/go-acme/lego/v4/log"
@@ -33,9 +34,18 @@ const shutdownTimeout = 10 * time.Second
 // reads one before it is used can enroll with it.
 const maxTokenLifetime = 7 * 24 * time.Hour
 
+// issuanceStopTimeout bounds the whole shutdown, which waits for the
+// issuances of the scheduler. lego cannot be interrupted, and an issuance
+// waiting for a DNS provider can take tens of minutes, or hang on a provider
+// whose API client has no overall timeout. Past the bound, shutdown abandons
+// the issuances, with the certificates they would store and the DNS records
+// they would clean up. Tests shorten it.
+var issuanceStopTimeout = 30 * time.Second
+
 // Run loads server.yaml from configPath and runs the sigils daemon until ctx
 // is cancelled or the HTTPS or IPC server fails. Shutdown stops the HTTPS and
-// IPC servers, waits for the renewal scheduler, and closes the store last.
+// IPC servers, waits for the renewal scheduler for issuanceStopTimeout at
+// most, and closes the store last.
 //
 // logs is the logging that logging.Setup made the default: the IPC API serves
 // its events, and the errors of the HTTPS and IPC servers go to its sink
@@ -102,7 +112,7 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 	}()
 
 	// Enrollment tokens are created over IPC and redeemed over HTTPS.
-	enrollSrv := enroll.NewServer(db.Tokens, db.Clients, miniCA)
+	enrollSrv := enroll.NewServer(db, miniCA)
 
 	// The errors of net/http servers, such as the failed TLS handshakes of
 	// every scanner on the internet, go to the service log but are not
@@ -113,10 +123,16 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 	// renewal still waiting for its certificate's lock or an issuance slot
 	// gives up. One already running continues, as lego ignores ctx, and stores
 	// its certificate if it finishes before the store closes: shutdown waits
-	// for the scheduler's issuances but not for manual renewals.
+	// for the scheduler's issuances, up to issuanceStopTimeout, but not for
+	// manual renewals.
 	ipcSrv := ipc.NewServer(ipc.ServerDeps{
-		DB:     db,
-		Server: &ipc.ServerControlDeps{Reload: runtimeConfig.Reload},
+		DB: db,
+		Server: &ipc.ServerControlDeps{
+			Reload:            runtimeConfig.Reload,
+			ConfigPath:        configPath,
+			AddCertificate:    runtimeConfig.AddCertificate,
+			RemoveCertificate: runtimeConfig.RemoveCertificate,
+		},
 		Certificates: &ipc.CertificateControlDeps{
 			Renew: func(ctx context.Context, name string) error {
 				slog.Info("manual renewal requested", "cert", name)
@@ -140,11 +156,9 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 
 	// HTTPS server.
 	httpSrv := api.New(api.Deps{
-		ServerCfg:     cfg,
 		CurrentServer: runtimeConfig.Current,
 		DB:            db,
 		MiniCA:        miniCA,
-		DataDir:       cfg.Server.DataDir,
 		EnrollServer:  enrollSrv,
 		Changes:       changes,
 		Done:          ctx.Done(),
@@ -168,8 +182,11 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 	// Stop taking requests, then wait for background work, then close the
 	// store (deferred above). Cancelling before Shutdown answers the requests
 	// waiting in GET /v1/sync at once, which would otherwise hold Shutdown
-	// until shutdownTimeout.
+	// until shutdownTimeout. The scheduler stops with ctx as well, so the
+	// bound on its issuances counts from here.
 	cancel()
+	abandon := time.NewTimer(issuanceStopTimeout)
+	defer abandon.Stop()
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancelShutdown()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
@@ -178,7 +195,18 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 	if err := ipcSrv.Shutdown(shutdownCtx); err != nil {
 		_ = ipcSrv.Close()
 	}
-	<-schedulerDone
+	select {
+	case <-schedulerDone:
+	case <-abandon.C:
+		// The operator may have DNS records to clean up for these.
+		var issuing []string
+		for _, spec := range runtimeConfig.Current().Certificates {
+			if r.Issuing(spec.Name) {
+				issuing = append(issuing, spec.Name)
+			}
+		}
+		slog.Warn("certificate issuance abandoned at shutdown", "certs", strings.Join(issuing, ","))
+	}
 	return runErr
 }
 

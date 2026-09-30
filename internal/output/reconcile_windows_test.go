@@ -47,87 +47,41 @@ func TestReconcileReplacesOutputWithReadOnlyMode(t *testing.T) {
 	}
 }
 
-// TestReconcileRestoresOwner covers an output whose owner was changed after
-// it was written, then an owner changed in its spec, for a format that
-// createTemp gives a private DACL and one that inherits the directory's. The
-// content matches, so no change is reported, but the output must get the DACL
-// of a new one: a key output's grants read access to the owner configured.
-// The owner is the current user, then Administrators; one of them differs
-// from the token's default owner, so applyOwnership has to set it.
-func TestReconcileRestoresOwner(t *testing.T) {
-	if !windows.GetCurrentProcessToken().IsElevated() {
-		t.Skip("making Administrators the owner needs an elevated token")
-	}
-	user, err := windows.GetCurrentProcessToken().GetTokenUser()
-	if err != nil {
-		t.Fatal(err)
-	}
-	admins, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+// TestReconcileGivesKeyOutputToServiceAccount covers owner set to the account
+// of a service that reads the key, as README tells Windows operators to do for
+// IIS or nginx. The account gets read access to the key and does not become
+// its owner: making another account the owner needs SeRestorePrivilege, which
+// LocalSystem holds disabled, so every round would fail, and an owner may
+// change the DACL. An output that matches is left alone with owner set.
+func TestReconcileGivesKeyOutputToServiceAccount(t *testing.T) {
+	networkService, err := windows.CreateWellKnownSid(windows.WinNetworkServiceSid)
 	if err != nil {
 		t.Fatal(err)
 	}
 	b := makeBundle(t)
-	dir := outputDir(t)
-	owners := []*windows.SID{user.User.Sid, admins}
-	for i, owner := range owners {
-		other := owners[1-i]
-		for _, format := range []string{"pem-key", "pem-cert"} {
-			t.Run(format+"/"+owner.String(), func(t *testing.T) {
-				spec := config.OutputSpec{Format: format, Path: filepath.Join(dir, format+"-"+owner.String()), Owner: owner.String()}
-				if !mustReconcile(t, b, spec) {
-					t.Fatal("a missing output reported no change")
-				}
-				checkOwner(t, spec.Path, owner)
-				before := fileState(t, spec.Path)
-				if mustReconcile(t, b, spec) {
-					t.Fatal("an output with the configured owner was rewritten")
-				}
-				checkUntouched(t, spec.Path, before)
-
-				if err := windows.SetNamedSecurityInfo(spec.Path, windows.SE_FILE_OBJECT,
-					windows.OWNER_SECURITY_INFORMATION, other, nil, nil, nil); err != nil {
-					t.Fatal(err)
-				}
-				if mustReconcile(t, b, spec) {
-					t.Fatal("an output with another owner reported a change")
-				}
-				checkOwner(t, spec.Path, owner)
-				checkNewDACL(t, b, spec)
-
-				spec.Owner = other.String()
-				if mustReconcile(t, b, spec) {
-					t.Fatal("an output with another configured owner reported a change")
-				}
-				checkOwner(t, spec.Path, other)
-				checkNewDACL(t, b, spec)
-			})
-		}
+	spec := config.OutputSpec{
+		Format: "pem-key",
+		Path:   filepath.Join(outputDir(t), "key.pem"),
+		Owner:  `NT AUTHORITY\NETWORK SERVICE`,
 	}
-}
-
-// checkNewDACL fails unless the output spec describes has the DACL that a new
-// output of spec gets in a directory from outputDir.
-func checkNewDACL(t *testing.T, b *CertBundle, spec config.OutputSpec) {
-	t.Helper()
-	fresh := spec
-	fresh.Path = filepath.Join(outputDir(t), "new")
-	mustReconcile(t, b, fresh)
-	if got, want := fileSecurity(t, spec.Path).String(), fileSecurity(t, fresh.Path).String(); got != want {
-		t.Errorf("DACL of %s = %s, want %s, as a new output gets", spec.Path, got, want)
+	if !mustReconcile(t, b, spec) {
+		t.Fatal("a missing output reported no change")
 	}
-}
-
-func checkOwner(t *testing.T, path string, want *windows.SID) {
-	t.Helper()
-	descriptor, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	checkMode(t, spec.Path, 0o600)
+	if sddl := fileSecurity(t, spec.Path).String(); !strings.Contains(sddl, "(A;;FR;;;NS)") {
+		t.Errorf("DACL does not grant NETWORK SERVICE read access: %s", sddl)
+	}
+	descriptor, err := windows.GetNamedSecurityInfo(spec.Path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner, _, err := descriptor.Owner()
-	if err != nil {
-		t.Fatal(err)
+	if owner, _, err := descriptor.Owner(); err != nil || owner.Equals(networkService) {
+		t.Errorf("owner of %s = %v, %v; want it left to the account of sigilc", spec.Path, owner, err)
 	}
-	if !owner.Equals(want) {
-		t.Errorf("owner of %s = %s, want %s", path, owner, want)
+
+	before := fileState(t, spec.Path)
+	if mustReconcile(t, b, spec) {
+		t.Fatal("an output that matches reported a change")
 	}
+	checkUntouched(t, spec.Path, before)
 }

@@ -10,8 +10,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // ClientConfig is the in-memory representation of client.yaml.
@@ -48,12 +51,30 @@ type CertificateOutputs struct {
 }
 
 type OutputSpec struct {
-	Format   string `yaml:"format"`
-	Path     string `yaml:"path"`
-	Mode     int    `yaml:"mode,omitempty"`
-	Owner    string `yaml:"owner,omitempty"`
-	Group    string `yaml:"group,omitempty"`
-	Password string `yaml:"password,omitempty"` // for pkcs12
+	Format   string   `yaml:"format"`
+	Path     string   `yaml:"path"`
+	Mode     FileMode `yaml:"mode,omitempty"`
+	Owner    string   `yaml:"owner,omitempty"`
+	Group    string   `yaml:"group,omitempty"`
+	Password string   `yaml:"password,omitempty"` // for pkcs12
+}
+
+// FileMode is the permission bits of an output file. client.yaml gives them
+// in octal as chmod takes them, with or without a leading 0 or 0o: 640, 0640
+// and 0o640 are all 0o640. YAML alone would read 440 as decimal, which is
+// 0o670: a valid mode that lets the group write the file.
+type FileMode int
+
+// UnmarshalYAML reads the text of the scalar as octal, whatever type YAML
+// resolves it to; after ${VAR} expansion the text is the variable's value.
+// The Value of a mapping or a sequence is empty, which is not octal.
+func (m *FileMode) UnmarshalYAML(n *yaml.Node) error {
+	mode, err := strconv.ParseUint(strings.TrimPrefix(n.Value, "0o"), 8, 32)
+	if err != nil {
+		return &yaml.TypeError{Errors: []string{fmt.Sprintf("line %d: mode %q is not an octal file mode such as 0640", n.Line, n.Value)}}
+	}
+	*m = FileMode(mode)
+	return nil
 }
 
 const (
@@ -109,8 +130,13 @@ func (c *ClientConfig) applyDefaults() {
 func (c *ClientConfig) Validate() error {
 	v := &ValidationError{}
 
-	if strings.TrimSpace(c.Client.Name) == "" {
+	// The client name is the CN of the client certificate and the names of
+	// certificates are those of server.yaml, which follow the same rule: a
+	// name outside it would never match.
+	if c.Client.Name == "" {
 		v.Add("client.name", "must be set")
+	} else if err := ValidateClientName(c.Client.Name); err != nil {
+		v.Add("client.name", "%v", err)
 	}
 	if c.Client.ServerURL == "" {
 		v.Add("client.server_url", "must be set")
@@ -127,11 +153,14 @@ func (c *ClientConfig) Validate() error {
 	// running their on_change programs each time.
 	outputPaths := make(map[string]string)
 	for _, certName := range slices.Sorted(maps.Keys(c.Certificates)) {
+		// An invalid name is reported alone: the paths of the other errors
+		// of its entry would quote it.
+		if err := ValidateCertificateName(certName); err != nil {
+			v.Add("certificates", "%v", err)
+			continue
+		}
 		cert := c.Certificates[certName]
 		path := "certificates." + certName
-		if certName == "" {
-			v.Add("certificates", "certificate name key must not be empty")
-		}
 		if len(cert.Outputs) == 0 {
 			v.Add(path+".outputs", "must have at least one output")
 		}
@@ -154,7 +183,7 @@ func (c *ClientConfig) Validate() error {
 					outputPaths[key] = base
 				}
 			}
-			if o.Mode != 0 && (o.Mode < 0 || o.Mode > 0o777) {
+			if o.Mode > 0o777 {
 				v.Add(base+".mode", "must be a valid octal file mode (got %#o)", o.Mode)
 			}
 			if o.Format == "pkcs12" && o.Password == "" {

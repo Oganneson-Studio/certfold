@@ -26,7 +26,7 @@ func TestCreateTokenRequiresAHostClientsCanReach(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrollSrv := enroll.NewServer(db.Tokens, db.Clients, miniCA)
+	enrollSrv := enroll.NewServer(db, miniCA)
 	ctx := context.Background()
 
 	tests := []struct {
@@ -83,7 +83,7 @@ func TestCreateTokenRequiresReplaceForAnEnrolledName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrollSrv := enroll.NewServer(db.Tokens, db.Clients, miniCA)
+	enrollSrv := enroll.NewServer(db, miniCA)
 	cfg := &config.ServerConfig{Server: config.ServerSection{PublicURL: "https://sigil.example.com"}}
 	ctx := context.Background()
 	if err := db.Clients.Upsert(ctx, &store.ClientRecord{Name: "web-1", Fingerprint: "sha256:AA", EnrolledAt: time.Now()}, nil); err != nil {

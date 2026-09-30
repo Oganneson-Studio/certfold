@@ -201,10 +201,10 @@ certificates:
     outputs:
       - format: pem-fullchain
         path: /etc/nginx/certs/api.crt
-        mode: 420
+        mode: 0644
       - format: pem-key
         path: /etc/nginx/certs/api.key
-        mode: 384
+        mode: 600
       - format: pkcs12
         path: /etc/app/keystore.p12
         password: "secret"
@@ -332,7 +332,18 @@ func TestParseClient_CertificatesValidationErrors(t *testing.T) {
       - format: pem-cert
         path: /etc/nginx/certs/api.crt
 `,
-			want: "certificates: certificate name key must not be empty",
+			want: `certificates: invalid certificate name ""`,
+		},
+		{
+			// server.yaml names certificates under the rule of client
+			// names, so this name could never match one.
+			name: "certificate name outside the rule",
+			block: `  Api_Prod:
+    outputs:
+      - format: pem-cert
+        path: /etc/nginx/certs/api.crt
+`,
+			want: `certificates: invalid certificate name "Api_Prod": must be a lowercase DNS label`,
 		},
 		{
 			name: "relative program path",
@@ -433,7 +444,14 @@ func TestParseClient_ValidationErrors(t *testing.T) {
 		{
 			name:   "missing name",
 			mutate: func(s string) string { return strings.Replace(s, "name: web-1", "", 1) },
-			want:   "client.name",
+			want:   "client.name: must be set",
+		},
+		{
+			// The name is the CN of the client certificate, which sigils
+			// issues only for names under the rule.
+			name:   "name outside the rule",
+			mutate: func(s string) string { return strings.Replace(s, "name: web-1", "name: Web_1", 1) },
+			want:   `client.name: invalid client name "Web_1": must be a lowercase DNS label`,
 		},
 		{
 			name: "missing server_url",

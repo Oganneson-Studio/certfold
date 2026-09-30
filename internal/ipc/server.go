@@ -31,6 +31,11 @@ type ServerDeps struct {
 // ServerControlDeps exposes runtime operations implemented by sigils.
 type ServerControlDeps struct {
 	Reload func(context.Context) error
+	// ConfigPath is the server.yaml the daemon runs, which AddCertificate
+	// and RemoveCertificate change and apply.
+	ConfigPath        string
+	AddCertificate    func(context.Context, config.CertificateSpec) error
+	RemoveCertificate func(ctx context.Context, name string) error
 }
 
 // CertificateControlDeps exposes runtime certificate operations implemented
@@ -82,6 +87,8 @@ func buildIPCRouter(h *ipcHandlers) http.Handler {
 	}
 	if h.deps.Server != nil {
 		r.Post("/ipc/v1/server/reload", h.reloadServer)
+		r.Post("/ipc/v1/config/certificates", h.addCertificate)
+		r.Delete("/ipc/v1/config/certificates/{name}", h.removeCertificate)
 	}
 	if h.deps.Certificates != nil {
 		r.Get("/ipc/v1/certs", h.listCerts)

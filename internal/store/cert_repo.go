@@ -22,7 +22,7 @@ type CertRecord struct {
 	UpdatedAt       time.Time
 }
 
-// CertRepo provides CRUD for the certificates table.
+// CertRepo reads and writes the certificates table.
 type CertRepo struct{ db *sql.DB }
 
 func (r *CertRepo) execer(tx *sql.Tx) interface {
@@ -72,6 +72,34 @@ func (r *CertRepo) List(ctx context.Context, tx *sql.Tx) ([]*CertRecord, error) 
 	return out, rows.Err()
 }
 
+// ListSummaries returns every certificate record ordered by name, as List
+// does, but reads only Name, SpecFingerprint, Fingerprint and NotAfter and
+// leaves the other fields empty. GET /v1/sync reads it for every waiting
+// client at each change, and needs neither the PEM material nor the rest.
+func (r *CertRepo) ListSummaries(ctx context.Context) ([]*CertRecord, error) {
+	const q = `SELECT name,spec_fingerprint,fingerprint,not_after FROM certificates ORDER BY name`
+	rows, err := r.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*CertRecord
+	for rows.Next() {
+		var rec CertRecord
+		var notAfter sql.NullString
+		if err := rows.Scan(&rec.Name, &rec.SpecFingerprint, &rec.Fingerprint, &notAfter); err != nil {
+			return nil, err
+		}
+		if notAfter.Valid && notAfter.String != "" {
+			if t, err := time.Parse(time.RFC3339, notAfter.String); err == nil {
+				rec.NotAfter = t
+			}
+		}
+		out = append(out, &rec)
+	}
+	return out, rows.Err()
+}
+
 // Upsert inserts or replaces the certificate record.
 func (r *CertRepo) Upsert(ctx context.Context, rec *CertRecord, tx *sql.Tx) error {
 	domainsJSON, err := json.Marshal(rec.Domains)
@@ -95,12 +123,6 @@ func (r *CertRepo) Upsert(ctx context.Context, rec *CertRecord, tx *sql.Tx) erro
 		nullTime(rec.NotAfter), rec.Fingerprint,
 		nullTime(rec.IssuedAt), rec.UpdatedAt.Format(time.RFC3339),
 	)
-	return err
-}
-
-// Delete removes a certificate by name.
-func (r *CertRepo) Delete(ctx context.Context, name string, tx *sql.Tx) error {
-	_, err := r.execer(tx).ExecContext(ctx, `DELETE FROM certificates WHERE name=?`, name)
 	return err
 }
 

@@ -17,9 +17,9 @@ const installTestURL = "https://sigil.example.com:8443"
 func getInstallScript(t *testing.T, target string) *httptest.ResponseRecorder {
 	t.Helper()
 	deps := buildDeps(t)
-	deps.ServerCfg.Server.PublicURL = installTestURL
+	deps.CurrentServer().Server.PublicURL = installTestURL
 	rec := httptest.NewRecorder()
-	NewInsecure(deps).Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+	newHandler(deps).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET %s: status %d, body %s", target, rec.Code, rec.Body.String())
 	}
@@ -107,5 +107,21 @@ func TestInstallShUsage(t *testing.T) {
 	usage, _ := InstallCommands(installTestURL, "<TOKEN>")
 	if !strings.Contains(script, "\n# Usage: "+usage+"\n") {
 		t.Errorf("script lacks the usage %q:\n%s", usage, script)
+	}
+}
+
+// TestInstallShArchitectures checks that install.sh names each machine that
+// uname -m reports as the GOARCH the binaries directory uses, as install.ps1
+// does its Windows counterparts.
+func TestInstallShArchitectures(t *testing.T) {
+	script := getInstallScript(t, "/install.sh").Body.String()
+	for _, want := range []string{
+		"  x86_64) ARCH=amd64 ;;\n",
+		"  aarch64|arm64) ARCH=arm64 ;;\n",
+		"  i386|i686) ARCH=386 ;;\n",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("script lacks %q:\n%s", want, script)
+		}
 	}
 }

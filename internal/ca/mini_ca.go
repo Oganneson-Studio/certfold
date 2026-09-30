@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -18,7 +19,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/Oganneson-Studio/sigil/internal/securefile"
@@ -36,16 +36,18 @@ const (
 // MiniCA is the Sigil internal certificate authority used for mTLS client
 // certificate issuance. All public methods are goroutine-safe.
 type MiniCA struct {
-	cert       *x509.Certificate
-	key        *ecdsa.PrivateKey
-	serial     atomic.Int64
+	cert *x509.Certificate
+	key  *ecdsa.PrivateKey
+	// serialMu guards serial, the last serial number issued.
 	serialMu   sync.Mutex
+	serial     int64
 	serialPath string
 }
 
 // Bootstrap ensures a CA certificate and key exist under dataDir/ca/.
-// If they do not exist, a new root CA is generated and written to disk.
-// Returns the loaded or newly created *MiniCA.
+// If neither exists, a new root CA is generated and written to disk; if only
+// one does, it fails and leaves that one alone. Returns the loaded or newly
+// created *MiniCA.
 func Bootstrap(dataDir string) (*MiniCA, error) {
 	dir := filepath.Join(dataDir, caSubDir)
 	if err := securefile.EnsurePrivateDirectory(dir); err != nil {
@@ -55,8 +57,20 @@ func Bootstrap(dataDir string) (*MiniCA, error) {
 	keyPath := filepath.Join(dir, caKeyFile)
 	serialPath := filepath.Join(dir, caSerialFile)
 
-	if fileExists(certPath) && fileExists(keyPath) {
+	haveCert, haveKey := fileExists(certPath), fileExists(keyPath)
+	if haveCert && haveKey {
 		return Load(certPath, keyPath)
+	}
+	if haveCert || haveKey {
+		// Such as a restore that left out the private key. A new CA would
+		// replace the one every enrolled client trusts, and overwrite the
+		// file that is left.
+		present, missing := certPath, keyPath
+		if haveKey {
+			present, missing = keyPath, certPath
+		}
+		return nil, fmt.Errorf("mini-CA is incomplete: %s exists but %s does not; restore %s, or remove %s to create a new CA that every client must enroll with again",
+			present, missing, missing, present)
 	}
 
 	cert, key, err := generateRootCA()
@@ -77,9 +91,7 @@ func Bootstrap(dataDir string) (*MiniCA, error) {
 	if err := persistSerial(serialPath, initialSerial); err != nil {
 		return nil, fmt.Errorf("initialize CA serial: %w", err)
 	}
-	m := &MiniCA{cert: parsed, key: key, serialPath: serialPath}
-	m.serial.Store(initialSerial)
-	return m, nil
+	return &MiniCA{cert: parsed, key: key, serial: initialSerial, serialPath: serialPath}, nil
 }
 
 // Load reads ca.crt and ca.key from disk and returns a *MiniCA.
@@ -102,7 +114,7 @@ func Load(certPath, keyPath string) (*MiniCA, error) {
 		return nil, fmt.Errorf("load CA serial: %w", err)
 	}
 	m.serialPath = serialPath
-	m.serial.Store(serial)
+	m.serial = serial
 	return m, nil
 }
 
@@ -130,9 +142,7 @@ func ParsePEM(certPEM, keyPEM []byte) (*MiniCA, error) {
 	if !ok {
 		return nil, fmt.Errorf("CA key must be ECDSA")
 	}
-	m := &MiniCA{cert: cert, key: ecKey}
-	m.serial.Store(cert.SerialNumber.Int64())
-	return m, nil
+	return &MiniCA{cert: cert, key: ecKey, serial: cert.SerialNumber.Int64()}, nil
 }
 
 // Cert returns the parsed CA certificate.
@@ -172,8 +182,8 @@ func (m *MiniCA) Sign(csr *x509.CertificateRequest, name string) ([]byte, error)
 
 // IssueServerCert signs a TLS server certificate valid for the given hosts
 // (DNS names and/or IP addresses). Returns the cert and key as PEM bytes.
-// KeyUsage is DigitalSignature + KeyEncipherment; ExtKeyUsage is ServerAuth.
-// Validity is 1 year from now.
+// KeyUsage is DigitalSignature, all an ECDSA key does in TLS; ExtKeyUsage is
+// ServerAuth. Validity is 1 year from now.
 func (m *MiniCA) IssueServerCert(hosts []string) (certPEM, keyPEM []byte, err error) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -188,7 +198,7 @@ func (m *MiniCA) IssueServerCert(hosts []string) (certPEM, keyPEM []byte, err er
 		Subject:      pkix.Name{CommonName: "sigils"},
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 	for _, h := range hosts {
@@ -225,17 +235,16 @@ func (m *MiniCA) nextSerial() (int64, error) {
 	m.serialMu.Lock()
 	defer m.serialMu.Unlock()
 
-	current := m.serial.Load()
-	if current == math.MaxInt64 {
+	if m.serial == math.MaxInt64 {
 		return 0, fmt.Errorf("serial space exhausted")
 	}
-	next := current + 1
+	next := m.serial + 1
 	if m.serialPath != "" {
 		if err := persistSerial(m.serialPath, next); err != nil {
 			return 0, err
 		}
 	}
-	m.serial.Store(next)
+	m.serial = next
 	return next, nil
 }
 
@@ -288,12 +297,7 @@ func generateRootCA() (certDER []byte, key *ecdsa.PrivateKey, err error) {
 }
 
 func writeCertPEM(path string, der []byte) error {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: der})
+	return securefile.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 }
 
 func writeKeyPEM(path string, key *ecdsa.PrivateKey) error {
@@ -321,7 +325,10 @@ func parsePrivateKey(block *pem.Block) (any, error) {
 	}
 }
 
+// fileExists reports whether path may exist: only an error that says it does
+// not counts as absent, so that Bootstrap never writes a CA over a file it
+// failed to stat.
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
-	return err == nil
+	return !errors.Is(err, os.ErrNotExist)
 }

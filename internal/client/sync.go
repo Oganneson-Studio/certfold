@@ -3,9 +3,12 @@ package client
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -41,7 +44,8 @@ type syncResult struct {
 // syncLoop runs rounds until ctx is cancelled. A round without an error is
 // followed by the next one at once, so between two changes the loop waits in
 // GET /v1/sync. After a round with an error the loop sleeps, from baseBackoff
-// doubling up to maxBackoff, ±10 %, until a reload wakes it.
+// doubling up to maxBackoff, ±10 %, until a reload or a successful IPC fetch
+// wakes it.
 func (c *Client) syncLoop(ctx context.Context) error {
 	var backoff time.Duration
 	for {
@@ -60,14 +64,14 @@ func (c *Client) syncLoop(ctx context.Context) error {
 		default:
 			backoff = min(2*backoff, maxBackoff)
 		}
-		// A reload that came while no sleep was running left its signal in
-		// reloadCh and ends this sleep early, one round early at most.
+		// A reload or fetch that came while no sleep was running left its
+		// signal in wake and ends this sleep early, one round early at most.
 		timer := time.NewTimer(jitter(backoff, jitterPct))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return ctx.Err()
-		case <-c.reloadCh:
+		case <-c.wake:
 			timer.Stop()
 		case <-timer.C:
 		}
@@ -160,7 +164,7 @@ func requestSync(ctx context.Context, httpClient *http.Client, serverURL, etag s
 		return &syncResult{}, nil
 	case http.StatusOK:
 		result := &syncResult{modified: true, etag: resp.Header.Get("ETag")}
-		if err := json.NewDecoder(resp.Body).Decode(&result.view); err != nil {
+		if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&result.view); err != nil {
 			return nil, fmt.Errorf("decode: %w", err)
 		}
 		return result, nil
@@ -238,7 +242,7 @@ func (c *Client) applyViewLocked(ctx context.Context, result *syncResult, force 
 				cert := next[name]
 				if stored, ok := c.store[name]; !ok || stored.Fingerprint != cert.Fingerprint {
 					slog.Info("certificate updated", "cert", name,
-						"fingerprint", cert.Fingerprint, "not_after", leafNotAfter(cert.FullchainPEM))
+						"fingerprint", cert.Fingerprint, "not_after", leafNotAfter(leafPEM(cert)))
 				}
 			}
 			for _, name := range slices.Sorted(maps.Keys(c.store)) {
@@ -264,10 +268,13 @@ func (c *Client) applyViewLocked(ctx context.Context, result *syncResult, force 
 var fingerprintPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // checkBundle rejects a bundle that is not the named certificate's, whose
-// fingerprint is not of the form sigils sends, or whose private key does not
-// belong to its certificate. The store keeps the fingerprint, which sigilc
-// status --json prints: encoding/json escapes C0 there, but not DEL and C1.
-// The digest is not computed again: what sigils digests is its own concern.
+// fingerprint is not of the form sigils sends, one of whose certificates does
+// not parse, or whose private key does not belong to the leaf that
+// splitBundle gives its outputs. A certificate that does not parse would
+// reach the PEM outputs as it is, and make every encoding of a pkcs12 output
+// fail. The store keeps the fingerprint, which sigilc status --json prints:
+// encoding/json escapes C0 there, but not DEL and C1. The digest is not
+// computed again: what sigils digests is its own concern.
 func checkBundle(name string, bundle *proto.CertBundle) error {
 	if bundle.Name != name {
 		return fmt.Errorf("server sent certificate %q", bundle.Name)
@@ -275,8 +282,16 @@ func checkBundle(name string, bundle *proto.CertBundle) error {
 	if !fingerprintPattern.MatchString(bundle.Fingerprint) {
 		return fmt.Errorf("server sent fingerprint %q", bundle.Fingerprint)
 	}
-	if _, err := tls.X509KeyPair([]byte(bundle.FullchainPEM), []byte(bundle.KeyPEM)); err != nil {
+	material, err := splitBundle(storedCert{FullchainPEM: bundle.FullchainPEM, KeyPEM: bundle.KeyPEM})
+	if err != nil {
 		return err
 	}
-	return nil
+	for _, certPEM := range certificateBlocks(bundle.FullchainPEM) {
+		block, _ := pem.Decode(certPEM)
+		if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+			return err
+		}
+	}
+	_, err = tls.X509KeyPair(material.CertPEM, material.KeyPEM)
+	return err
 }

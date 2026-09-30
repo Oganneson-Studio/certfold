@@ -86,7 +86,7 @@ func runEnroll(cmd *cobra.Command, _ []string) (err error) {
 		return fmt.Errorf("generate key: %w", err)
 	}
 
-	resp, err := enroll.PostEnroll(payload.ServerURL, tokenStr, kc.CSRDER)
+	clientCert, err := enroll.PostEnroll(payload, tokenStr, kc.CSRDER)
 	if err != nil {
 		// The error can quote the network, such as the DNS names in the
 		// certificate of a man in the middle: a newline there must not start
@@ -94,7 +94,7 @@ func runEnroll(cmd *cobra.Command, _ []string) (err error) {
 		return fmt.Errorf("enroll: %s", logging.OneLine(err.Error()))
 	}
 
-	if err := enroll.SaveIdentity(cfgPath, resp.CACert, resp.ClientCert, string(kc.KeyPEM)); err != nil {
+	if err := enroll.SaveIdentity(cfgPath, payload.CACert, clientCert, string(kc.KeyPEM)); err != nil {
 		return fmt.Errorf("save identity: %w", err)
 	}
 
@@ -204,7 +204,6 @@ func dialDaemon(cmd *cobra.Command) (*ipc.Client, error) {
 
 // daemonNotRunning reports whether a dial error shows that no daemon listens
 // on the endpoint: it does not exist, or nothing accepts connections on it.
-// sigils decides the same with a function of the same name.
 func daemonNotRunning(err error) bool {
 	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED)
 }

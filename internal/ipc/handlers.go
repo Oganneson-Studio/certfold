@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/Oganneson-Studio/sigil/internal/config"
 )
 
 type ipcHandlers struct {
@@ -40,6 +42,56 @@ func (h *ipcHandlers) reloadServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---------------------------------------------------------------------------
+// /ipc/v1/config/certificates
+// ---------------------------------------------------------------------------
+
+// addCertificate adds a certificate to server.yaml. It changes only the
+// configuration: certificate material still enters the store by issuance
+// alone.
+func (h *ipcHandlers) addCertificate(w http.ResponseWriter, r *http.Request) {
+	if h.deps.Server.AddCertificate == nil {
+		http.Error(w, "configuration change unavailable", http.StatusNotImplemented)
+		return
+	}
+	var req AddCertificateRequest
+	if err := readJSON(r, &req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if err := h.deps.Server.AddCertificate(r.Context(), config.CertificateSpec{
+		Name:        req.Name,
+		Domains:     req.Domains,
+		CA:          req.CA,
+		DNSProvider: req.DNSProvider,
+		KeyType:     req.KeyType,
+		Subscribers: req.Subscribers,
+	}); err != nil {
+		// Such as a failed validation, which the operator needs to see.
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	writeJSON(w, http.StatusCreated, ConfigChangeResponse{ConfigPath: h.deps.Server.ConfigPath})
+}
+
+// removeCertificate removes a certificate from server.yaml. It answers 404
+// with the reason for a name no certificate has, as deleteClient does.
+func (h *ipcHandlers) removeCertificate(w http.ResponseWriter, r *http.Request) {
+	if h.deps.Server.RemoveCertificate == nil {
+		http.Error(w, "configuration change unavailable", http.StatusNotImplemented)
+		return
+	}
+	err := h.deps.Server.RemoveCertificate(r.Context(), chi.URLParam(r, "name"))
+	switch {
+	case errors.Is(err, config.ErrCertificateNotFound):
+		http.Error(w, err.Error(), http.StatusNotFound)
+	case err != nil:
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+	default:
+		writeJSON(w, http.StatusOK, ConfigChangeResponse{ConfigPath: h.deps.Server.ConfigPath})
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,3 @@
-// Package scheduler implements the certificate renewal loop for sigils.
 package scheduler
 
 import (
@@ -12,7 +11,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
-	"slices"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -127,7 +125,9 @@ func (r *Renewer) RunDynamic(ctx context.Context, current func() *config.ServerC
 
 	for {
 		wakeAt, err := r.tick(ctx, current)
-		if err != nil {
+		// A tick that shutdown interrupts fails on the store reads it
+		// cancels, which is no fault to report.
+		if err != nil && ctx.Err() == nil {
 			slog.Error("renewal tick failed", "error", err)
 		}
 
@@ -223,12 +223,9 @@ func (r *Renewer) tick(ctx context.Context, current func() *config.ServerConfig)
 }
 
 // matches reports whether rec holds material issued for spec as cfg
-// configures it.
+// configures it. The fingerprint covers the CA and the domains.
 func matches(cfg *config.ServerConfig, spec config.CertificateSpec, rec *store.CertRecord) bool {
-	return rec != nil &&
-		rec.CA == spec.CA &&
-		slices.Equal(rec.Domains, spec.Domains) &&
-		rec.SpecFingerprint == config.CertificateSpecFingerprint(cfg, spec)
+	return rec != nil && rec.SpecFingerprint == config.CertificateSpecFingerprint(cfg, spec)
 }
 
 // RenewalPlan returns when the stored certificate rec is due for renewal, and

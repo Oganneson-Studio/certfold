@@ -26,9 +26,14 @@ type DB struct {
 }
 
 // Open opens (or creates) the SQLite database at dsn, runs auto-migration,
-// and returns a ready-to-use *DB. Use ":memory:" for in-process tests.
+// and returns a ready-to-use *DB. dsn is a file path, optionally followed by
+// "?" and connection parameters, or ":memory:" for in-process tests.
 func Open(dsn string) (*DB, error) {
-	if err := preparePlainDatabaseFiles(dsn); err != nil {
+	path, _, _ := strings.Cut(dsn, "?")
+	if path == ":memory:" {
+		path = ""
+	}
+	if err := prepareDatabaseFiles(path); err != nil {
 		return nil, fmt.Errorf("prepare sqlite %s: %w", dsn, err)
 	}
 
@@ -37,19 +42,6 @@ func Open(dsn string) (*DB, error) {
 		return nil, fmt.Errorf("open sqlite %s: %w", dsn, err)
 	}
 	raw.SetMaxOpenConns(1) // sqlite write serialization
-	databasePath, err := mainDatabasePath(raw)
-	if err != nil {
-		_ = raw.Close()
-		return nil, fmt.Errorf("resolve sqlite path: %w", err)
-	}
-	if err := prepareSQLiteDirectory(databasePath); err != nil {
-		_ = raw.Close()
-		return nil, err
-	}
-	if err := protectSQLiteFile(databasePath); err != nil {
-		_ = raw.Close()
-		return nil, err
-	}
 	if _, err := raw.Exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;"); err != nil {
 		_ = raw.Close()
 		return nil, fmt.Errorf("pragma: %w", err)
@@ -58,7 +50,9 @@ func Open(dsn string) (*DB, error) {
 		_ = raw.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
-	if err := protectSQLiteFiles(databasePath); err != nil {
+	// SQLite has created -wal and -shm by now. On Windows they inherit the
+	// DACL of the directory; this gives them a protected one.
+	if err := protectSQLiteFiles(path); err != nil {
 		_ = raw.Close()
 		return nil, err
 	}
@@ -71,15 +65,11 @@ func Open(dsn string) (*DB, error) {
 	return d, nil
 }
 
-// preparePlainDatabaseFiles avoids creating a regular filename with SQLite's
-// process-default permissions. URI filenames are resolved and protected after
-// the connection opens; in-memory databases do not have files to protect.
-func preparePlainDatabaseFiles(dsn string) error {
-	if strings.HasPrefix(dsn, "file:") {
-		return nil
-	}
-	path, _, _ := strings.Cut(dsn, "?")
-	if path == "" || path == ":memory:" {
+// prepareDatabaseFiles avoids creating the database at path with
+// SQLite's process-default permissions, and protects the files of an existing
+// one again. An in-memory database, whose path is empty, has no files.
+func prepareDatabaseFiles(path string) error {
+	if path == "" {
 		return nil
 	}
 	if err := prepareSQLiteDirectory(path); err != nil {
@@ -97,9 +87,6 @@ func preparePlainDatabaseFiles(dsn string) error {
 }
 
 func prepareSQLiteDirectory(databasePath string) error {
-	if databasePath == "" {
-		return nil
-	}
 	dir := filepath.Clean(filepath.Dir(databasePath))
 	if dir == "." || filepath.Dir(dir) == dir {
 		return nil
@@ -118,40 +105,21 @@ func prepareSQLiteDirectory(databasePath string) error {
 	return nil
 }
 
-func mainDatabasePath(db *sql.DB) (string, error) {
-	var seq int
-	var name, path string
-	if err := db.QueryRow("PRAGMA database_list").Scan(&seq, &name, &path); err != nil {
-		return "", err
-	}
-	if name != "main" {
-		return "", fmt.Errorf("first database is %q, want main", name)
-	}
-	return path, nil
-}
-
+// protectSQLiteFiles protects the database at databasePath, and those of its
+// -wal, -shm and -journal files that exist. An empty path is an in-memory
+// database.
 func protectSQLiteFiles(databasePath string) error {
 	if databasePath == "" {
 		return nil
 	}
-	if err := protectSQLiteFile(databasePath); err != nil {
-		return err
+	if err := securefile.ProtectFile(databasePath); err != nil {
+		return fmt.Errorf("protect sqlite file %s: %w", databasePath, err)
 	}
 	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
 		path := databasePath + suffix
 		if err := securefile.ProtectFile(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("protect sqlite file %s: %w", path, err)
 		}
-	}
-	return nil
-}
-
-func protectSQLiteFile(path string) error {
-	if path == "" {
-		return nil
-	}
-	if err := securefile.ProtectFile(path); err != nil {
-		return fmt.Errorf("protect sqlite file %s: %w", path, err)
 	}
 	return nil
 }
@@ -173,6 +141,11 @@ func migrate(db *sql.DB) error {
 	err := db.QueryRow(`SELECT version FROM schema_version LIMIT 1`).Scan(&ver)
 	if err != nil && err != sql.ErrNoRows {
 		return err
+	}
+	// Migrations only go forward; this binary cannot know what a newer one
+	// changed.
+	if ver > currentSchemaVersion {
+		return fmt.Errorf("the database has schema version %d, newer than version %d that this sigils knows: a newer sigils has upgraded it, and upgrades cannot be undone", ver, currentSchemaVersion)
 	}
 	for ver < currentSchemaVersion {
 		ver++

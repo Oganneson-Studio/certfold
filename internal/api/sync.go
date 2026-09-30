@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -15,6 +16,11 @@ import (
 // syncMaxWait is how long GET /v1/sync holds a request whose view has not
 // changed. A variable so that tests can shorten it.
 var syncMaxWait = proto.SyncMaxWait
+
+// maxSyncsPerClient is how many GET /v1/sync requests one client may have in
+// progress. sigilc has one; one it cancelled may linger until the server sees
+// the cancellation.
+const maxSyncsPerClient = 4
 
 // ---------------------------------------------------------------------------
 // GET /v1/sync
@@ -37,6 +43,26 @@ func (h *handlers) syncCertificates(w http.ResponseWriter, r *http.Request) {
 		ifNoneMatch = values[0]
 	}
 
+	// Every waiting request reads the store again at each change, and each
+	// read holds up the other readers and writers, so a client may not pile
+	// them up. sigilc backs off on the 429.
+	h.syncMu.Lock()
+	if h.syncing[clientName] >= maxSyncsPerClient {
+		h.syncMu.Unlock()
+		http.Error(w, "too many sync requests in progress", http.StatusTooManyRequests)
+		return
+	}
+	h.syncing[clientName]++
+	h.syncMu.Unlock()
+	defer func() {
+		h.syncMu.Lock()
+		h.syncing[clientName]--
+		if h.syncing[clientName] == 0 {
+			delete(h.syncing, clientName)
+		}
+		h.syncMu.Unlock()
+	}()
+
 	// The wait outlasts the server's WriteTimeout, past which HTTP/1.1 cuts
 	// the response off and HTTP/2 resets the stream. Only this request's write
 	// deadline moves; httptest.ResponseRecorder does not support deadlines.
@@ -56,7 +82,7 @@ func (h *handlers) syncCertificates(w http.ResponseWriter, r *http.Request) {
 		changed := h.deps.Changes.wait()
 		view, err := h.certificateView(r.Context(), clientName)
 		if err != nil {
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			serverError(w, "read certificate view failed", "client", clientName, "error", err)
 			return
 		}
 		// The ETag hashes the body this client gets, so it changes only with
@@ -64,7 +90,7 @@ func (h *handlers) syncCertificates(w http.ResponseWriter, r *http.Request) {
 		// changes to certificates it does not subscribe to.
 		body, err := json.Marshal(view)
 		if err != nil {
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			serverError(w, "encode certificate view failed", "client", clientName, "error", err)
 			return
 		}
 		sum := sha256.Sum256(body)
@@ -76,6 +102,10 @@ func (h *handlers) syncCertificates(w http.ResponseWriter, r *http.Request) {
 				// waited, the client may have been removed or its identity
 				// replaced.
 				rec, err := h.deps.DB.Clients.Get(r.Context(), clientName, nil)
+				if err != nil && err != sql.ErrNoRows {
+					serverError(w, "look up client failed", "client", clientName, "error", err)
+					return
+				}
 				if err != nil || rec.Fingerprint != ca.Fingerprint(cert.Raw) {
 					http.Error(w, "unauthorized", http.StatusUnauthorized)
 					return
@@ -108,14 +138,14 @@ func (h *handlers) syncCertificates(w http.ResponseWriter, r *http.Request) {
 // fetch: those it subscribes to in the running configuration whose stored
 // material matches their current specification.
 func (h *handlers) certificateView(ctx context.Context, clientName string) ([]proto.CertSummary, error) {
-	all, err := h.deps.DB.Certs.List(ctx, nil)
+	all, err := h.deps.DB.Certs.ListSummaries(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	// Filter by the subscriber list and ensure stored material still matches
 	// the current spec. A hot reload must never expose a same-name stale cert.
-	cfg := h.deps.serverConfig()
+	cfg := h.deps.CurrentServer()
 	subscribed := subscribedSpecs(cfg, clientName)
 	view := []proto.CertSummary{}
 	for _, c := range all {

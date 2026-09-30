@@ -46,6 +46,24 @@ type RenewCertRequest struct {
 	Name string `json:"name"`
 }
 
+// AddCertificateRequest is the body of POST /ipc/v1/config/certificates: a
+// certificate to add to server.yaml. An empty CA is acme.default_ca.
+type AddCertificateRequest struct {
+	Name        string   `json:"name"`
+	Domains     []string `json:"domains"`
+	CA          string   `json:"ca,omitempty"`
+	DNSProvider string   `json:"dns_provider"`
+	KeyType     string   `json:"key_type,omitempty"`
+	Subscribers []string `json:"subscribers,omitempty"`
+}
+
+// ConfigChangeResponse is returned by POST /ipc/v1/config/certificates and
+// DELETE /ipc/v1/config/certificates/{name} once sigils has changed
+// server.yaml and applied it. ConfigPath is the file it changed.
+type ConfigChangeResponse struct {
+	ConfigPath string `json:"config_path"`
+}
+
 // ClientInfo is the read-only enrolled-client metadata exposed over IPC.
 type ClientInfo struct {
 	Name        string    `json:"name"`
@@ -55,11 +73,12 @@ type ClientInfo struct {
 }
 
 // TokenInfo is the read-only enrollment-token metadata exposed over IPC.
+// UsedAt is zero, and absent from the JSON, while the token is unused.
 type TokenInfo struct {
 	TokenID   string    `json:"token_id"`
 	Name      string    `json:"name"`
 	ExpiresAt time.Time `json:"expires_at"`
-	UsedAt    time.Time `json:"used_at"`
+	UsedAt    time.Time `json:"used_at,omitzero"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -86,12 +105,13 @@ type CreateTokenResponse struct {
 }
 
 // ClientState is the runtime status returned by a sigilc daemon. Certs lists
-// the certificates in its store in name order, and is never null.
+// the certificates in its store in name order, and is never null. LastPullAt
+// is zero, and absent from the JSON, until sigils has answered a sync.
 type ClientState struct {
 	Name       string            `json:"name"`
 	ServerURL  string            `json:"server_url"`
 	Online     bool              `json:"online"`
-	LastPullAt time.Time         `json:"last_pull_at,omitempty"`
+	LastPullAt time.Time         `json:"last_pull_at,omitzero"`
 	LastError  string            `json:"last_error,omitempty"`
 	Certs      []ClientCertState `json:"certs"`
 }

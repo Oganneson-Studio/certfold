@@ -2,6 +2,7 @@ package enroll
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -11,13 +12,15 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
-	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/securefile"
 	"github.com/Oganneson-Studio/sigil/pkg/proto"
 )
@@ -66,39 +69,38 @@ func ServerRoots(caCertPEM string) (*x509.CertPool, error) {
 	return roots, nil
 }
 
-// PostEnroll sends the enroll request to the server and returns the response.
-// tokenStr is the opaque base64url token from Create. csrDER is the raw CSR.
+// PostEnroll sends the enroll request for tokenStr, which DecodeToken read as
+// token, to the server the token names, and returns the client certificate,
+// in PEM, that the server issued for csrDER, the raw CSR.
 //
 // The token carries the expected server CA certificate. TLS is verified against
 // that pinned CA and the system roots before the bearer token or CSR is sent.
-func PostEnroll(serverURL, tokenStr string, csrDER []byte) (*proto.EnrollResponse, error) {
-	payload, err := decodeToken(tokenStr)
+// The client certificate is checked as sigilc checks a renewed identity: it
+// must be for the token's client name, chain to the token's CA for client
+// authentication, and hold the key of the CSR. The identity to save is the
+// token's CA and this certificate.
+func PostEnroll(token *Token, tokenStr string, csrDER []byte) (string, error) {
+	csr, err := x509.ParseCertificateRequest(csrDER)
 	if err != nil {
-		return nil, fmt.Errorf("decode token: %w", err)
+		return "", fmt.Errorf("parse CSR: %w", err)
 	}
-	if payload.ServerURL != serverURL {
-		return nil, fmt.Errorf("token server URL %q does not match %q", payload.ServerURL, serverURL)
-	}
-	u, err := url.ParseRequestURI(serverURL)
+	roots, err := ServerRoots(token.CACert)
 	if err != nil {
-		return nil, fmt.Errorf("invalid server URL: %w", err)
-	}
-	if u.Scheme != "https" || u.Host == "" {
-		return nil, fmt.Errorf("invalid server URL %q", serverURL)
-	}
-	roots, err := ServerRoots(payload.CACert)
-	if err != nil {
-		return nil, fmt.Errorf("token does not contain a valid server CA certificate")
+		return "", fmt.Errorf("token does not contain a valid server CA certificate")
 	}
 
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
 	reqBody, err := json.Marshal(proto.EnrollRequest{Token: tokenStr, CSR: string(csrPEM)})
 	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
 	enrollClient := &http.Client{
 		Timeout: 30 * time.Second,
+		// The request carries the token, so it goes to the server whose TLS
+		// was checked and nowhere else: a 307 or 308 would send it again, to
+		// any host and over plain HTTP too.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				RootCAs:    roots,
@@ -106,54 +108,111 @@ func PostEnroll(serverURL, tokenStr string, csrDER []byte) (*proto.EnrollRespons
 			},
 		},
 	}
-	resp, err := enrollClient.Post(serverURL+"/v1/enroll", "application/json", bytes.NewReader(reqBody)) //nolint:noctx
+	resp, err := enrollClient.Post(token.ServerURL+"/v1/enroll", "application/json", bytes.NewReader(reqBody)) //nolint:noctx
 	if err != nil {
-		return nil, fmt.Errorf("http post: %w", err)
+		return "", fmt.Errorf("http post: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("server returned %d", resp.StatusCode)
+		// The server says why, such as that the token was already used. The
+		// text comes from the network: sigilc makes the error one line.
+		reason, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
+		return "", fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(reason)))
 	}
 	var out proto.EnrollResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+		return "", fmt.Errorf("decode response: %w", err)
 	}
-	return &out, nil
+	return checkIssued(token, out.ClientCert, csr)
 }
 
-// identityPatch is the subset of client.yaml we update after enroll.
-type identityPatch struct {
-	Identity struct {
-		CACert     string `yaml:"ca_cert"`
-		ClientCert string `yaml:"client_cert"`
-		ClientKey  string `yaml:"client_key"`
-	} `yaml:"identity"`
+// checkIssued checks the client certificate certPEM that the server issued at
+// enrollment, and returns it re-encoded, so that what sigilc saves is what
+// was checked. Its errors quote the network.
+func checkIssued(token *Token, certPEM string, csr *x509.CertificateRequest) (string, error) {
+	block, _ := pem.Decode([]byte(certPEM))
+	if block == nil || block.Type != "CERTIFICATE" {
+		return "", fmt.Errorf("response does not contain a client certificate")
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("parse client certificate: %w", err)
+	}
+	if leaf.Subject.CommonName != token.Name {
+		return "", fmt.Errorf("client certificate name %q does not match client %q", leaf.Subject.CommonName, token.Name)
+	}
+	// Only the token's CA: the one in the system roots that may have signed
+	// the server's TLS certificate does not sign clients.
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM([]byte(token.CACert)) {
+		return "", fmt.Errorf("token does not contain a valid server CA certificate")
+	}
+	// Checked at its own NotBefore, not by this host's clock: by the time the
+	// answer arrives the server has used up the token, so a clock behind the
+	// server's by more than the minute the mini-CA backdates would otherwise
+	// fail an enrollment that cannot be retried. The validity says nothing
+	// here: the certificate must hold the key made for this request, so it
+	// cannot be an old one replayed.
+	if _, err := leaf.Verify(x509.VerifyOptions{
+		Roots:       roots,
+		CurrentTime: leaf.NotBefore,
+		KeyUsages:   []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}); err != nil {
+		return "", fmt.Errorf("verify client certificate: %w", err)
+	}
+	if key, ok := leaf.PublicKey.(interface{ Equal(crypto.PublicKey) bool }); !ok || !key.Equal(csr.PublicKey) {
+		return "", fmt.Errorf("client certificate is not for the key of the request")
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})), nil
 }
 
-// SaveIdentity writes the identity fields into the YAML file at cfgPath,
-// preserving all other content by unmarshaling and re-marshaling the document.
+// SaveIdentity writes the identity into the client.yaml at cfgPath, at
+// enrollment and at every identity renewal. It edits the YAML tree, as
+// config.AddCertificateSpec does server.yaml: the value of the identity key
+// is replaced, or the key appended, and the rest keeps the operator's
+// comments, key order and text. Decoding into a map instead would rewrite
+// scalars as YAML reads them, such as a PKCS#12 password 0123 as 83.
 func SaveIdentity(cfgPath string, caCert, clientCert, clientKey string) error {
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
 		return fmt.Errorf("read config: %w", err)
 	}
-
-	// Parse into generic map to preserve unknown fields.
-	var doc map[string]any
+	var doc yaml.Node
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return fmt.Errorf("parse yaml: %w", err)
 	}
-	if doc == nil {
-		doc = make(map[string]any)
+	if len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("client config root must be a mapping")
 	}
-	doc["identity"] = map[string]any{
-		"ca_cert":     caCert,
-		"client_cert": clientCert,
-		"client_key":  clientKey,
+	var identity yaml.Node
+	if err := identity.Encode(config.IdentitySection{
+		CACert:     caCert,
+		ClientCert: clientCert,
+		ClientKey:  clientKey,
+	}); err != nil {
+		return fmt.Errorf("encode identity: %w", err)
 	}
-	out, err := yaml.Marshal(doc)
-	if err != nil {
+
+	root := doc.Content[0]
+	i := 0
+	for i < len(root.Content) && root.Content[i].Value != "identity" {
+		i += 2
+	}
+	if i < len(root.Content) {
+		root.Content[i+1] = &identity
+	} else {
+		key := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "identity"}
+		root.Content = append(root.Content, key, &identity)
+	}
+
+	var out bytes.Buffer
+	enc := yaml.NewEncoder(&out)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
 		return fmt.Errorf("marshal yaml: %w", err)
 	}
-	return securefile.WriteFile(cfgPath, out)
+	if err := enc.Close(); err != nil {
+		return fmt.Errorf("marshal yaml: %w", err)
+	}
+	return securefile.WriteFile(cfgPath, out.Bytes())
 }
