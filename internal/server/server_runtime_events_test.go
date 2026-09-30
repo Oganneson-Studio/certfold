@@ -11,7 +11,7 @@ import (
 func TestServerConfigRuntimeLogsReloads(t *testing.T) {
 	logs := setupLogs(t, io.Discard)
 	path := filepath.Join(t.TempDir(), "server.yaml")
-	runtime := newServerConfigRuntime(path, parseRuntimeConfig(t, initialRuntimeConfig), func() {})
+	runtime := newServerConfigRuntime(path, parseRuntimeConfig(t, initialRuntimeConfig), func() {}, publishNow)
 
 	writeRuntimeConfig(t, path, strings.Replace(initialRuntimeConfig, "ops@example.com", "security@example.com", 1))
 	if err := runtime.Reload(context.Background()); err != nil {

@@ -105,6 +105,27 @@ func (c *Client) ReloadServer(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/ipc/v1/server/reload", struct{}{}, nil)
 }
 
+// AddCertificate asks sigils to add a certificate to server.yaml and apply
+// the result.
+func (c *Client) AddCertificate(ctx context.Context, req AddCertificateRequest) (*ConfigChangeResponse, error) {
+	var out ConfigChangeResponse
+	if err := c.do(ctx, http.MethodPost, "/ipc/v1/config/certificates", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RemoveCertificate asks sigils to remove a certificate from server.yaml and
+// apply the result. The name is escaped in the path as DeleteClient escapes
+// one.
+func (c *Client) RemoveCertificate(ctx context.Context, name string) (*ConfigChangeResponse, error) {
+	var out ConfigChangeResponse
+	if err := c.do(ctx, http.MethodDelete, "/ipc/v1/config/certificates/"+url.PathEscape(name), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ListClients returns enrolled-client metadata.
 func (c *Client) ListClients(ctx context.Context) ([]*ClientInfo, error) {
 	var out []*ClientInfo

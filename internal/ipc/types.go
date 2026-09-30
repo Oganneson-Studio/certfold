@@ -46,6 +46,24 @@ type RenewCertRequest struct {
 	Name string `json:"name"`
 }
 
+// AddCertificateRequest is the body of POST /ipc/v1/config/certificates: a
+// certificate to add to server.yaml. An empty CA is acme.default_ca.
+type AddCertificateRequest struct {
+	Name        string   `json:"name"`
+	Domains     []string `json:"domains"`
+	CA          string   `json:"ca,omitempty"`
+	DNSProvider string   `json:"dns_provider"`
+	KeyType     string   `json:"key_type,omitempty"`
+	Subscribers []string `json:"subscribers,omitempty"`
+}
+
+// ConfigChangeResponse is returned by POST /ipc/v1/config/certificates and
+// DELETE /ipc/v1/config/certificates/{name} once sigils has changed
+// server.yaml and applied it. ConfigPath is the file it changed.
+type ConfigChangeResponse struct {
+	ConfigPath string `json:"config_path"`
+}
+
 // ClientInfo is the read-only enrolled-client metadata exposed over IPC.
 type ClientInfo struct {
 	Name        string    `json:"name"`

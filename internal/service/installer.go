@@ -13,7 +13,8 @@ import (
 
 // Daemon is the application logic that the system service runs.
 // Start must return promptly; the actual work runs in a goroutine.
-// Stop must return within a few seconds.
+// Stop returns once the daemon has stopped: sigilc stops at once, and sigils
+// within 30 seconds, abandoning issuances still running (server.Run).
 type Daemon interface {
 	Start(s ksvc.Service) error
 	Stop(s ksvc.Service) error

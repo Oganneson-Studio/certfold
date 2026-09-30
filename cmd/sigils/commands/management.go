@@ -2,11 +2,8 @@ package commands
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -18,8 +15,6 @@ import (
 type configChangeResult struct {
 	Name                   string `json:"name"`
 	ConfigPath             string `json:"config_path"`
-	Reloaded               bool   `json:"reloaded"`
-	RestartRequired        bool   `json:"restart_required"`
 	StoredMaterialRetained bool   `json:"stored_material_retained,omitempty"`
 }
 
@@ -66,7 +61,7 @@ func runCertAdd(cmd *cobra.Command, args []string) error {
 	caName, _ := cmd.Flags().GetString("ca")
 	keyType, _ := cmd.Flags().GetString("key-type")
 	subscribers, _ := cmd.Flags().GetStringSlice("subscribers")
-	spec := config.CertificateSpec{
+	req := ipc.AddCertificateRequest{
 		Name:        strings.TrimSpace(args[0]),
 		Domains:     cleanStringList(domains),
 		CA:          strings.TrimSpace(caName),
@@ -75,80 +70,48 @@ func runCertAdd(cmd *cobra.Command, args []string) error {
 		Subscribers: cleanStringList(subscribers),
 	}
 
-	cfgPath := serverConfigPath(cmd)
-	if _, err := config.AddCertificateSpec(cfgPath, spec); err != nil {
-		return err
+	// The running daemon edits the server.yaml it runs, checks the result
+	// with its own environment, which holds what the ${VAR} references of
+	// the file need, and applies it.
+	c, err := dialIPC(serverIPCSocket(cmd))
+	if err != nil {
+		return fmt.Errorf("ipc unavailable: %w", err)
 	}
-	reloaded, err := reloadServerAfterConfigChange(cmd, cfgPath)
+	changed, err := c.AddCertificate(commandContext(cmd), req)
 	if err != nil {
 		return err
 	}
-	result := configChangeResult{
-		Name:            spec.Name,
-		ConfigPath:      cfgPath,
-		Reloaded:        reloaded,
-		RestartRequired: !reloaded,
-	}
+	result := configChangeResult{Name: req.Name, ConfigPath: changed.ConfigPath}
 	if asJSON, _ := cmd.Root().PersistentFlags().GetBool("json"); asJSON {
 		return printJSON(result)
 	}
-	fmt.Printf("certificate %q added to %s\n", spec.Name, cfgPath)
-	if reloaded {
-		fmt.Println("running sigils configuration reloaded")
-	} else {
-		fmt.Println("sigils is not running; the change will apply at the next startup")
-	}
+	fmt.Printf("certificate %q added to %s\n", req.Name, changed.ConfigPath)
+	fmt.Println("running sigils configuration reloaded")
 	return nil
 }
 
 func runCertRemove(cmd *cobra.Command, args []string) error {
 	name := args[0]
-	cfgPath := serverConfigPath(cmd)
-	if err := config.RemoveCertificateSpec(cfgPath, name); err != nil {
-		return err
+	// As for cert add, the running daemon edits and applies server.yaml.
+	c, err := dialIPC(serverIPCSocket(cmd))
+	if err != nil {
+		return fmt.Errorf("ipc unavailable: %w", err)
 	}
-	reloaded, err := reloadServerAfterConfigChange(cmd, cfgPath)
+	changed, err := c.RemoveCertificate(commandContext(cmd), name)
 	if err != nil {
 		return err
 	}
 	result := configChangeResult{
 		Name:                   name,
-		ConfigPath:             cfgPath,
-		Reloaded:               reloaded,
-		RestartRequired:        !reloaded,
+		ConfigPath:             changed.ConfigPath,
 		StoredMaterialRetained: true,
 	}
 	if asJSON, _ := cmd.Root().PersistentFlags().GetBool("json"); asJSON {
 		return printJSON(result)
 	}
-	fmt.Printf("certificate %q removed from %s\n", name, cfgPath)
-	if reloaded {
-		fmt.Println("running sigils configuration reloaded; stored certificate material remains in the database")
-	} else {
-		fmt.Println("sigils is not running; the change will apply at the next startup and stored certificate material remains in the database")
-	}
+	fmt.Printf("certificate %q removed from %s\n", name, changed.ConfigPath)
+	fmt.Println("running sigils configuration reloaded; stored certificate material remains in the database")
 	return nil
-}
-
-func reloadServerAfterConfigChange(cmd *cobra.Command, cfgPath string) (bool, error) {
-	c, err := dialServerReloader(serverIPCSocket(cmd))
-	if daemonNotRunning(err) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("configuration saved to %s, but the sigils daemon could not be notified: %w", cfgPath, err)
-	}
-	if err := c.ReloadServer(commandContext(cmd)); err != nil {
-		return false, fmt.Errorf("configuration saved to %s, but the running sigils daemon rejected reload: %w", cfgPath, err)
-	}
-	return true, nil
-}
-
-// daemonNotRunning reports whether a dial error shows that no daemon listens
-// on the endpoint: it does not exist, or nothing accepts connections on it.
-// Any other error, such as a denied permission, may hide a running daemon.
-func daemonNotRunning(err error) bool {
-	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED)
 }
 
 func runCertRenew(cmd *cobra.Command, args []string) error {

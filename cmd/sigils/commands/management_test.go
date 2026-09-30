@@ -7,13 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -58,13 +56,6 @@ type fakeServerReloader struct {
 func (r *fakeServerReloader) ReloadServer(context.Context) error {
 	r.calls++
 	return r.err
-}
-
-func stubServerReloader(t *testing.T, client serverReloader, dialErr error) {
-	t.Helper()
-	previous := dialServerReloader
-	dialServerReloader = func(string) (serverReloader, error) { return client, dialErr }
-	t.Cleanup(func() { dialServerReloader = previous })
 }
 
 func TestManagementJSONViewsDoNotExposePrivateMaterial(t *testing.T) {
@@ -157,107 +148,6 @@ func TestReloadDoesNotFallBackToDefaultSocket(t *testing.T) {
 	}
 	if len(dialed) != 1 || dialed[0] != configured {
 		t.Fatalf("dialed %q, want only the configured socket %q", dialed, configured)
-	}
-}
-
-func TestCertAddReloadsRunningServer(t *testing.T) {
-	path := writeManagementTestConfig(t, "  []\n")
-	reloader := &fakeServerReloader{}
-	stubServerReloader(t, reloader, nil)
-	cmd := NewRootCmd()
-	cmd.SetArgs([]string{
-		"--config", path, "cert", "add", "api-prod",
-		"--domains", "api.example.com", "--dns", "route",
-	})
-	if err := cmd.Execute(); err != nil {
-		t.Fatal(err)
-	}
-	if reloader.calls != 1 {
-		t.Fatalf("reload calls = %d, want 1", reloader.calls)
-	}
-	cfg, err := config.LoadServer(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cfg.Certificates) != 1 || cfg.Certificates[0].Name != "api-prod" {
-		t.Fatalf("certificates = %+v", cfg.Certificates)
-	}
-}
-
-func TestCertRemoveReloadsRunningServer(t *testing.T) {
-	path := writeManagementTestConfig(t, `  - name: api-prod
-    domains: [api.example.com]
-    ca: le
-    dns_provider: route
-    key_type: ec256
-`)
-	reloader := &fakeServerReloader{}
-	stubServerReloader(t, reloader, nil)
-	cmd := NewRootCmd()
-	cmd.SetArgs([]string{"--config", path, "cert", "remove", "api-prod"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatal(err)
-	}
-	if reloader.calls != 1 {
-		t.Fatalf("reload calls = %d, want 1", reloader.calls)
-	}
-	cfg, err := config.LoadServer(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cfg.Certificates) != 0 {
-		t.Fatalf("certificates = %+v", cfg.Certificates)
-	}
-}
-
-func TestCertAddSucceedsWhenDaemonIsNotRunning(t *testing.T) {
-	path := writeManagementTestConfig(t, "  []\n")
-	// Dial for real: a stopped daemon leaves no endpoint behind.
-	cmd := NewRootCmd()
-	cmd.SetArgs([]string{
-		"--config", path, "--ipc", testIPCSocket(t), "cert", "add", "api-prod",
-		"--domains", "api.example.com", "--dns", "route",
-	})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("cert add should persist for next startup: %v", err)
-	}
-	cfg, err := config.LoadServer(path)
-	if err != nil || len(cfg.Certificates) != 1 {
-		t.Fatalf("persisted config = %+v, err = %v", cfg, err)
-	}
-}
-
-func TestCertAddTellsStoppedDaemonFromUnreachableOne(t *testing.T) {
-	tests := []struct {
-		name       string
-		dialErr    error
-		notRunning bool
-	}{
-		{name: "connection refused", dialErr: fmt.Errorf("ipc dial: %w", syscall.ECONNREFUSED), notRunning: true},
-		{name: "permission denied", dialErr: fmt.Errorf("ipc dial: %w", fs.ErrPermission)},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			path := writeManagementTestConfig(t, "  []\n")
-			stubServerReloader(t, nil, tt.dialErr)
-			cmd := NewRootCmd()
-			cmd.SetArgs([]string{
-				"--config", path, "cert", "add", "api-prod",
-				"--domains", "api.example.com", "--dns", "route",
-			})
-			err := cmd.Execute()
-			if tt.notRunning {
-				if err != nil {
-					t.Fatalf("cert add with a stopped daemon: %v", err)
-				}
-			} else if err == nil || !strings.Contains(err.Error(), "configuration saved") || !strings.Contains(err.Error(), "could not be notified") {
-				t.Fatalf("cert add error = %v, want a saved but not notified failure", err)
-			}
-			cfg, loadErr := config.LoadServer(path)
-			if loadErr != nil || len(cfg.Certificates) != 1 {
-				t.Fatalf("persisted config = %+v, err = %v", cfg, loadErr)
-			}
-		})
 	}
 }
 
@@ -428,24 +318,5 @@ func TestCertListAndShowReportIssuanceState(t *testing.T) {
 		if got := runSigils(t, "--ipc", socket, "cert", "show", name); got != want {
 			t.Errorf("cert show %s printed:\n%s\nwant:\n%s", name, got, want)
 		}
-	}
-}
-
-func TestCertAddReportsRejectedLiveReloadAfterSaving(t *testing.T) {
-	path := writeManagementTestConfig(t, "  []\n")
-	reloader := &fakeServerReloader{err: errors.New("reload rejected")}
-	stubServerReloader(t, reloader, nil)
-	cmd := NewRootCmd()
-	cmd.SetArgs([]string{
-		"--config", path, "cert", "add", "api-prod",
-		"--domains", "api.example.com", "--dns", "route",
-	})
-	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "configuration saved") || !strings.Contains(err.Error(), "reload rejected") {
-		t.Fatalf("error = %v", err)
-	}
-	cfg, loadErr := config.LoadServer(path)
-	if loadErr != nil || len(cfg.Certificates) != 1 {
-		t.Fatalf("persisted config = %+v, err = %v", cfg, loadErr)
 	}
 }

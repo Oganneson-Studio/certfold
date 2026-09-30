@@ -3,6 +3,7 @@ package acme
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -30,6 +31,7 @@ import (
 	"time"
 
 	"github.com/go-acme/lego/v4/certcrypto"
+	"github.com/go-acme/lego/v4/certificate"
 	"github.com/go-acme/lego/v4/challenge"
 	"github.com/go-acme/lego/v4/challenge/dns01"
 	"github.com/go-acme/lego/v4/registration"
@@ -318,43 +320,6 @@ func TestParseECDSAKey_Invalid(t *testing.T) {
 	}
 }
 
-func TestAccountKeyRotatesWhenDirectoryChanges(t *testing.T) {
-	db, err := store.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	issuer := NewIssuer(db.Accounts)
-	ctx := context.Background()
-	first, err := issuer.loadOrCreateAccountKey(ctx, "le", "https://old.example/directory", "ops@example.com")
-	if err != nil {
-		t.Fatal(err)
-	}
-	rec, err := db.Accounts.Get(ctx, "le", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rec.RegistrationJSON = `{"uri":"https://old.example/account/1"}`
-	if err := db.Accounts.Upsert(ctx, rec, nil); err != nil {
-		t.Fatal(err)
-	}
-
-	second, err := issuer.loadOrCreateAccountKey(ctx, "le", "https://new.example/directory", "ops@example.com")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.D.Cmp(second.D) == 0 {
-		t.Fatal("ACME account key was reused across directory identities")
-	}
-	rotated, err := db.Accounts.Get(ctx, "le", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rotated.Directory != "https://new.example/directory" || rotated.RegistrationJSON != "" {
-		t.Fatalf("rotated account = %+v", rotated)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Account initialization under concurrent issuance
 // ---------------------------------------------------------------------------
@@ -372,8 +337,12 @@ type fakeACME struct {
 	nonces        int
 	keys          map[string]*ecdsa.PublicKey // by account URL
 	accounts      []string                    // account URL answering each new-account request
+	updates       []accountUpdate             // each verified account update
 	orderKIDs     []string                    // account URL of each verified new-order request
 	orderPayloads [][]byte                    // JSON payload of each verified new-order request
+	// refuseAccounts, when set, makes new-account requests fail as a CA
+	// refuses a registration.
+	refuseAccounts bool
 	// renewalInfo, when set by offerRenewalInfo, answers GET
 	// /renewal-info/{id}, and the directory offers renewalInfo.
 	renewalInfo http.HandlerFunc
@@ -414,6 +383,7 @@ func newFakeACME(t *testing.T, orders int) *fakeACME {
 	})
 	mux.HandleFunc("HEAD /nonce", func(w http.ResponseWriter, r *http.Request) { f.setNonce(w) })
 	mux.HandleFunc("POST /new-acct", f.newAccount)
+	mux.HandleFunc("POST /acct/{id}", f.updateAccount)
 	mux.HandleFunc("POST /new-order", f.newOrder)
 	f.Server = httptest.NewTLSServer(mux)
 	t.Cleanup(f.Close)
@@ -521,6 +491,13 @@ func (f *fakeACME) newAccount(w http.ResponseWriter, r *http.Request) {
 		f.reject(w, "new-account: %v", err)
 		return
 	}
+	f.mu.Lock()
+	refuse := f.refuseAccounts
+	f.mu.Unlock()
+	if refuse {
+		f.problem(w, "the fake ACME server refuses new accounts")
+		return
+	}
 	// Answer slowly, so that without the account lock every concurrent
 	// issuance reads the store before the first registration reaches it.
 	time.Sleep(150 * time.Millisecond)
@@ -543,6 +520,32 @@ func (f *fakeACME) newAccount(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Location", account)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
+	_, _ = io.WriteString(w, `{"status":"valid"}`)
+}
+
+// accountUpdate is a verified account update: the account it was signed for
+// and the payload it sent.
+type accountUpdate struct {
+	kid     string
+	payload string
+}
+
+// updateAccount answers an update of the account at the request URL, which
+// must be the account the request is signed for.
+func (f *fakeACME) updateAccount(w http.ResponseWriter, r *http.Request) {
+	kid, _, payload, err := f.verify(r)
+	if err == nil && kid != f.URL+r.URL.Path {
+		err = fmt.Errorf("signed for account %q", kid)
+	}
+	if err != nil {
+		f.reject(w, "update of %s: %v", r.URL.Path, err)
+		return
+	}
+	f.mu.Lock()
+	f.updates = append(f.updates, accountUpdate{kid: kid, payload: string(payload)})
+	f.mu.Unlock()
+	f.setNonce(w)
+	w.Header().Set("Content-Type", "application/json")
 	_, _ = io.WriteString(w, `{"status":"valid"}`)
 }
 
@@ -738,79 +741,186 @@ func TestStalledCADoesNotDelayAccountSetupForAnotherCA(t *testing.T) {
 // errStoreDown stands for a database error other than a missing record.
 var errStoreDown = errors.New("database unavailable")
 
-// failingAccounts is an account store whose failAt-th Get fails with
-// errStoreDown. It keeps the stored record as it was at that moment.
-type failingAccounts struct {
-	*store.AccountRepo
-	failAt, gets int
-	atFailure    *store.AccountRecord
-}
+// failingAccounts is an account store whose Get fails with errStoreDown.
+type failingAccounts struct{ *store.AccountRepo }
 
-func (s *failingAccounts) Get(ctx context.Context, ca string, tx *sql.Tx) (*store.AccountRecord, error) {
-	s.gets++
-	if s.gets != s.failAt {
-		return s.AccountRepo.Get(ctx, ca, tx)
-	}
-	s.atFailure, _ = s.AccountRepo.Get(ctx, ca, tx)
+func (failingAccounts) Get(context.Context, string, *sql.Tx) (*store.AccountRecord, error) {
 	return nil, errStoreDown
 }
 
 func TestAccountStoreErrorsDoNotReplaceTheAccount(t *testing.T) {
-	tests := []struct {
-		name       string
-		registered bool // an earlier issuance registered the account
-		failAt     int  // which Get of the issuance fails
-	}{
-		{name: "reading the key", registered: true, failAt: 1},
-		{name: "reading the registration", registered: true, failAt: 2},
-		{name: "storing the registration", failAt: 3},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, registered := range []bool{false, true} { // an earlier issuance registered the account
+		t.Run(fmt.Sprintf("registered=%t", registered), func(t *testing.T) {
 			server := newFakeACME(t, 1)
-			db, err := store.Open(":memory:")
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer db.Close()
+			db := openAccountStore(t)
 			ctx := context.Background()
-			cfg := &config.ServerConfig{
-				ACME: config.ACMESection{
-					Email:     "ops@example.com",
-					DefaultCA: "fake",
-					CAs:       map[string]config.CAEntry{"fake": {Directory: server.URL + "/dir"}},
-				},
-				// Never run: every order fails before the challenge.
-				DNSProviders: map[string]config.DNSProvider{"hook": {Type: "exec", Command: []string{"/usr/local/bin/dns-hook"}}},
-			}
-			spec := config.CertificateSpec{Name: "api", Domains: []string{"api.example.com"}, CA: "fake", DNSProvider: "hook", KeyType: "ec256"}
-			if tt.registered {
+			cfg, spec := renewalInfoConfig(server.URL + "/dir")
+			if registered {
 				// The fake CA fails the order, after the account is registered.
 				_, _ = NewIssuer(db.Accounts).Issue(ctx, cfg, spec, nil)
 			}
+			before, beforeErr := db.Accounts.Get(ctx, "fake", nil)
 
-			accounts := &failingAccounts{AccountRepo: db.Accounts, failAt: tt.failAt}
-			_, err = (&Issuer{accounts: accounts}).Issue(ctx, cfg, spec, nil)
+			_, err := (&Issuer{accounts: failingAccounts{db.Accounts}}).Issue(ctx, cfg, spec, nil)
 			if !errors.Is(err, errStoreDown) {
 				t.Fatalf("Issue error = %v, want the store's error", err)
 			}
-			if accounts.atFailure == nil {
-				t.Fatal("no account was stored when Get failed")
-			}
-			got, err := db.Accounts.Get(ctx, "fake", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if *got != *accounts.atFailure {
+			after, afterErr := db.Accounts.Get(ctx, "fake", nil)
+			switch {
+			case !registered && !errors.Is(afterErr, sql.ErrNoRows):
+				t.Errorf("an account was stored after the failed read: %v", afterErr)
+			case registered && (beforeErr != nil || afterErr != nil):
+				t.Fatal(beforeErr, afterErr)
+			case registered && *after != *before:
 				t.Errorf("stored account changed after the failed read: key replaced %v, registration %q, was %q",
-					got.KeyPEM != accounts.atFailure.KeyPEM, got.RegistrationJSON, accounts.atFailure.RegistrationJSON)
+					after.KeyPEM != before.KeyPEM, after.RegistrationJSON, before.RegistrationJSON)
+			}
+			want := 0
+			if registered {
+				want = 1
 			}
 			server.mu.Lock()
 			defer server.mu.Unlock()
-			if len(server.accounts) != 1 {
-				t.Errorf("%d new-account requests, want 1", len(server.accounts))
+			if len(server.accounts) != want {
+				t.Errorf("%d new-account requests, want %d", len(server.accounts), want)
 			}
 		})
+	}
+}
+
+func openAccountStore(t *testing.T) *store.DB {
+	t.Helper()
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+// storedAccount returns the account stored for the CA "fake", and the key
+// and account URL of its registration.
+func storedAccount(t *testing.T, db *store.DB) (*store.AccountRecord, *ecdsa.PrivateKey, string) {
+	t.Helper()
+	rec, err := db.Accounts.Get(context.Background(), "fake", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := parseECDSAKey([]byte(rec.KeyPEM))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reg registration.Resource
+	if err := json.Unmarshal([]byte(rec.RegistrationJSON), &reg); err != nil {
+		t.Fatalf("stored registration %q: %v", rec.RegistrationJSON, err)
+	}
+	return rec, key, reg.URI
+}
+
+// An account belongs to the directory it was registered with: the account
+// for a new directory has a new key, stored with its registration there.
+func TestAccountKeyRotatesWhenDirectoryChanges(t *testing.T) {
+	old, moved := newFakeACME(t, 1), newFakeACME(t, 1)
+	db := openAccountStore(t)
+	issuer := NewIssuer(db.Accounts)
+	ctx := context.Background()
+	cfg, spec := renewalInfoConfig(old.URL + "/dir")
+	// The fake CAs fail the orders, after the account is registered.
+	_, _ = issuer.Issue(ctx, cfg, spec, nil)
+	_, firstKey, _ := storedAccount(t, db)
+
+	cfg.ACME.CAs["fake"] = config.CAEntry{Directory: moved.URL + "/dir"}
+	_, issueErr := issuer.Issue(ctx, cfg, spec, nil)
+	rec, key, account := storedAccount(t, db)
+
+	if key.Equal(firstKey) {
+		t.Error("the account key was reused for another directory")
+	}
+	if rec.Directory != moved.URL+"/dir" {
+		t.Errorf("stored directory = %q, want %q", rec.Directory, moved.URL+"/dir")
+	}
+	moved.mu.Lock()
+	defer moved.mu.Unlock()
+	if len(moved.accounts) != 1 || len(moved.orderKIDs) != 1 {
+		t.Fatalf("new directory: %d accounts and %d verified orders, want 1 and 1; Issue error: %v",
+			len(moved.accounts), len(moved.orderKIDs), issueErr)
+	}
+	if account != moved.accounts[0] || !key.PublicKey.Equal(moved.keys[account]) {
+		t.Errorf("stored account %q is not the one registered with the new directory, %q", account, moved.accounts[0])
+	}
+}
+
+// A new email address updates the contact of the account, which keeps its
+// key: a new key would need a new registration, which a CA that binds
+// accounts to a one-time external account binding refuses.
+func TestEmailChangeUpdatesTheAccountContact(t *testing.T) {
+	server := newFakeACME(t, 1)
+	db := openAccountStore(t)
+	issuer := NewIssuer(db.Accounts)
+	ctx := context.Background()
+	cfg, spec := renewalInfoConfig(server.URL + "/dir")
+	// The fake CA fails the orders, after the account is registered.
+	_, _ = issuer.Issue(ctx, cfg, spec, nil)
+	_, firstKey, firstAccount := storedAccount(t, db)
+
+	cfg.ACME.Email = "security@example.com"
+	// The second finds the contact up to date.
+	for range 2 {
+		_, _ = issuer.Issue(ctx, cfg, spec, nil)
+	}
+	rec, key, account := storedAccount(t, db)
+
+	if !key.Equal(firstKey) || account != firstAccount {
+		t.Errorf("a new email address replaced the account %q by %q (key replaced %v)", firstAccount, account, !key.Equal(firstKey))
+	}
+	if rec.Email != "security@example.com" {
+		t.Errorf("stored email = %q, want security@example.com", rec.Email)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	for _, problem := range server.problems {
+		t.Errorf("fake ACME server: %s", problem)
+	}
+	if len(server.accounts) != 1 || len(server.orderKIDs) != 3 {
+		t.Fatalf("%d new-account requests and %d verified orders, want 1 and 3", len(server.accounts), len(server.orderKIDs))
+	}
+	want := accountUpdate{kid: firstAccount, payload: `{"contact":["mailto:security@example.com"]}`}
+	if len(server.updates) != 1 || server.updates[0] != want {
+		t.Errorf("account updates = %+v, want one: %+v", server.updates, want)
+	}
+}
+
+// Only an account the CA registered is stored: a registration it refuses
+// stores nothing, and leaves the account stored for another directory as it
+// was.
+func TestRefusedRegistrationStoresNothing(t *testing.T) {
+	registering, refusing := newFakeACME(t, 1), newFakeACME(t, 1)
+	refusing.mu.Lock()
+	refusing.refuseAccounts = true
+	refusing.mu.Unlock()
+	db := openAccountStore(t)
+	issuer := NewIssuer(db.Accounts)
+	ctx := context.Background()
+	cfg, spec := renewalInfoConfig(refusing.URL + "/dir")
+
+	if _, err := issuer.Issue(ctx, cfg, spec, nil); err == nil || !strings.Contains(err.Error(), "register: ") {
+		t.Fatalf("Issue error = %v, want a refused registration", err)
+	}
+	if _, err := db.Accounts.Get(ctx, "fake", nil); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("stored account after the refused registration: %v, want none", err)
+	}
+
+	cfg.ACME.CAs["fake"] = config.CAEntry{Directory: registering.URL + "/dir"}
+	// The fake CA fails the order, after the account is registered.
+	_, _ = issuer.Issue(ctx, cfg, spec, nil)
+	before, _, _ := storedAccount(t, db)
+	cfg.ACME.CAs["fake"] = config.CAEntry{Directory: refusing.URL + "/dir"}
+	if _, err := issuer.Issue(ctx, cfg, spec, nil); err == nil || !strings.Contains(err.Error(), "register: ") {
+		t.Fatalf("Issue error = %v, want a refused registration", err)
+	}
+	if after, _, _ := storedAccount(t, db); *after != *before {
+		t.Errorf("the refused registration replaced the stored account: key replaced %v, directory %q",
+			after.KeyPEM != before.KeyPEM, after.Directory)
 	}
 }
 
@@ -872,34 +982,125 @@ func TestDamagedStoredRegistrationIsRepairedWithTheSameAccount(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// certNotAfter
-// ---------------------------------------------------------------------------
+// cancellingAccounts is an account store that cancels the issuance's ctx as
+// soon as the account is read: shutdown, or an IPC caller that leaves, while
+// lego registers the account, which it does not interrupt.
+type cancellingAccounts struct {
+	*store.AccountRepo
+	cancel context.CancelFunc
+}
 
-func TestCertNotAfter(t *testing.T) {
-	priv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	want := time.Now().Add(90 * 24 * time.Hour).Truncate(time.Second)
-	tpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		NotBefore:    time.Now().Add(-time.Minute),
-		NotAfter:     want,
-	}
-	der, _ := x509.CreateCertificate(rand.Reader, tpl, tpl, &priv.PublicKey, priv)
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+func (s cancellingAccounts) Get(ctx context.Context, ca string, tx *sql.Tx) (*store.AccountRecord, error) {
+	defer s.cancel()
+	return s.AccountRepo.Get(ctx, ca, tx)
+}
 
-	got := certNotAfter(certPEM)
-	diff := got.Sub(want)
-	if diff < 0 {
-		diff = -diff
+// An account the CA has registered is stored even when the caller leaves
+// during the registration: its key is otherwise lost, and the next issuance
+// registers another account, which a CA that binds accounts to a one-time
+// external account binding refuses.
+func TestRegisteredAccountIsStoredWhenTheCallerLeaves(t *testing.T) {
+	server := newFakeACME(t, 1)
+	db := openAccountStore(t)
+	cfg, spec := renewalInfoConfig(server.URL + "/dir")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// The fake CA fails the order, after the account is registered.
+	_, _ = (&Issuer{accounts: cancellingAccounts{db.Accounts, cancel}}).Issue(ctx, cfg, spec, nil)
+	_, _ = NewIssuer(db.Accounts).Issue(context.Background(), cfg, spec, nil)
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	for _, problem := range server.problems {
+		t.Errorf("fake ACME server: %s", problem)
 	}
-	if diff > time.Second {
-		t.Errorf("certNotAfter: got %v, want %v (diff %v)", got, want, diff)
+	if len(server.keys) != 1 {
+		t.Fatalf("the CA registered %d accounts, want 1: the first registration was not stored", len(server.keys))
+	}
+	_, key, account := storedAccount(t, db)
+	if account != server.accounts[0] || !key.PublicKey.Equal(server.keys[account]) {
+		t.Errorf("stored account %q is not the one the CA registered first, %q", account, server.accounts[0])
 	}
 }
 
-func TestCertNotAfter_Invalid(t *testing.T) {
-	got := certNotAfter([]byte("garbage"))
-	if !got.IsZero() {
-		t.Errorf("expected zero time for invalid PEM, got %v", got)
+// ---------------------------------------------------------------------------
+// newResult
+// ---------------------------------------------------------------------------
+
+// A certificate the CA issued is handed on only if it is for the private key
+// of the order and names every ordered domain: lego checks neither, and the
+// clients install the two as a pair.
+func TestNewResultChecksTheIssuedCertificate(t *testing.T) {
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notAfter := time.Now().Add(90 * 24 * time.Hour).Truncate(time.Second)
+	// Configured domains may hold capitals; a CA answers in lower case.
+	domains := []string{"api.example.com", "*.Example.com"}
+	ordered := []string{"api.example.com", "*.example.com"}
+	tests := []struct {
+		name     string
+		certKey  crypto.Signer // the key the certificate is for
+		orderKey crypto.Signer // the private key lego generated for the order
+		dnsNames []string
+		want     string // in the error; none if empty
+	}{
+		{name: "ECDSA as ordered", certKey: ecKey, orderKey: ecKey, dnsNames: ordered},
+		{name: "RSA as ordered", certKey: rsaKey, orderKey: rsaKey, dnsNames: ordered},
+		{name: "names in another order and more", certKey: ecKey, orderKey: ecKey,
+			dnsNames: []string{"www.example.com", "*.example.com", "api.example.com"}},
+		{name: "for another key", certKey: otherKey, orderKey: ecKey, dnsNames: ordered,
+			want: "issued certificate is not for the private key of the order"},
+		{name: "for a key of another type", certKey: rsaKey, orderKey: ecKey, dnsNames: ordered,
+			want: "issued certificate is not for the private key of the order"},
+		{name: "a domain missing", certKey: ecKey, orderKey: ecKey, dnsNames: []string{"api.example.com"},
+			want: "issued certificate does not name *.Example.com"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tpl := &x509.Certificate{
+				SerialNumber: big.NewInt(1),
+				NotBefore:    notAfter.Add(-90 * 24 * time.Hour),
+				NotAfter:     notAfter,
+				DNSNames:     tt.dnsNames,
+			}
+			der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, tt.certKey.Public(), tt.certKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res := &certificate.Resource{
+				Domain:      "api.example.com",
+				Certificate: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+				PrivateKey:  certcrypto.PEMEncode(tt.orderKey),
+			}
+
+			got, err := newResult(res, domains)
+			if tt.want != "" {
+				if err == nil || err.Error() != tt.want {
+					t.Fatalf("newResult error = %v, want %q", err, tt.want)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("newResult: %v", err)
+			}
+			if !bytes.Equal(got.Certificate, res.Certificate) || !bytes.Equal(got.PrivateKey, res.PrivateKey) || !got.NotAfter.Equal(notAfter) {
+				t.Errorf("newResult = %+v, want the issued pair, expiring %s", got, notAfter)
+			}
+		})
+	}
+
+	if _, err := newResult(&certificate.Resource{Certificate: []byte("garbage")}, domains); err == nil || !strings.HasPrefix(err.Error(), "issued certificate: ") {
+		t.Errorf("newResult of a certificate that does not parse: error = %v", err)
 	}
 }

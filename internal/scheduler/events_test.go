@@ -197,3 +197,23 @@ func TestFailedTickIsReportedAsEvent(t *testing.T) {
 	}
 	assertEvents(t, events, `ERROR renewal tick failed error="list certs: sql: database is closed"`)
 }
+
+// A tick that shutdown interrupts is not reported: its store reads fail only
+// because shutdown cancelled them.
+func TestTickInterruptedByShutdownIsNotReported(t *testing.T) {
+	r := New(&mockIssuer{}, mustOpenDB(t), nil, nil)
+	events := captureEvents(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	cfg := minimalCfg("api-prod", nil)
+	// Shutdown starts as the tick reads the configuration, before it reads
+	// the store.
+	current := func() *config.ServerConfig {
+		cancel()
+		return cfg
+	}
+	if err := r.RunDynamic(ctx, current); !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunDynamic returned %v", err)
+	}
+	assertEvents(t, events)
+}
