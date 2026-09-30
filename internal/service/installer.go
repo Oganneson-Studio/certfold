@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"syscall"
 
 	ksvc "github.com/kardianos/service"
 
@@ -228,15 +229,26 @@ func StatusText(d Daemon, cfg Config, socket string) (string, error) {
 }
 
 // runningStatus reports a service the manager reports as running: "Running"
-// when its daemon answers on socket, and why not otherwise.
+// when its daemon answers on socket; not answering when the endpoint is
+// missing, refuses the connection or stays busy, as while the daemon fails
+// at start; and otherwise that it cannot check, such as for a user who may
+// not open the endpoint, which does not show whether the daemon answers.
 func runningStatus(role Role, socket string) string {
 	conn, err := ipc.Dial(socket)
-	if err != nil {
+	if err == nil {
+		_ = conn.Close()
+		return "Running"
+	}
+	var timeout interface{ Timeout() bool }
+	switch {
+	case errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) || errors.As(err, &timeout) && timeout.Timeout():
 		name, _, _, _ := roleAttrs(role)
 		return fmt.Sprintf("Running (not answering on %s: %v; see %s)", socket, err, serviceLog(name))
+	case errors.Is(err, fs.ErrPermission):
+		return fmt.Sprintf("Running (cannot check the daemon on %s: %v; checking it needs root or an elevated administrator)", socket, err)
+	default:
+		return fmt.Sprintf("Running (cannot check the daemon on %s: %v)", socket, err)
 	}
-	_ = conn.Close()
-	return "Running"
 }
 
 // serviceLog says where the log of the service name is: the log of a daemon
