@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-acme/lego/v4/challenge/dns01"
@@ -33,8 +34,9 @@ var (
 //
 // the calling convention of lego's exec provider in its default mode: fqdn is
 // the challenge record name after following CNAMEs, with a trailing dot, and
-// value is the TXT record content. The program inherits the environment of
-// sigils and must exit 0 on success.
+// value is the TXT record content. A record name that is not a host name is
+// refused without running the program. The program inherits the environment
+// of sigils and must exit 0 on success.
 //
 // Unlike lego's exec provider it bounds each run, takes an argv instead of a
 // single program path, and does not implement Sequential, so lego does not
@@ -65,6 +67,15 @@ func (p *execProvider) Timeout() (timeout, interval time.Duration) {
 // are logged instead, as a Private value that only the service log holds.
 func (p *execProvider) run(action, domain, keyAuth string) error {
 	info := dns01.GetChallengeInfo(domain, keyAuth)
+	// The record name comes from the network: from the identifier of the
+	// CA's authorization, which lego does not compare with the order, and
+	// from the CNAME records lego follows, over plain DNS. Windows runs a
+	// batch file through cmd.exe, which parses the arguments again, and a
+	// script may hand them to a shell, so only a host name may reach the
+	// program; one beginning with '-' could pass for an option.
+	if !isHostName(info.EffectiveFQDN) {
+		return fmt.Errorf("exec: %s: record name %q is not a host name", action, info.EffectiveFQDN)
+	}
 
 	// Clone first: appending to the shared argv in place would let concurrent
 	// runs overwrite each other's arguments in its spare capacity.
@@ -82,4 +93,23 @@ func (p *execProvider) run(action, domain, keyAuth string) error {
 			"action", action, "record", info.EffectiveFQDN, "error", err, "output", logging.Private(out))
 	}
 	return fmt.Errorf("exec: %s %s: %w", action, info.EffectiveFQDN, err)
+}
+
+// isHostName reports whether name, with the trailing dot of a record name,
+// is made of labels of ASCII letters, digits, '-' and '_', none of them empty
+// or beginning with '-'. Challenge records and the CNAME targets they are
+// delegated to have underscores, and their case varies.
+func isHostName(name string) bool {
+	labels, ok := strings.CutSuffix(name, ".")
+	if !ok {
+		return false
+	}
+	for label := range strings.SplitSeq(labels, ".") {
+		if label == "" || label[0] == '-' || strings.ContainsFunc(label, func(r rune) bool {
+			return !('a' <= r && r <= 'z' || 'A' <= r && r <= 'Z' || '0' <= r && r <= '9' || r == '-' || r == '_')
+		}) {
+			return false
+		}
+	}
+	return true
 }
