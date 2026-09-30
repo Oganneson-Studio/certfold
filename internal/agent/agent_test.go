@@ -39,8 +39,9 @@ func TestRunReturnsNilWhenCancelled(t *testing.T) {
 	// Run refuses directories that accounts it does not trust may write to,
 	// as the temporary directory may be: securefile creates these two private.
 	path := filepath.Join(t.TempDir(), "etc", "client.yaml")
+	dataDir := filepath.Join(t.TempDir(), "data")
 	raw := fmt.Sprintf("client:\n  name: web-1\n  server_url: %q\n  data_dir: %q\n  ipc_socket: %q\n",
-		"https://"+upstream.Addr().String(), filepath.Join(t.TempDir(), "data"), testIPCSocket(t))
+		"https://"+upstream.Addr().String(), dataDir, testIPCSocket(t))
 	if err := securefile.WriteFile(path, []byte(raw)); err != nil {
 		t.Fatal(err)
 	}
@@ -64,6 +65,11 @@ func TestRunReturnsNilWhenCancelled(t *testing.T) {
 		t.Fatalf("Run returned before pulling: %v", err)
 	case <-time.After(30 * time.Second):
 		t.Fatal("daemon did not start pulling")
+	}
+	// Run created the missing data_dir private before it pulled, not when a
+	// certificate is first stored: another account could create it first.
+	if err := securefile.CheckPrivateDirectory(dataDir); err != nil {
+		t.Errorf("data_dir: %v", err)
 	}
 
 	cancel()

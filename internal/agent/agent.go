@@ -2,8 +2,11 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"os"
 	"path/filepath"
 
 	"github.com/Oganneson-Studio/sigil/internal/client"
@@ -29,6 +32,13 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 	cfg, err := config.LoadClient(configPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+	// Created now if missing, as store.Open does data_dir of sigils: until
+	// the first certificate is stored, another account could create it.
+	if _, err := os.Stat(cfg.Client.DataDir); errors.Is(err, fs.ErrNotExist) {
+		if err := securefile.EnsurePrivateDirectory(cfg.Client.DataDir); err != nil {
+			return fmt.Errorf("create data directory: %w", err)
+		}
 	}
 	if err := securefile.CheckDirectory(cfg.Client.DataDir); err != nil {
 		return fmt.Errorf("data directory: %w", err)
