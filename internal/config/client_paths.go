@@ -14,8 +14,9 @@ import (
 // value and does not validate the file, so the variables other values
 // reference, such as a PKCS#12 password that only the service's environment
 // sets, need not be set in the caller's environment, which sudo does not
-// pass on. The value is expanded exactly as LoadClient expands it. An empty
-// value means the key is not set.
+// pass on. The value is expanded exactly as LoadClient expands it, and a
+// relative ipc_socket is refused as LoadClient refuses it. An empty value
+// means the key is not set.
 func ReadClientField(path, key string) (string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -28,5 +29,14 @@ func ReadClientField(path, key string) (string, error) {
 		return "", fmt.Errorf("parse %s: %w", path, err)
 	}
 	n := doc.Client[key]
-	return expandedString(&n, "client."+key)
+	value, err := expandedString(&n, "client."+key)
+	if err != nil {
+		return "", err
+	}
+	if key == "ipc_socket" && value != "" {
+		if err := checkAbsolute(value); err != nil {
+			return "", fmt.Errorf("client.ipc_socket: %w", err)
+		}
+	}
+	return value, nil
 }

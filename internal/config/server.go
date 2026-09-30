@@ -139,7 +139,8 @@ func ParseServer(raw []byte) (*ServerConfig, error) {
 // it expands ${VAR} only in these two values and does not validate the file,
 // so the DNS credentials other sections reference need not be set in the
 // caller's environment. The two values are expanded exactly as LoadServer
-// expands them. Empty results mean the field is not set.
+// expands them, and a relative one is refused as LoadServer refuses it.
+// Empty results mean the field is not set.
 func ReadServerPaths(path string) (dataDir, ipcSocket string, err error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -159,6 +160,17 @@ func ReadServerPaths(path string) (dataDir, ipcSocket string, err error) {
 	}
 	if ipcSocket, err = expandedString(&doc.Server.IPCSocket, "server.ipc_socket"); err != nil {
 		return "", "", err
+	}
+	for _, f := range []struct{ field, path string }{
+		{"server.data_dir", dataDir},
+		{"server.ipc_socket", ipcSocket},
+	} {
+		if f.path == "" {
+			continue
+		}
+		if err := checkAbsolute(f.path); err != nil {
+			return "", "", fmt.Errorf("%s: %w", f.field, err)
+		}
 	}
 	return dataDir, ipcSocket, nil
 }
@@ -198,12 +210,26 @@ func (c *ServerConfig) Validate() error {
 
 	if strings.TrimSpace(c.Server.DataDir) == "" {
 		v.Add("server.data_dir", "must be set")
+	} else if err := checkAbsolute(c.Server.DataDir); err != nil {
+		v.Add("server.data_dir", "%v", err)
 	}
 	if !isValidListen(c.Server.Listen) {
 		v.Add("server.listen", "invalid listen address %q (want host:port with a port from 1 to 65535; the host may be empty)", c.Server.Listen)
 	}
 	if (c.Server.TLSCertFile == "") != (c.Server.TLSKeyFile == "") {
 		v.Add("server.tls", "tls_cert_file and tls_key_file must be set together")
+	}
+	for _, f := range []struct{ field, path string }{
+		{"server.tls_cert_file", c.Server.TLSCertFile},
+		{"server.tls_key_file", c.Server.TLSKeyFile},
+		{"server.ipc_socket", c.Server.IPCSocket},
+	} {
+		if f.path == "" {
+			continue
+		}
+		if err := checkAbsolute(f.path); err != nil {
+			v.Add(f.field, "%v", err)
+		}
 	}
 	if c.Server.PublicURL != "" {
 		if err := ValidatePublicURL(c.Server.PublicURL); err != nil {
@@ -377,6 +403,11 @@ func validateDNSProviderFields(v *ValidationError, path string, p DNSProvider) {
 		if !set("project") && !set("service_account_file") {
 			v.Add(path, "gcloud provider requires project (used with application default credentials) or service_account_file")
 		}
+		if file, ok := p.Config["service_account_file"].(string); ok && file != "" {
+			if err := checkAbsolute(file); err != nil {
+				v.Add(path+".service_account_file", "%v", err)
+			}
+		}
 	case "exec":
 		// Whether the program exists is not checked: that can change between
 		// runs, and a failed run is reported as the certificate's last error.
@@ -439,6 +470,21 @@ func ValidatePublicURL(s string) error {
 // to U+201E for double quotes, hence ASCII only.
 func unquotable(r rune) bool {
 	return r > unicode.MaxASCII || unicode.IsSpace(r) || unicode.IsControl(r) || strings.ContainsRune("'\"`$\\", r)
+}
+
+// checkAbsolute reports an error unless path, the value of a field that names
+// a file, a directory, a socket or a pipe, is absolute. A relative one would
+// be resolved against the working directory of each process that uses it,
+// and neither that of a service nor that of the CLI is the directory of the
+// configuration. On Windows a path is absolute only with a drive letter, as
+// C:\ProgramData has, or with two leading separators, as a share such as
+// \\fileserver\sigil and the named pipe \\.\pipe\sigil-server have: \dir is
+// on the current drive.
+func checkAbsolute(path string) error {
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("must be an absolute path, got %q", path)
+	}
+	return nil
 }
 
 // isValidDNSResolver reports whether s works as a resolver address after

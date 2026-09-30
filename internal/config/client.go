@@ -146,11 +146,21 @@ func (c *ClientConfig) Validate() error {
 	if c.Client.IdentityRenewBefore < time.Hour || c.Client.IdentityRenewBefore > 89*24*time.Hour {
 		v.Add("client.identity_renew_before", "must be between 1h and 2136h (got %s)", c.Client.IdentityRenewBefore)
 	}
+	if err := checkAbsolute(c.Client.DataDir); err != nil {
+		v.Add("client.data_dir", "%v", err)
+	}
+	if c.Client.IPCSocket != "" {
+		if err := checkAbsolute(c.Client.IPCSocket); err != nil {
+			v.Add("client.ipc_socket", "%v", err)
+		}
+	}
 
 	c.validateIdentity(v)
 
 	// Two outputs at one path would overwrite each other on every reconcile,
-	// running their on_change programs each time.
+	// running their on_change programs each time. Paths are absolute, so
+	// after Clean a file has one spelling, except through links and, on
+	// Windows, aliases such as \\?\C:\ and 8.3 short names.
 	outputPaths := make(map[string]string)
 	for _, certName := range slices.Sorted(maps.Keys(c.Certificates)) {
 		// An invalid name is reported alone: the paths of the other errors
@@ -171,6 +181,8 @@ func (c *ClientConfig) Validate() error {
 			}
 			if o.Path == "" {
 				v.Add(base+".path", "must be set")
+			} else if err := checkAbsolute(o.Path); err != nil {
+				v.Add(base+".path", "%v", err)
 			} else {
 				key := filepath.Clean(o.Path)
 				if runtime.GOOS == "windows" {
