@@ -5,17 +5,36 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
 )
 
-const initialRuntimeConfig = `server:
+// absPath makes path, a Unix absolute path, absolute on the OS running the
+// test: on Windows it puts it on drive C:. Windows takes the slashes of
+// C:/var/lib for separators, and YAML reads slashes as they are in any
+// quoting, unlike backslashes.
+func absPath(path string) string {
+	if runtime.GOOS == "windows" {
+		return "C:" + path
+	}
+	return path
+}
+
+// ipcSocketLine is the line of initialRuntimeConfig that sets
+// server.ipc_socket.
+var ipcSocketLine = `  ipc_socket: "` + absPath("/var/run/sigil/sigils.sock") + `"`
+
+// tlsFileLines set server.tls_cert_file and server.tls_key_file.
+var tlsFileLines = "\n  tls_cert_file: \"" + absPath("/etc/sigil/cert.pem") + "\"\n  tls_key_file: \"" + absPath("/etc/sigil/key.pem") + "\""
+
+var initialRuntimeConfig = `server:
   listen: ":8443"
   public_url: "https://sigil.example.com:8443"
-  data_dir: "/var/lib/sigil"
-  ipc_socket: "/var/run/sigil/sigils.sock"
+  data_dir: "` + absPath("/var/lib/sigil") + `"
+` + ipcSocketLine + `
 acme:
   email: "ops@example.com"
   default_ca: "le"
@@ -144,13 +163,13 @@ func TestServerConfigRuntimeRejectsImmutableChangesWithoutPublishing(t *testing.
 		want string
 	}{
 		{name: "listen", old: `listen: ":8443"`, new: `listen: ":9443"`, want: "server.listen"},
-		{name: "data dir", old: `data_dir: "/var/lib/sigil"`, new: `data_dir: "/srv/sigil"`, want: "server.data_dir"},
-		{name: "ipc socket", old: `ipc_socket: "/var/run/sigil/sigils.sock"`, new: `ipc_socket: "/tmp/sigils.sock"`, want: "server.ipc_socket"},
+		{name: "data dir", old: absPath("/var/lib/sigil"), new: absPath("/srv/sigil"), want: "server.data_dir"},
+		{name: "ipc socket", old: absPath("/var/run/sigil/sigils.sock"), new: absPath("/tmp/sigils.sock"), want: "server.ipc_socket"},
 		{name: "public URL", old: `public_url: "https://sigil.example.com:8443"`, new: `public_url: "https://new.example.com:8443"`, want: "server.public_url"},
 		{
 			name: "TLS files",
-			old:  `  ipc_socket: "/var/run/sigil/sigils.sock"`,
-			new:  "  ipc_socket: \"/var/run/sigil/sigils.sock\"\n  tls_cert_file: \"/etc/sigil/cert.pem\"\n  tls_key_file: \"/etc/sigil/key.pem\"",
+			old:  ipcSocketLine,
+			new:  ipcSocketLine + tlsFileLines,
 			want: "server.tls_cert_file",
 		},
 		{
@@ -187,8 +206,7 @@ func TestServerConfigRuntimeRejectsImmutableChangesWithoutPublishing(t *testing.
 // tls_cert_file: the TLS files are fixed at startup. The "TLS files" case
 // above adds both and checks for tls_cert_file only.
 func TestServerConfigRuntimeRejectsTLSKeyFileChangeAlone(t *testing.T) {
-	withFiles := strings.Replace(initialRuntimeConfig, `  ipc_socket: "/var/run/sigil/sigils.sock"`,
-		"  ipc_socket: \"/var/run/sigil/sigils.sock\"\n  tls_cert_file: \"/etc/sigil/cert.pem\"\n  tls_key_file: \"/etc/sigil/key.pem\"", 1)
+	withFiles := strings.Replace(initialRuntimeConfig, ipcSocketLine, ipcSocketLine+tlsFileLines, 1)
 	path := filepath.Join(t.TempDir(), "server.yaml")
 	initial := parseRuntimeConfig(t, withFiles)
 	notified := 0

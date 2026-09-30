@@ -46,11 +46,11 @@ func TestServiceDataDirUsesConfiguredDataDirWithoutCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("serviceDataDir: %v", err)
 	}
-	if got != "C:/sigil-test" {
+	if got != absPath("/sigil-test") {
 		t.Fatalf("data dir = %q, want the configured server.data_dir", got)
 	}
 
-	raw = bytes.Replace(raw, []byte("  data_dir: \"C:/sigil-test\"\n"), nil, 1)
+	raw = bytes.Replace(raw, []byte("  data_dir: \""+absPath("/sigil-test")+"\"\n"), nil, 1)
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}

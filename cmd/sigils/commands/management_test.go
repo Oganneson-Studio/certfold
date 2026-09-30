@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -20,6 +21,17 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
+// absPath makes path, a Unix absolute path, absolute on the OS running the
+// test: on Windows it puts it on drive C:. Windows takes the slashes of
+// C:/sigil-test for separators, and YAML reads slashes as they are in any
+// quoting, unlike backslashes.
+func absPath(path string) string {
+	if runtime.GOOS == "windows" {
+		return "C:" + path
+	}
+	return path
+}
+
 func writeManagementTestConfig(t *testing.T, certificates string) string {
 	t.Helper()
 	t.Setenv("SIGIL_TEST_ACCESS_KEY", "expanded-access-key")
@@ -28,7 +40,7 @@ func writeManagementTestConfig(t *testing.T, certificates string) string {
 	raw := `# preserve this operator comment
 server:
   listen: ":8443"
-  data_dir: "C:/sigil-test"
+  data_dir: "` + absPath("/sigil-test") + `"
 acme:
   email: "admin@example.com"
   default_ca: "le"

@@ -44,9 +44,9 @@ certificates:
   api:
     outputs:
       - format: pkcs12
-        path: /etc/ssl/api.p12
+        path: %q
         password: %s
-`, srv.URL, t.TempDir(), passwordRef)
+`, srv.URL, t.TempDir(), filepath.Join(t.TempDir(), "api.p12"), passwordRef)
 	if err := securefile.WriteFile(cfgPath, []byte(existing)); err != nil {
 		t.Fatal(err)
 	}
