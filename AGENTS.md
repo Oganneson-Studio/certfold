@@ -6,11 +6,11 @@
 
 项目处于持续开发阶段。核心注册、mTLS 鉴权、长轮询交付与每轮对账、`on_change` 钩子、并行签发引擎、exec DNS provider、ARI 驱动的续期、HTTPS 证书热更新、服务端与客户端 TUI、slog 日志与事件环形缓冲、两个二进制的 `events` 命令均已可用，并有 WSLC 黑盒测试（含从 Pebble 真实签发并覆盖 ARI）。各家云 DNS provider 的 E2E 仍未完成。
 
-部署前审查已完成三批修复（S、A、C、D、L、P、W、I），TUI 迁到 Charm v2（T 路）也已合入。Z 路（所有路径字段要求绝对路径，以及 CI workflow）进行中。余项按 `TODO.md` 跟踪。
+部署前审查的前两批修复（S、A、C、D、L 和 P、W、I）及 TUI 迁到 Charm v2（T 路）已合入。第三批 Z（所有路径字段要求绝对路径，以及 CI workflow）进行中。余项按 `TODO.md` 跟踪。
 
 ## 重构方向（2026-09-27 拍板）
 
-审阅文档未公开（缺陷编号 A1–A13、决定编号 B1–B4、C1 均出自该文档）。以下决定均已落地；部署前审查项见已知未完成项。
+审阅文档未公开（缺陷编号 A1–A13、决定编号 B1–B4、C1 均出自该文档）。以下决定均已落地。
 
 - B1（Phase 3）：服务端推送改为客户端长轮询 `/v1/sync`。
 - B2（Phase 2）：取消全局签发锁，改为每张证书一把锁、有上限的并行签发。
@@ -21,26 +21,13 @@
 - D1–D8（Phase 4 新发现缺陷）：D1 HTTPS 证书热更新、D2 服务端 TLS 下限降到 1.2、D3 删除不存在的对象返回 404、D4 install.ps1 修复、D5 slog 接管所有日志、D6 到货即到期防护（极短寿命证书不支持，见已知未完成项）、D7 `public_url` 缺失时拒绝签发令牌、D8 `token list` 列宽修正。均已修复。
 - 保留不动：mTLS + 数据库指纹鉴权、一次性令牌绑定、`subscribers` 唯一授权来源、客户端本地输出配置、spec 指纹绑定、`securefile`、严格 YAML。
 
-### 部署前审查（2026-09-29 启动，2026-10-01 三批合入）
+### 部署前审查（2026-09-29 启动）
 
-用户拍板 4 项：
+用户拍板 4 项：令牌经环境变量和交互输入传递，不再只能走命令行；令牌长度保持现状；安装脚本幂等（已安装时重装，另加 `--upgrade`）；同名令牌必须显式 `--replace`。
 
-1. 令牌不进命令行：`sigilc enroll` 没给 `--token` 时读环境变量 `SIGILC_TOKEN`；安装脚本经 `SIGILC_TOKEN` 传给 sigilc，不带令牌时交互输入（Linux 从 `/dev/tty` 读、不回显；Windows 用 `Read-Host -AsSecureString`）。
-2. 令牌长度保持现状，注册协议不改。
-3. 安装脚本幂等：已安装时停服务、原子替换二进制、用新令牌重新注册、uninstall + install 服务、启动。`--upgrade`/`-Upgrade` 只换二进制并重启。
-4. 同名令牌必须显式 `--replace`：名字已注册或有未用未过期令牌时 `token create` 拒绝，带 `--replace` 时吊销同名所有未用令牌。
+主会话已定：`cert add`/`cert remove` 改走 IPC；Windows `owner` 只加只读 ACE 不改属主；关停上界 30 秒；mini-CA 根证书不足 1 年时记 WARN；`acme.email` 变化只更新联系人不换 key；签发结果校验叶子公钥和 DNSNames；非 systemd 的 Linux 和 macOS 的部分行为标注为未验证。
 
-主会话已定：
-
-- `cert add`/`cert remove` 改走 IPC，由 daemon 完整校验后写 server.yaml 并原子应用；daemon 未运行时报错。
-- Windows `owner` 不改属主，只给配置账户加只读 ACE。
-- 关停上界 30 秒（`issuanceStopTimeout`），超时放弃在途签发。
-- mini-CA 根证书剩余不足 1 年时记 WARN `mini-CA root certificate expires within a year`。
-- `acme.email` 变化只更新联系人（`UpdateRegistration`），不换 key；只有 directory 变化才换 key。
-- 签发结果校验：叶子公钥必须等于订单私钥，DNSNames 必须覆盖 spec 的全部域名。
-- 非 systemd 的 Linux 和 macOS 的部分行为标注为未验证。
-
-三批修复覆盖范围：第一批 S（服务端核心）、A（API / 注册 / mini-CA）、C（客户端）、D（配置 / 存储 / IPC / 日志）、L（命令行 / 服务 / TUI）；第二批 P（进程管理）、W（目录属主加固）、I（安装与注册入口）；另开 T（TUI 迁到 Charm v2）。Z（绝对路径与 CI）进行中。
+前两批修复（S、A、C、D、L 和 P、W、I）及 T（TUI 迁到 Charm v2）已合入。Z（绝对路径与 CI）进行中。各项细节见安全约束、运行时约束和已知未完成项。
 
 ## 项目快览
 
@@ -125,7 +112,7 @@ go test -race ./...
    - 目录检查在启动时做，reload 不复查。Windows 上配置目录和 sigilc `data_dir` 的属主须为 SYSTEM、Administrators（或非提权时的当前用户），其他主体不得有写入、删除、删子项、改 DACL、改属主权限。sigils `data_dir` 在 Windows 上须完全私有（继承项也算），Unix 上 `mode&077==0` 且属主为运行用户。不合规拒绝启动，报错点名目录并给出 `icacls`/`chmod`/`chown` 命令。`ca\` 子目录的检查在 `ca.Bootstrap` 中。
    - data_dir 不存在时由 `EnsurePrivateDirectory` 私有创建；已存在的目录只检查不收紧。提权进程写出的文件和目录 DACL 不再带操作者本人 SID，新建对象属主为 Administrators。
 5. 私钥输出默认权限为 `0600`；公开证书可为 `0644`。不要对所有输出格式使用同一默认权限。对账重写输出时按证书成组暂存：内容、权限位和属主先在临时文件上就位，全部暂存成功才依次改名替换，不能先改名再 chown。Windows 上的私钥类输出（`pem-key`、`pem-bundle`、`pkcs12`）有几条额外规则：
-   - 临时文件在 `CreateFile` 时就带受保护 DACL：SYSTEM 和 Administrators 完全控制，配置的 `owner` 只读。`owner` 不改属主，只加只读 ACE。
+   - 临时文件在 `CreateFile` 时就带受保护 DACL：SYSTEM、Administrators 完全控制（非提权时另加当前用户），配置的 `owner` 只读。`owner` 不改属主，只加只读 ACE。
    - `mode` 在 Windows 上不应用，不能放宽这个 DACL；只读属性还会让之后的替换失败。
    - `owner` 只有以 `S-`（不分大小写）开头且能解析时才按 SID 处理，否则按账户名查找。`BU`、`WD` 这类 SDDL 别名不能当成 SID。`owner` 只对私钥类输出生效，其他格式忽略且不报错。
 6. 安装下载端点的 `os/arch` 必须保持字符白名单和目录 containment 双重检查。下载使用 `ServeContent`（提供 Content-Length 和 Range），单次响应写截止 10 分钟（`downloadWriteTimeout`）；未鉴权慢读者最多占一条连接 10 分钟。
@@ -198,7 +185,7 @@ go test -race ./...
   - `not_after`、`fingerprint`、`renew_at`、`renew_source` 等材料字段，只在库中记录的 spec 指纹与当前配置一致时才填写。
   - 已从配置删除的证书，库里残留的记录不列出。
   - state 优先级为 issuing > backoff > valid > pending。
-- `sigils token create` 由运行中的 daemon 经服务端 IPC 签发，daemon 未运行时报错，不再在 CLI 进程里直接写库；CLI 拒绝不支持新协议的旧 daemon 的应答（缺 `token_id`）。`public_url` 为空且 `listen` 的主机部分为空或是 `0.0.0.0`、`::` 时，拒绝签发并提示设置 `server.public_url`。名字已注册或有未用未过期令牌时要 `--replace`（IPC 409）；`--replace` 先吊销同名所有未用令牌，`--json` 字段为 `token`/`token_id`/`expires_at`/`revoked`（0 时省略）/`server_url`/`public_url_configured`；人读输出多 `Token ID:` 和 `Expires:` 两行。寿命上限 168 小时由 daemon 执行。
+- `sigils token create` 由运行中的 daemon 经服务端 IPC 签发，daemon 未运行时报错，不再在 CLI 进程里直接写库；CLI 拒绝不支持新协议的旧 daemon 的应答（缺 `token_id`）。`public_url` 为空且 `listen` 的主机部分为空或是 `0.0.0.0`、`::` 时，拒绝签发并提示设置 `server.public_url`。名字已注册或有未用未过期令牌时要 `--replace`（IPC 409）；`--replace` 先吊销同名所有未用令牌，`--json` 字段为 `token`/`token_id`/`expires_at`/`revoked`（0 时省略）/`install_sh`/`install_ps1`；人读输出多 `Token ID:` 和 `Expires:` 两行。寿命上限 168 小时由 daemon 执行。
 - `cert add`/`cert remove` 由 daemon 经服务端 IPC 修改 server.yaml 并立即应用（与 reload 语义一致），daemon 未运行时报错。文件里已有需要重启的手工改动时拒绝、文件不动。回写 server.yaml 时 Unix 保留模式和属主、写到符号链接目标；Windows 不保留属主，文件改为私有 DACL；空行丢失已接受（yaml.v3 的限制）。
 - 删除不存在的客户端返回 404（body `client "x" is not enrolled`），删除不存在的令牌返回 404（body `enrollment token "x" does not exist`），CLI 退出码 1。
 - `sigilc status --json` 返回 `ClientState`，其中 `certs` 数组的字段为 `name`、`fingerprint`、`not_after`、`renew_at`、`outputs`、`on_change`、`hook_pending`。`renew_at` 按客户端的比例规则算，sigils 有 ARI 时可能更晚续期。`last_pull_at` 在第一次 sync 前不存在（`omitzero`）。`token list --json` 里未用令牌没有 `used_at`（`omitzero`）。
@@ -322,7 +309,7 @@ ARI 简化：
 - 寿命不超过 CA 回拨 NotBefore 时长约两倍的证书（LE 回拨 1 小时，约 2 小时以内）不受支持：一到手就已过续期时点，会被到货即到期防护按失败退避。
 
 对账与显示：
-- 对账不比较 Windows 私钥文件的 DACL：DACL 被放宽或从目录继承的，要等内容变化（续期）才复原。从配置删掉 `owner`/`group` 时，Unix 旧 uid/gid、Windows 旧属主和它的读权限 ACE 同样保留到内容变化。要立即生效就删掉输出文件，下一轮对账会重建。
+- 对账不比较 Windows 私钥文件的 DACL：DACL 被放宽或从目录继承的，要等内容变化（续期）才复原。从配置删掉 `owner`/`group` 时，Unix 旧 uid/gid、Windows 旧 owner 账户的读权限 ACE 同样保留到内容变化。要立即生效就删掉输出文件，下一轮对账会重建。
 - 80x24 终端下，Certificates 详情里很长的 Last Error 会被截掉末尾，全文用 `sigils cert show`。
 - lego 的 INFO 行进入 500 条的事件环：批量续期时可能挤掉 sigils 自己的事件。
 - reload 被拒时，yaml.v3 的类型错误会带出最多约 10 个字符的配置值（例如把凭据误写进数字字段），会进服务日志和事件。
