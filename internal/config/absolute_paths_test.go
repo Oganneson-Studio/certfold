@@ -101,30 +101,19 @@ func TestPathFieldsAreCheckedAfterExpansion(t *testing.T) {
 	}
 }
 
-// ReadServerPaths and ReadClientField refuse the relative paths that
+// ReadServerField and ReadClientField refuse the relative paths that
 // LoadServer and LoadClient refuse, with the same error, and return the
 // absolute ones they take.
 func TestLenientReadersRefuseRelativePaths(t *testing.T) {
-	readers := map[string]func(file string) (string, error){
-		"server.data_dir": func(file string) (string, error) {
-			dataDir, _, err := ReadServerPaths(file)
-			return dataDir, err
-		},
-		"server.ipc_socket": func(file string) (string, error) {
-			_, ipcSocket, err := ReadServerPaths(file)
-			return ipcSocket, err
-		},
-		"client.ipc_socket": func(file string) (string, error) {
-			return ReadClientField(file, "ipc_socket")
-		},
-	}
 	for _, f := range pathFields {
-		read, ok := readers[f.field]
-		if !ok {
+		section, key, _ := strings.Cut(f.field, ".")
+		if key != "data_dir" && key != "ipc_socket" {
 			continue
 		}
+		read := func(file string) (string, error) { return ReadClientField(file, key) }
 		write := writeClientYAML
-		if f.server {
+		if section == "server" {
+			read = func(file string) (string, error) { return ReadServerField(file, key) }
 			write = writeServerYAML
 		}
 		for _, path := range relativePaths() {

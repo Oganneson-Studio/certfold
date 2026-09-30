@@ -134,45 +134,49 @@ func ParseServer(raw []byte) (*ServerConfig, error) {
 	return &cfg, nil
 }
 
-// ReadServerPaths reads server.data_dir and server.ipc_socket from the
-// server.yaml at path so CLI commands can locate the daemon. Unlike LoadServer
-// it expands ${VAR} only in these two values and does not validate the file,
-// so the DNS credentials other sections reference need not be set in the
-// caller's environment. The two values are expanded exactly as LoadServer
-// expands them, and a relative one is refused as LoadServer refuses it.
-// Empty results mean the field is not set.
-func ReadServerPaths(path string) (dataDir, ipcSocket string, err error) {
+// ReadServerField reads the value of key in the server section of the
+// server.yaml at path: CLI commands locate the daemon with ipc_socket, and
+// service install unpacks the sigilc binaries under data_dir. Unlike
+// LoadServer it expands ${VAR} only in this value and does not validate the
+// file, so the DNS credentials other sections reference need not be set in
+// the caller's environment, and a mistake elsewhere in the file, the other
+// of these two values included, does not keep the CLI from reaching the
+// daemon, which reports it. The value is expanded exactly as LoadServer
+// expands it, and a relative data_dir or ipc_socket is refused as LoadServer
+// refuses it. An empty value means the key is not set.
+func ReadServerField(path, key string) (string, error) {
+	return readField(path, "server", key)
+}
+
+// readField reads the value of key in section of the YAML file at path, for
+// ReadServerField and ReadClientField.
+func readField(path, section, key string) (string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return "", "", fmt.Errorf("read %s: %w", path, err)
+		return "", fmt.Errorf("read %s: %w", path, err)
 	}
-	var doc struct {
-		Server struct {
-			DataDir   yaml.Node `yaml:"data_dir"`
-			IPCSocket yaml.Node `yaml:"ipc_socket"`
-		} `yaml:"server"`
-	}
+	var doc map[string]yaml.Node
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return "", "", fmt.Errorf("parse %s: %w", path, err)
+		return "", fmt.Errorf("parse %s: %w", path, err)
 	}
-	if dataDir, err = expandedString(&doc.Server.DataDir, "server.data_dir"); err != nil {
-		return "", "", err
-	}
-	if ipcSocket, err = expandedString(&doc.Server.IPCSocket, "server.ipc_socket"); err != nil {
-		return "", "", err
-	}
-	for _, f := range []struct{ field, path string }{
-		{"server.data_dir", dataDir},
-		{"server.ipc_socket", ipcSocket},
-	} {
-		if f.path == "" {
-			continue
-		}
-		if err := checkAbsolute(f.path); err != nil {
-			return "", "", fmt.Errorf("%s: %w", f.field, err)
+	var fields map[string]yaml.Node
+	if n, ok := doc[section]; ok {
+		if err := n.Decode(&fields); err != nil {
+			return "", fmt.Errorf("parse %s: %w", path, err)
 		}
 	}
-	return dataDir, ipcSocket, nil
+	field := section + "." + key
+	n := fields[key]
+	value, err := expandedString(&n, field)
+	if err != nil {
+		return "", err
+	}
+	if (key == "data_dir" || key == "ipc_socket") && value != "" {
+		if err := checkAbsolute(value); err != nil {
+			return "", fmt.Errorf("%s: %w", field, err)
+		}
+	}
+	return value, nil
 }
 
 // expandedString expands the value node n at path as LoadServer does and

@@ -50,6 +50,16 @@ func TestServiceDataDirUsesConfiguredDataDirWithoutCredentials(t *testing.T) {
 		t.Fatalf("data dir = %q, want the configured server.data_dir", got)
 	}
 
+	// A relative data_dir would put the binaries under the directory the
+	// install runs in, not where the service looks for them.
+	relative := bytes.Replace(raw, []byte(absPath("/sigil-test")), []byte("sigil-test"), 1)
+	if err := os.WriteFile(path, relative, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := serviceDataDir(cfg); err == nil || !strings.Contains(err.Error(), `server.data_dir: must be an absolute path, got "sigil-test"`) {
+		t.Fatalf("relative data_dir error = %v", err)
+	}
+
 	raw = bytes.Replace(raw, []byte("  data_dir: \""+absPath("/sigil-test")+"\"\n"), nil, 1)
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)

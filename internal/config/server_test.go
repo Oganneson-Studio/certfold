@@ -744,7 +744,7 @@ func TestServerTLSFilesMustBeConfiguredTogether(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ReadServerPaths
+// ReadServerField
 // ---------------------------------------------------------------------------
 
 func writeServerYAML(t *testing.T, raw string) string {
@@ -756,32 +756,49 @@ func writeServerYAML(t *testing.T, raw string) string {
 	return path
 }
 
-func TestReadServerPaths_DoesNotRequireCredentialVariables(t *testing.T) {
+func TestReadServerField_DoesNotRequireCredentialVariables(t *testing.T) {
 	t.Setenv("SIGIL_TEST_IPC_SOCKET", absPath("/run/sigil/custom.sock"))
 	src := strings.Replace(validServerYAML, validDataDirLine, `data_dir: "${SIGIL_TEST_UNSET_DATA_DIR:-`+absPath("/srv/sigils")+`}"
   ipc_socket: "${SIGIL_TEST_IPC_SOCKET}"`, 1)
 	src = strings.Replace(src, `api_token: "tok"`, `api_token: "${SIGIL_TEST_UNSET_API_TOKEN}"`, 1)
 	path := writeServerYAML(t, src)
 
-	dataDir, ipcSocket, err := ReadServerPaths(path)
-	if err != nil {
-		t.Fatalf("ReadServerPaths: %v", err)
-	}
-	if dataDir != absPath("/srv/sigils") {
-		t.Errorf("data_dir: got %q", dataDir)
-	}
-	if ipcSocket != absPath("/run/sigil/custom.sock") {
-		t.Errorf("ipc_socket: got %q", ipcSocket)
+	for key, want := range map[string]string{
+		"data_dir":   absPath("/srv/sigils"),
+		"ipc_socket": absPath("/run/sigil/custom.sock"),
+	} {
+		got, err := ReadServerField(path, key)
+		if err != nil {
+			t.Fatalf("ReadServerField %s: %v", key, err)
+		}
+		if got != want {
+			t.Errorf("%s: got %q, want %q", key, got, want)
+		}
 	}
 	if _, err := LoadServer(path); err == nil || !strings.Contains(err.Error(), "SIGIL_TEST_UNSET_API_TOKEN") {
 		t.Fatalf("LoadServer should still require the credential variable, got %v", err)
 	}
 }
 
-func TestReadServerPaths_RejectsUnsetServerVariable(t *testing.T) {
+// A data_dir that cannot be read does not keep the CLI from finding the
+// socket of the daemon, which reports what is wrong with the file.
+func TestReadServerField_ReadsIPCSocketWhateverDataDirIs(t *testing.T) {
+	socket := absPath("/run/sigil/custom.sock")
+	for _, dataDir := range []string{`"${SIGIL_TEST_UNSET_DATA_DIR}"`, `"sigil-data"`} {
+		path := writeServerYAML(t, withServerSection("data_dir: "+dataDir+"\n  ipc_socket: \""+socket+"\""))
+		if _, err := ReadServerField(path, "data_dir"); err == nil || !strings.Contains(err.Error(), "server.data_dir") {
+			t.Errorf("data_dir %s: error = %v, want one about server.data_dir", dataDir, err)
+		}
+		if got, err := ReadServerField(path, "ipc_socket"); err != nil || got != socket {
+			t.Errorf("data_dir %s: ipc_socket = %q, %v; want %q", dataDir, got, err, socket)
+		}
+	}
+}
+
+func TestReadServerField_RejectsUnsetServerVariable(t *testing.T) {
 	path := writeServerYAML(t, strings.Replace(validServerYAML,
 		validDataDirLine, `data_dir: "${SIGIL_TEST_UNSET_DATA_DIR}"`, 1))
-	_, _, err := ReadServerPaths(path)
+	_, err := ReadServerField(path, "data_dir")
 	if err == nil || !strings.Contains(err.Error(), "server.data_dir") || !strings.Contains(err.Error(), "SIGIL_TEST_UNSET_DATA_DIR") {
 		t.Fatalf("expected unset data_dir variable error, got %v", err)
 	}

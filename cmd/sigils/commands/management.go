@@ -282,7 +282,7 @@ func serverIPCSocket(cmd *cobra.Command) string {
 	if path, _ := cmd.Root().PersistentFlags().GetString("ipc"); path != "" {
 		return path
 	}
-	if _, socket, err := config.ReadServerPaths(serverConfigPath(cmd)); err == nil && socket != "" {
+	if socket, err := config.ReadServerField(serverConfigPath(cmd), "ipc_socket"); err == nil && socket != "" {
 		return socket
 	}
 	return ipc.DefaultServerSocket()

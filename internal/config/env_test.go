@@ -142,7 +142,7 @@ func withServerSection(lines string) string {
 }
 
 // Environment values are inserted after YAML parsing, so YAML syntax inside a
-// value is never interpreted, and LoadServer and ReadServerPaths agree.
+// value is never interpreted, and LoadServer and ReadServerField agree.
 func TestEnvValuesAreLiteralScalars(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -183,30 +183,26 @@ func TestEnvValuesAreLiteralScalars(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseServer: %v", err)
 			}
-			got := cfg.Server.DataDir
+			got, key := cfg.Server.DataDir, "data_dir"
 			if tt.ipc {
-				got = cfg.Server.IPCSocket
+				got, key = cfg.Server.IPCSocket, "ipc_socket"
 			}
 			if got != tt.want {
 				t.Errorf("ParseServer value = %q, want %q", got, tt.want)
 			}
 
-			dataDir, ipcSocket, err := ReadServerPaths(writeServerYAML(t, src))
+			got, err = ReadServerField(writeServerYAML(t, src), key)
 			if err != nil {
-				t.Fatalf("ReadServerPaths: %v", err)
-			}
-			got = dataDir
-			if tt.ipc {
-				got = ipcSocket
+				t.Fatalf("ReadServerField: %v", err)
 			}
 			if got != tt.want {
-				t.Errorf("ReadServerPaths value = %q, want %q", got, tt.want)
+				t.Errorf("ReadServerField value = %q, want %q", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestReadServerPathsExpandsAliasesLikeLoadServer(t *testing.T) {
+func TestReadServerFieldExpandsAliasesLikeLoadServer(t *testing.T) {
 	t.Setenv("SIGIL_TEST_HOST", "sigil.example.com")
 	// Both paths alias one anchored value, that of another field, which
 	// server.public_url cannot be: it may not hold "$". "$$$$" shows that
@@ -224,12 +220,14 @@ func TestReadServerPathsExpandsAliasesLikeLoadServer(t *testing.T) {
 	if cfg.Server.DataDir != want || cfg.Server.IPCSocket != want {
 		t.Fatalf("LoadServer data_dir = %q, ipc_socket = %q, want %q", cfg.Server.DataDir, cfg.Server.IPCSocket, want)
 	}
-	dataDir, ipcSocket, err := ReadServerPaths(path)
-	if err != nil {
-		t.Fatalf("ReadServerPaths: %v", err)
-	}
-	if dataDir != want || ipcSocket != want {
-		t.Fatalf("ReadServerPaths data_dir = %q, ipc_socket = %q, want %q", dataDir, ipcSocket, want)
+	for _, key := range []string{"data_dir", "ipc_socket"} {
+		got, err := ReadServerField(path, key)
+		if err != nil {
+			t.Fatalf("ReadServerField %s: %v", key, err)
+		}
+		if got != want {
+			t.Fatalf("ReadServerField %s = %q, want %q", key, got, want)
+		}
 	}
 }
 

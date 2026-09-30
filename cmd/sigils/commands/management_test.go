@@ -163,6 +163,44 @@ func TestReloadDoesNotFallBackToDefaultSocket(t *testing.T) {
 	}
 }
 
+// A daemon runs on the socket of server.yaml, where data_dir has since been
+// made relative: reload must reach that daemon, which says what is wrong
+// with the file, and not a daemon on the default socket.
+func TestReloadWithInvalidDataDirReachesConfiguredSocket(t *testing.T) {
+	configured := filepath.Join(t.TempDir(), "configured.sock")
+	path := writeManagementTestConfig(t, "  []\n")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = bytes.Replace(raw, []byte("  data_dir: \""+absPath("/sigil-test")+"\""),
+		[]byte("  ipc_socket: \""+strings.ReplaceAll(configured, "\\", "\\\\")+"\"\n  data_dir: \"sigil-data\""), 1)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var dialed []string
+	previous := dialServerReloader
+	dialServerReloader = func(socket string) (serverReloader, error) {
+		dialed = append(dialed, socket)
+		if socket == configured {
+			return &fakeServerReloader{err: errors.New(`server.data_dir: must be an absolute path, got "sigil-data"`)}, nil
+		}
+		return &fakeServerReloader{}, nil
+	}
+	t.Cleanup(func() { dialServerReloader = previous })
+
+	cmd := NewRootCmd()
+	cmd.SetArgs([]string{"--config", path, "reload"})
+	err = cmd.Execute()
+	if len(dialed) != 1 || dialed[0] != configured {
+		t.Fatalf("dialed %q, want only the configured socket %q", dialed, configured)
+	}
+	if err == nil || !strings.Contains(err.Error(), "server.data_dir") {
+		t.Fatalf("reload error = %v, want the daemon's error about server.data_dir", err)
+	}
+}
+
 // serveCertificates serves the certificates of cfg, backed by db, on a new
 // IPC endpoint and returns the endpoint. Each stored certificate is due for
 // renewal by ARI 20 days before it expires.
