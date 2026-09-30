@@ -103,10 +103,13 @@ func buildServiceConfig(cfg Config) (*ksvc.Config, error) {
 // failed daemon only after 120 seconds. A daemon that keeps failing, such as
 // one whose configuration does not load, is restarted every 5 seconds without
 // end: without StartLimit settings, systemd's default limit of 5 starts in 10
-// seconds is never reached. An earlier install keeps its unit: kardianos
-// refuses to install over an existing service, so the service has to be
-// uninstalled and installed again. The template syntax is that of kardianos
-// v1.3.0.
+// seconds is never reached. KillMode=mixed sends the stop's SIGTERM to the
+// daemon alone, not to the whole control group: the programs sigils runs for
+// exec DNS providers keep running while it waits for issuances at shutdown,
+// and are killed with SIGKILL once it exits. An earlier install keeps its
+// unit: kardianos refuses to install over an existing service, so the
+// service has to be uninstalled and installed again. The template syntax is
+// that of kardianos v1.3.0.
 const systemdUnit = `[Unit]
 Description={{Description}}
 ConditionFileIsExecutable={{Path | cmdEscape}}
@@ -117,6 +120,7 @@ Wants=network-online.target
 ExecStart={{Path | cmdEscape}}{{range Arguments}} {{. | cmd}}{{end}}
 Restart=on-failure
 RestartSec=5
+KillMode=mixed
 EnvironmentFile=-/etc/sysconfig/{{Name}}
 
 [Install]
