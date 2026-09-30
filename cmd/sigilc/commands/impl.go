@@ -121,9 +121,10 @@ func runEnroll(cmd *cobra.Command, _ []string) (err error) {
 
 // tokenTaken says what an enrollment of name that failed once the server had
 // taken the token means: the server now accepts only the identity it issued,
-// which sigilc has not saved, and enrolling again needs a new token.
+// which sigilc has not saved, and enrolling again needs a new token. The
+// name may have had no identity before.
 func tokenTaken(name string) string {
-	return fmt.Sprintf("the server took the token and replaced the identity of %q, so the earlier identity no longer works: "+
+	return fmt.Sprintf("the server took the token, so any earlier identity of %q no longer works: "+
 		"once this is fixed, create a token with `sigils token create --name %s --replace` and enroll again", name, name)
 }
 
