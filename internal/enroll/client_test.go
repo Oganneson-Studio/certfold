@@ -210,6 +210,12 @@ func TestPostEnrollChecksTheIssuedCertificate(t *testing.T) {
 		ok    bool
 	}{
 		{name: "as asked", issue: issuedBy(miniCA, nil), ok: true},
+		// The server has used up the token by now, so a clock behind the
+		// server's must not fail the enrollment.
+		{name: "with the clock behind", issue: issuedBy(miniCA, func(c *x509.Certificate) {
+			c.NotBefore = time.Now().Add(time.Hour)
+			c.NotAfter = time.Now().Add(90 * 24 * time.Hour)
+		}), ok: true},
 		{name: "for another client", issue: issuedBy(miniCA, func(c *x509.Certificate) { c.Subject.CommonName = "web-2" })},
 		{name: "by the CA of the server certificate", issue: issuedBy(publicCA, nil)},
 		{name: "for server authentication", issue: issuedBy(miniCA, func(c *x509.Certificate) {

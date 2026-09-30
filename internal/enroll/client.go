@@ -147,9 +147,16 @@ func checkIssued(token *Token, certPEM string, csr *x509.CertificateRequest) (st
 	if !roots.AppendCertsFromPEM([]byte(token.CACert)) {
 		return "", fmt.Errorf("token does not contain a valid server CA certificate")
 	}
+	// Checked at its own NotBefore, not by this host's clock: by the time the
+	// answer arrives the server has used up the token, so a clock behind the
+	// server's by more than the minute the mini-CA backdates would otherwise
+	// fail an enrollment that cannot be retried. The validity says nothing
+	// here: the certificate must hold the key made for this request, so it
+	// cannot be an old one replayed.
 	if _, err := leaf.Verify(x509.VerifyOptions{
-		Roots:     roots,
-		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		Roots:       roots,
+		CurrentTime: leaf.NotBefore,
+		KeyUsages:   []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}); err != nil {
 		return "", fmt.Errorf("verify client certificate: %w", err)
 	}
