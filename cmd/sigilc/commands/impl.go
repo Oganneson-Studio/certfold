@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
@@ -22,6 +23,7 @@ import (
 	"github.com/Oganneson-Studio/sigil/internal/securefile"
 	internalsvc "github.com/Oganneson-Studio/sigil/internal/service"
 	tuiclient "github.com/Oganneson-Studio/sigil/internal/tui/client"
+	"github.com/Oganneson-Studio/sigil/internal/tui/shared"
 )
 
 // ---------------------------------------------------------------------------
@@ -159,13 +161,19 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+// statusTimeout bounds the state request of sigilc status, as it bounds each
+// IPC call of a refresh of the TUI. A daemon that accepts the connection but
+// never answers would otherwise hold it for the 5 minutes of the IPC client,
+// and install.sh, which runs it until the daemon answers, for over an hour.
+const statusTimeout = 10 * time.Second
+
 // clientState asks the daemon for its state.
 func clientState(cmd *cobra.Command) (*ipc.ClientState, error) {
 	c, err := dialDaemon(cmd)
 	if err != nil {
 		return nil, err
 	}
-	return c.GetClientState(context.Background())
+	return shared.Within(statusTimeout, c.GetClientState)
 }
 
 // ---------------------------------------------------------------------------
