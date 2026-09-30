@@ -88,6 +88,31 @@ func TestEnrollFirstTimeSaysNothingOfReload(t *testing.T) {
 	}
 }
 
+// TestEnrollSaysTheTokenIsSpentWhenSavingFails checks the error of an
+// enrollment that the server took, and replaced the identity of the client
+// for, but whose identity sigilc could not save: the earlier identity no
+// longer works, and enrolling again needs a new token for the name.
+func TestEnrollSaysTheTokenIsSpentWhenSavingFails(t *testing.T) {
+	srv := newSigningEnrollServer(t)
+	cfgPath := privateConfigPath(t)
+	existing := fmt.Sprintf("client:\n  name: web-1\n  server_url: %q\n", srv.URL)
+	if err := securefile.WriteFile(cfgPath, []byte(existing)); err != nil {
+		t.Fatal(err)
+	}
+	// Once the server has signed, client.yaml is no mapping to save into.
+	srv.signed = func() {
+		if err := os.WriteFile(cfgPath, []byte("not a mapping\n"), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	_, err := runSigilcErr(t, "--config", cfgPath, "enroll", "--token", srv.token(t, "web-1"))
+	for _, want := range []string{"save identity: ", "the server took the token", "sigils token create --name web-1 --replace"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("enroll error = %v, want one that says %q", err, want)
+		}
+	}
+}
+
 // TestEnrollRefusesAnotherClientsConfig checks that a client.yaml for
 // another name or server is left alone, before the token is sent, with an
 // error that says which file stands in the way.

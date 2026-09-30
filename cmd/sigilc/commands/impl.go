@@ -101,7 +101,11 @@ func runEnroll(cmd *cobra.Command, _ []string) (err error) {
 	}
 
 	if err := enroll.SaveIdentity(cfgPath, payload.CACert, clientCert, string(kc.KeyPEM)); err != nil {
-		return fmt.Errorf("save identity: %w", err)
+		// The server took the token and now accepts only the identity that
+		// was not saved: enrolling again needs a new token.
+		return fmt.Errorf("save identity: %w; the server took the token and replaced the identity of %q, so the earlier "+
+			"identity no longer works: once this is fixed, create a token with `sigils token create --name %s --replace` "+
+			"and enroll again", err, clientName, clientName)
 	}
 
 	fmt.Printf("enrolled as %q — identity written to %s\n", clientName, cfgPath)
