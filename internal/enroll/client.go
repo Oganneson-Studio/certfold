@@ -20,6 +20,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/securefile"
 	"github.com/Oganneson-Studio/sigil/pkg/proto"
 )
@@ -158,39 +159,53 @@ func checkIssued(token *Token, certPEM string, csr *x509.CertificateRequest) (st
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})), nil
 }
 
-// identityPatch is the subset of client.yaml we update after enroll.
-type identityPatch struct {
-	Identity struct {
-		CACert     string `yaml:"ca_cert"`
-		ClientCert string `yaml:"client_cert"`
-		ClientKey  string `yaml:"client_key"`
-	} `yaml:"identity"`
-}
-
-// SaveIdentity writes the identity fields into the YAML file at cfgPath,
-// preserving all other content by unmarshaling and re-marshaling the document.
+// SaveIdentity writes the identity into the client.yaml at cfgPath, at
+// enrollment and at every identity renewal. It edits the YAML tree, as
+// config.AddCertificateSpec does server.yaml: the value of the identity key
+// is replaced, or the key appended, and the rest keeps the operator's
+// comments, key order and text. Decoding into a map instead would rewrite
+// scalars as YAML reads them, such as a PKCS#12 password 0123 as 83.
 func SaveIdentity(cfgPath string, caCert, clientCert, clientKey string) error {
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
 		return fmt.Errorf("read config: %w", err)
 	}
-
-	// Parse into generic map to preserve unknown fields.
-	var doc map[string]any
+	var doc yaml.Node
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return fmt.Errorf("parse yaml: %w", err)
 	}
-	if doc == nil {
-		doc = make(map[string]any)
+	if len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("client config root must be a mapping")
 	}
-	doc["identity"] = map[string]any{
-		"ca_cert":     caCert,
-		"client_cert": clientCert,
-		"client_key":  clientKey,
+	var identity yaml.Node
+	if err := identity.Encode(config.IdentitySection{
+		CACert:     caCert,
+		ClientCert: clientCert,
+		ClientKey:  clientKey,
+	}); err != nil {
+		return fmt.Errorf("encode identity: %w", err)
 	}
-	out, err := yaml.Marshal(doc)
-	if err != nil {
+
+	root := doc.Content[0]
+	i := 0
+	for i < len(root.Content) && root.Content[i].Value != "identity" {
+		i += 2
+	}
+	if i < len(root.Content) {
+		root.Content[i+1] = &identity
+	} else {
+		key := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "identity"}
+		root.Content = append(root.Content, key, &identity)
+	}
+
+	var out bytes.Buffer
+	enc := yaml.NewEncoder(&out)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
 		return fmt.Errorf("marshal yaml: %w", err)
 	}
-	return securefile.WriteFile(cfgPath, out)
+	if err := enc.Close(); err != nil {
+		return fmt.Errorf("marshal yaml: %w", err)
+	}
+	return securefile.WriteFile(cfgPath, out.Bytes())
 }

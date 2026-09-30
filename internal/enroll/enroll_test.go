@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Oganneson-Studio/sigil/internal/ca"
+	"github.com/Oganneson-Studio/sigil/internal/config"
 	"github.com/Oganneson-Studio/sigil/internal/store"
 )
 
@@ -471,6 +472,10 @@ func TestSaveIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The first save adds the identity, the second, of a renewal, replaces it.
+	if err := SaveIdentity(cfgPath, "old-ca", "old-client", "old-key"); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
 	if err := SaveIdentity(cfgPath, "ca-pem", "client-pem", "key-pem"); err != nil {
 		t.Fatalf("SaveIdentity: %v", err)
 	}
@@ -484,5 +489,81 @@ func TestSaveIdentity(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("output missing %q; got:\n%s", want, s)
 		}
+	}
+	if strings.Contains(s, "old-") || strings.Count(s, "identity:") != 1 {
+		t.Errorf("the second save did not replace the identity of the first:\n%s", s)
+	}
+}
+
+// clientYAMLByHand is a client.yaml as an operator writes it: comments, keys
+// in the order they chose, a mode in octal and a PKCS#12 password that YAML
+// would read as a number if it were not decoded into a string field.
+const clientYAMLByHand = "# managed by ops: do not reorder\n" +
+	"client:\n" +
+	"  server_url: https://sigil.example.com\n" +
+	"  name: web-1\n" +
+	"certificates:\n" +
+	"  api:\n" +
+	"    outputs:\n" +
+	"      - format: pkcs12\n" +
+	"        path: /etc/ssl/api.p12\n" +
+	"        password: 0123\n" +
+	"        mode: 0640 # read by the web server group\n"
+
+// TestSaveIdentityKeepsTheRestOfClientYAML covers `sigilc enroll` on a host
+// whose client.yaml the operator wrote, and the identity renewal of the
+// daemon, which saves through the same function: the comments, the order and
+// the text of the operator's file must survive, as they do when sigils edits
+// server.yaml.
+func TestSaveIdentityKeepsTheRestOfClientYAML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client.yaml")
+	if err := os.WriteFile(path, []byte(clientYAMLByHand), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveIdentity(path, "CA", "CERT", "KEY"); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"# managed by ops: do not reorder", "# read by the web server group", "mode: 0640", "password: 0123"} {
+		if !strings.Contains(string(saved), want) {
+			t.Errorf("client.yaml lost %q:\n%s", want, saved)
+		}
+	}
+	if strings.Index(string(saved), "server_url") > strings.Index(string(saved), "name:") {
+		t.Errorf("client.yaml keys were reordered:\n%s", saved)
+	}
+}
+
+// TestSaveIdentityKeepsValuesAsSigilcReadsThem covers the same save for a
+// value that sigilc reads as a string but a map[string]any reads as a number:
+// the unquoted password 0123 is octal 83 to YAML, so a round trip through a
+// map writes 83, and the next load encrypts the PKCS#12 output with another
+// password than the one its consumers were given.
+func TestSaveIdentityKeepsValuesAsSigilcReadsThem(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client.yaml")
+	if err := os.WriteFile(path, []byte(clientYAMLByHand), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := config.ParseClient([]byte(clientYAMLByHand))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveIdentity(path, "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := config.ParseClient(saved)
+	if err != nil {
+		t.Fatalf("saved client.yaml no longer loads: %v\n%s", err, saved)
+	}
+	want := before.Certificates["api"].Outputs[0].Password
+	if got := after.Certificates["api"].Outputs[0].Password; got != want {
+		t.Fatalf("PKCS#12 password changed from %q to %q by saving the identity:\n%s", want, got, saved)
 	}
 }
