@@ -957,6 +957,10 @@ func TestFetchRejectsBadBundle(t *testing.T) {
 			renewed.FullchainPEM = newTestBundle(t, "api-prod").FullchainPEM + renewed.FullchainPEM
 			return renewed
 		}},
+		{name: "chain certificate that does not parse", bad: func(_ *testing.T, renewed proto.CertBundle) proto.CertBundle {
+			renewed.FullchainPEM += string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not DER")}))
+			return renewed
+		}},
 		{name: "another certificate's name", bad: func(_ *testing.T, renewed proto.CertBundle) proto.CertBundle {
 			renewed.Name = "api-stage"
 			return renewed
