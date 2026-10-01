@@ -119,7 +119,7 @@ sigilc reload
 sigils --config /etc/sigil/server.yaml reload
 ```
 
-On Linux, `sigils` and `sigilc` management commands need root because the IPC sockets are owned by root.
+On Linux, `sigils` and `sigilc` management commands need root because the IPC sockets are owned by root. When the configuration file does not exist or cannot be read, the CLI uses the platform default IPC endpoint; if `ipc_socket` is set but cannot be read, the CLI reports an error and suggests `--ipc`.
 
 `token create`, `reload`, `cert add`, and `cert remove` are served by the running daemon over local IPC and fail when it is not running. `token create` also refuses to run when `server.public_url` is unset and `server.listen` names no host clients can reach. When the name belongs to an enrolled client or to an unused token that has not expired, `token create` requires `--replace`; with `--replace`, it also revokes all unused tokens of that name. `cert add` and `cert remove` edit `server.yaml` and apply the new configuration atomically; if the apply fails, the file is written back to its original contents. Other hotloadable changes already in the file take effect at the same time; if the file contains a change that requires a restart, the command is refused and the file is not modified. On Windows, the first `cert add` or `cert remove` changes `server.yaml` to a private DACL (SYSTEM and Administrators only).
 
@@ -194,7 +194,7 @@ certificates:
 
 - Which certificates a client receives is decided only by `subscribers` in `server.yaml`. An entry under `certificates` in `client.yaml` only says where to write a certificate the client already receives.
 - Output formats are `pem-cert`, `pem-key`, `pem-fullchain`, `pem-bundle`, `pkcs12` (requires `password`), and `der`. `mode`, `owner`, and `group` are optional. Private-key outputs default to `0600`, the others to `0644`. `mode` is read as octal: `640` means `0640`; `0o640` also works.
-- All path fields (`data_dir`, `ipc_socket`, `tls_cert_file`, `tls_key_file`, output `path`) must be absolute paths. On Windows, `\dir` and `C:dir` are not absolute; named pipes must be written as `\\.\pipe\...`. `${VAR}` references are expanded before the check.
+- All path fields in both `server.yaml` (`data_dir`, `ipc_socket`, `tls_cert_file`, `tls_key_file`, gcloud `service_account_file`) and `client.yaml` (`data_dir`, `ipc_socket`, output `path`) must be absolute paths. On Windows, `\dir` and `C:dir` are not absolute; named pipes must be written as `\\.\pipe\...`. `${VAR}` references are expanded before the check.
 - Two outputs cannot share a path. Paths are compared after cleaning, and case-insensitively on Windows.
 - `enroll` adds the client's mTLS identity to this file.
 - The top-level `outputs` map and the `client.pull_interval`, `client.push_listen`, and `client.push_token` keys of earlier builds are rejected as unknown fields, as is the `clients` section of `server.yaml`.
@@ -429,7 +429,7 @@ Under systemd, `service install` writes a unit with `Restart=on-failure`, `Resta
 - With `--token` / `-Token`, the token appears in the process command line; see [One-line installation](#one-line-installation) for how to avoid this.
 - The container E2E issues certificates through the `exec` DNS provider; lego's built-in cloud DNS providers are not covered by an E2E.
 - Reconciliation does not compare Windows ACLs; see [Private key outputs on Windows](#private-key-outputs-on-windows).
-- Two output paths that name the same file, one relative and one absolute, are not detected as duplicates.
+- Output path deduplication compares paths after `filepath.Clean` (case-insensitively on Windows). It does not detect duplicates through symbolic or hard links; paths differing only in case on macOS APFS; or, on Windows, `\\?\` and `\\.\` prefixes, 8.3 short names, trailing dots and spaces, and mapped drive letters versus UNC paths.
 - Certificates whose lifetime does not exceed about twice the CA's NotBefore backdate (about 2 hours for Let's Encrypt, which backdates by 1 hour) are not supported: they arrive already past their renewal point and are caught by the arrival guard, which backs off instead of retrying immediately.
 - The mini-CA root certificate expires after 10 years and has no rotation mechanism. When it has less than a year remaining, the server logs a warning at startup and on each server-certificate reissue.
 - ARI does not do short-interval exponential backoff for 5xx responses (lego does not expose the HTTP status code); it retries after 6 hours.
@@ -442,13 +442,12 @@ Under systemd, `service install` writes a unit with `Restart=on-failure`, `Resta
 
 - **sigils data_dir** (Unix): mode `0700`, owned by the running user. (Windows): completely private --- only SYSTEM, Administrators, and, when not elevated, the running user may access it; the owner must be one of them.
 - **Configuration directory and sigilc data_dir** (Windows): owned by SYSTEM, Administrators, or (when not elevated) the current user; no other account may write, delete, or change permissions.
-- **ca/ subdirectory**: checked and tightened by `ca.Bootstrap` on first use.
+- **ca/ subdirectory**: checked and tightened by `ca.Bootstrap` on every startup. On Unix, only tightened (the check is a no-op there).
 
-When the directory does not exist, the daemon creates it with private permissions. When it exists but does not pass the check, the error names the directory and prints the commands to fix it:
+When a data directory does not exist, the daemon creates it with private permissions. Configuration directories are not created automatically; `sigilc enroll` creates the client configuration directory. When it exists but does not pass the check, the error names the directory and prints the commands to fix it:
 
 ```
-configuration directory: C:\ProgramData\Sigil is owned by DESKTOP\Alice, and only NT AUTHORITY\SYSTEM and BUILTIN\Administrators may own it.
-Its owner may have put files in it and may change who can write to it: remove it, so that it is created again. To keep it instead, check every file in it, then run:
+configuration directory: C:\ProgramData\Sigil is owned by DESKTOP\Alice, and only NT AUTHORITY\SYSTEM and BUILTIN\Administrators may own it. Its owner may have put files in it and may change who can write to it: remove it, so that it is created again. To keep it instead, check every file in it, then run:
   icacls "C:\ProgramData\Sigil" /setowner *S-1-5-32-544
 ```
 
@@ -459,7 +458,7 @@ On Linux, if the data directory was created with mode `0755`:
   chmod 700 "/var/lib/sigils"
 ```
 
-When the error only reports a wrong mode, fix it with the command the error prints. When the error says the owner is untrusted, its advice is to remove the directory so that the daemon creates it again; do this only when the directory's contents can be recreated. Do not remove the sigils data directory unless you accept losing the mini-CA (all enrolled clients must re-enroll) and the certificate database.
+When the error does not say the owner is untrusted (a wrong mode on Unix, extra ACL entries on Windows), run the commands it prints. When the error says the owner is untrusted, its advice is to remove the directory so that the daemon creates it again; do this only when the directory's contents can be recreated. Do not remove the sigils data directory unless you accept losing the mini-CA (all enrolled clients must re-enroll) and the certificate database.
 
 Each parent directory of the configuration directory and data_dir must not be owned by an untrusted account and must not let untrusted accounts delete or replace entries in it. The check looks only at the directory itself, not its parents; the default layout (`/etc/sigil`, `/var/lib`, `C:\ProgramData`) satisfies this requirement.
 
@@ -485,22 +484,24 @@ A `server returned 500: internal error` means the server rolled back the entire 
 
 ## Upgrade notes
 
-**Old Windows installations**: builds before the directory audit created `C:\ProgramData\Sigil` with the installing user's SID in the ACL. After upgrading, the `sigilc` service and reinstall enrollment both refuse to start. Fix it with the `icacls` command the error message prints, or remove the directory and re-enroll:
+**Old Windows installations**: builds before the directory audit created `C:\ProgramData\Sigil` with the installing user's SID in the ACL. After upgrading, the `sigilc` service and reinstall enrollment both refuse to start. Fix it with the `icacls` command the error message prints:
 
 ```powershell
 icacls "C:\ProgramData\Sigil" /setowner *S-1-5-32-544
 icacls "C:\ProgramData\Sigil" /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" /remove:g *S-1-5-21-...
 ```
 
-The exact command is in the error message; copy it from there.
+The exact command is in the error message; copy it from there. If `sigils` is not on the same host, you can instead remove `C:\ProgramData\Sigil` and re-enroll with a `sigils token create --name <name> --replace` token.
 
-If the `sigils` data directory was created interactively with elevation, it may have the same problem. The fix is the same.
+If the `sigils` data directory was created interactively with elevation, it may have the same problem. Fix it with the `icacls` command the error prints; do not remove the sigils data directory, or you lose the mini-CA and certificate database.
 
 **New CLI with old daemon**: after upgrading the binary but before restarting the daemon, the new CLI's `token create` rejects the old daemon's response (which lacks `token_id`), though the token is already stored in the database and will expire. Restart `sigils` before creating tokens. `cert add` and `cert remove` return `404 page not found` with the old daemon; restart `sigils` to use them.
 
 **Systemd units**: builds before the audit did not include `KillMode=mixed`. After upgrading, run `service stop`, `service uninstall`, `service install`, then `service start` to update the unit. The install script's `--upgrade` does not rewrite the unit; only a reinstall with a token does.
 
-**Old sigilc with new sigils**: the enrollment response no longer carries `ca_cert`. An old `sigilc` that enrolls with a new `sigils` saves an empty CA certificate in `client.yaml`, and its mTLS connections fail. Replace the binaries in `<data_dir>/binaries/` when you upgrade `sigils`.
+**Old sigilc with new sigils**: the enrollment response no longer carries `ca_cert`. An old `sigilc` that enrolls with a new `sigils` saves an empty CA certificate in `client.yaml`; the daemon then refuses to start with `identity: ca_cert, client_cert, and client_key must all be present (or all absent)`. The enrollment already consumed the token. Fix: replace the binaries in `<data_dir>/binaries/` before enrolling, or re-enroll with a `--replace` token after replacing them.
+
+**Absolute paths**: all path fields now require absolute paths. A `server.yaml` or `client.yaml` that uses relative paths causes the daemon to fail at startup, `reload` to be rejected, or CLI commands to report `<field>: must be an absolute path, got "<value>"`. Fix the paths before upgrading.
 
 **Mode field**: the `mode` field in output specifications is now read as octal. A value that was written as decimal (such as `mode: 400`, which was `0620` in older builds) now means `0400`. Values that contain `8` or `9` (such as `384`, the decimal of `0600`) are rejected and `sigilc` refuses to start; fix them in `client.yaml`.
 
