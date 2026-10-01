@@ -430,12 +430,16 @@ When running as a service, the directories the daemon checks must be owned by th
 
 DNS credentials, `LEGO_CA_CERTIFICATES`, and other environment variables for a Windows service go in the registry. The `sigilc` service uses the same mechanism; replace `sigils` with `sigilc` in the paths below. Changes take effect only after a service restart; `sigils reload` does not re-read environment variables (2026-10-01 verified on `sigils`; `sigilc` uses the same mechanism but was not separately tested).
 
+`service install` leaves the service's registry key to SYSTEM and Administrators, so values kept there are not readable by other local users. A service installed by an earlier release keeps the key's old permissions, which let every local user read it, until it is installed again (`service uninstall`, then `service install`, then set the variables again).
+
 PowerShell (elevated):
 
 ```powershell
-New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\sigils' -Name Environment -PropertyType MultiString -Value @('NAME=value') -Force
+[Microsoft.Win32.Registry]::SetValue('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\sigils', 'Environment', [string[]]@('NAME=value'), 'MultiString')
 Restart-Service sigils
 ```
+
+A value typed into a command can be recorded by PowerShell script block logging (event 4104), and the `reg add` form below by process command-line auditing. Where either is enabled and the value is a credential, enter it with `regedit` instead.
 
 cmd (elevated; `&&` does not work in Windows PowerShell 5.1):
 
@@ -449,10 +453,10 @@ Multiple variables are separated by `\0` in the `reg add` form; in PowerShell, p
 Both forms replace the whole list; they do not add to it. Writing one variable removes every other variable already set, such as DNS credentials, and a configuration that still references them then fails to start. Read the current list first and write it back complete:
 
 ```powershell
-(Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\sigils').Environment
+[Microsoft.Win32.Registry]::GetValue('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\sigils', 'Environment', $null)
 ```
 
-To remove the variables: `Remove-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\sigils' -Name Environment`. `service uninstall` deletes the entire service key, including this value: after `service uninstall` and `service install`, set the variables again before you start the service. The install script keeps the `Environment` value of the `sigilc` service when it installs the service again.
+To remove the variables: `Remove-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\sigils' -Name Environment`. `service uninstall` deletes the entire service key, including this value: after `service uninstall` and `service install`, set the variables again before you start the service. The install script keeps the `Environment` value of the `sigilc` service when it installs the service again, and handles the values only through .NET method calls, which PowerShell module logging does not record.
 
 When a variable referenced by `${VAR}` in the configuration is not set, the service fails to start (`ExitCode=1067`), and the Application event log (event ID 3) shows `load config: expand env: <field>: environment variable "X" is not set`.
 
@@ -528,6 +532,8 @@ The exact command is in the error message; copy it from there. If `sigils` is no
 If the `sigils` data directory was created interactively with elevation, it may have the same problem. Fix it with the `icacls` command the error prints; do not remove the sigils data directory, or you lose the mini-CA and certificate database.
 
 **New CLI with old daemon**: after upgrading the binary but before restarting the daemon, the new CLI's `token create` rejects the old daemon's response (which lacks `token_id`), though the token is already stored in the database and will expire. Restart `sigils` before creating tokens. `cert add` and `cert remove` return `404 page not found` with the old daemon; restart `sigils` to use them.
+
+**Windows service keys**: builds before the audit left the service's registry key readable by every local user, and with it the `Environment` value that may hold credentials. `-Upgrade` does not change the key; a reinstall with a token does (it runs `service uninstall` and `service install`, and keeps the `Environment` value of `sigilc`). For `sigils`, run `service stop`, `service uninstall`, `service install`, set the variables again, then `service start`.
 
 **Systemd units**: builds before the audit did not include `KillMode=mixed`. After upgrading, run `service stop`, `service uninstall`, `service install`, then `service start` to update the unit. The install script's `--upgrade` does not rewrite the unit; only a reinstall with a token does.
 

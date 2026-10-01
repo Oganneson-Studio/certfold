@@ -6,7 +6,7 @@
 
 项目处于持续开发阶段。核心注册、mTLS 鉴权、长轮询交付与每轮对账、`on_change` 钩子、并行签发引擎、exec DNS provider、ARI 驱动的续期、HTTPS 证书热更新、服务端与客户端 TUI、slog 日志与事件环形缓冲、两个二进制的 `events` 命令均已可用，并有 WSLC 黑盒测试（含从 Pebble 真实签发并覆盖 ARI）。各家云 DNS provider 的 E2E 仍未完成。
 
-部署前审查各路修复（S、A、C、D、L、P、W、I、Z）及 TUI 迁到 Charm v2（T 路）已全部合入，正在做最终验证（两套 E2E 和实机验证）。余项按 `TODO.md` 跟踪。
+部署前审查已完成（2026-10-01）：各路修复（S、A、C、D、L、P、W、I、Z）及 TUI 迁到 Charm v2（T 路）已全部合入；最终验证（两套 E2E、两个平台全量单测与 race、Linux systemd 与 Windows 两个服务、一键安装三轮）全部通过，验证中发现的问题（last_seen 节流、多余的 reload 提示、Windows 重装丢服务环境变量、服务键对本地用户可读）已修复。余项按 `TODO.md` 跟踪。
 
 ## 重构方向（2026-09-27 拍板）
 
@@ -239,7 +239,9 @@ CI：`.github/workflows/test.yml` 跑 Linux 全量测试、race、vet（含 `GOO
 - Windows 安装脚本必须区分 AMD64、ARM64 和 x86。
 - Windows 上 daemon 必须以 LocalSystem 或提权管理员身份运行。IPC 客户端只信任属主为 SYSTEM 或 Administrators 的命名管道，校验在发出请求之前完成。有管理员权限的 `Listen` 会显式把属主设为 Administrators；不指定属主时，属主取令牌的默认属主，Git Bash 下会变成用户 SID。
 - Windows 服务与事件日志（2026-09-29 sigils 首测；2026-10-01 复测了安装、启停卸载的退出码、事件 ID、启动失败与恢复动作，其余几条沿用首测）：
-  - 服务的环境变量放在注册表 `HKLM\SYSTEM\CurrentControlSet\Services\<name>` 的 REG_MULTI_SZ 值 `Environment`（2026-10-01 在 sigils 上实测）。写入是整体替换；改完要重启服务，`reload` 不重读环境；`service uninstall` 删除整个服务键，这个值随之消失。install.ps1 重装 sigilc 服务时保留原有的 `Environment` 值。
+  - 服务的环境变量放在注册表 `HKLM\SYSTEM\CurrentControlSet\Services\<name>` 的 REG_MULTI_SZ 值 `Environment`（2026-10-01 在 sigils 上实测）。写入是整体替换；改完要重启服务，`reload` 不重读环境；`service uninstall` 删除整个服务键，这个值随之消失。
+  - `service install` 装好服务后把服务键设为受保护 DACL `D:P(A;CI;KA;;;SY)(A;CI;KA;;;BA)`（`internal/service/servicekey_windows.go`），否则它从 Services 继承 Users 的读权限，Environment 里的凭据人人可读；事件源键（`Services\EventLog\...`）不动。设置失败时 `service install` 报错退出并给出手工 `Set-Acl` 命令。非提权的 `Get-Service`、`sc query`、`sc qfailure` 不受影响（走 SCM），直接读服务键会被拒（2026-10-01 实测）。已有安装和 `-Upgrade` 不收紧，要 uninstall 再 install。
+  - install.ps1 重装 sigilc 服务时，在 uninstall 之前读出 `Environment`，install 之后、start 之前写回；停服务后按服务 PID `WaitForExit(30000)` 等旧进程退出再 `[IO.File]::Replace`（否则留下 `sigilc.exe~RF*.TMP`）。凭据只经 .NET 方法调用（`[Microsoft.Win32.Registry]::GetValue/SetValue`）和 `foreach` 语句处理，不经 cmdlet 参数或管道，因为模块日志（事件 4103）会记录参数绑定；`install_script_test.go` 的两条静态断言守住（不得出现 `New-ItemProperty`/`Set-ItemProperty`，含 `$Environment` 的行不得有管道）。失败提示只列变量名。
   - install / start / stop / uninstall 退出码都为 0，以 LocalSystem 运行。安装时 System 日志记 7045。
   - 运行期间的 INFO、WARN、ERROR 分别写入 Application 日志，事件 ID 为 1、2、3，来源为服务名（`sigils`/`sigilc`），消息按 slog 的 TextHandler 格式正常渲染，与 `sigils events` 一致。
   - 启动即失败时 `ExitCode=1067`，失败原因写在 Application 日志 ID 3（`daemon failed`）。`service install` 会写入恢复动作：失败后 10 秒重启，失败计数 24 小时清零；System 日志记 7031。
@@ -297,7 +299,8 @@ CI：`.github/workflows/test.yml` 跑 Linux 全量测试、race、vet（含 `GOO
 - 持有已用完整令牌的人可以反复请求注册刷 WARN（同 lego INFO 挤占事件环那条）。
 - client.yaml 有未知字段时重装先消耗令牌、到服务启动才报错（改好后重启服务即可）。
 - Windows 服务崩溃循环时 SCM 可能在停止与卸载之间拉起它。
-- Windows 上 Stop-Service 之后 `[IO.File]::Replace` 失败（如杀软占住文件）时服务会停着，重跑安装即可。
+- Windows 上 Stop-Service 之后 `[IO.File]::Replace` 失败（如杀软占住文件）时服务会停着，重跑安装即可。sigilc.exe 被服务以外的进程占着（如另开的 `sigilc tui`）时，Replace 仍会留下 `sigilc.exe~RF*.TMP`。停服务后 PID 恰被复用时，安装器会白等 30 秒再报错。
+- `service install` 收紧服务键失败时，install.ps1 的收尾提示仍让运维重跑 `service install`（服务其实已装好、会被拒）；应按 sigilc 自己打印的 `Set-Acl` 命令收紧，再写回 Environment、start。实际几乎不会发生（管理员对 SCM 刚建的键有完全控制）。
 - install.ps1 不自己建 `C:\ProgramData\Sigil`（由 enroll 私有创建）。
 - bubbletea v2 在 TUI 第一次渲染时发 `ESC[?u`（kitty 键盘协议查询，无法单独关闭），支持该协议的终端若在启动后立即按 q，应答可能落到提示符上；DECRQM 2026/2027 在无 `SSH_TTY` 时也会发。
 - Windows 上第一次 `cert add`/`cert remove` 之后 server.yaml 变成私有 DACL（SYSTEM、Administrators），原先授给其他账户的访问会被去掉。
