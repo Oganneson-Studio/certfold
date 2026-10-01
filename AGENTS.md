@@ -193,7 +193,7 @@ CI：`.github/workflows/test.yml` 跑 Linux 全量测试、race、vet（含 `GOO
 - 删除不存在的客户端返回 404（body `client "x" is not enrolled`），删除不存在的令牌返回 404（body `enrollment token "x" does not exist`），CLI 退出码 1。
 - `sigilc status` 的 IPC 调用有 10 秒超时（`statusTimeout`）。`status --json` 任何失败都输出 `{"error": "..."}`。`sigilc status --json` 返回 `ClientState`，其中 `certs` 数组的字段为 `name`、`fingerprint`、`not_after`、`renew_at`、`outputs`、`on_change`、`hook_pending`。`renew_at` 按客户端的比例规则算，sigils 有 ARI 时可能更晚续期。`last_pull_at` 在第一次 sync 前不存在（`omitzero`）。`token list --json` 里未用令牌没有 `used_at`（`omitzero`）。
 - sigilc 启动时清扫上次崩溃可能留下的临时文件：data_dir 里的 `.sigil-private-*` 和各输出目录里的 `.sigil-tmp-*`，client.yaml 所在目录不碰。
-- `sigilc enroll`：失败时删掉本次新建的 client.yaml（已有的不动）；提前写入保留，作为不消耗 token 的可写性预检；mismatch 错误带上配置文件路径。拒绝 name 或 URL 不合规的 token。覆盖已有身份后提示运行中的 daemon 需 `sigilc reload` 或重启服务。没有 `--token` 时读 `SIGILC_TOKEN` 环境变量。
+- `sigilc enroll`：失败时删掉本次新建的 client.yaml（已有的不动）；提前写入保留，作为不消耗 token 的可写性预检；mismatch 错误带上配置文件路径。拒绝 name 或 URL 不合规的 token。覆盖已有身份后，只有本机 daemon 的 IPC 端点能连上时才打印 reload 提示（安装脚本在 enroll 之前已停掉服务）。没有 `--token` 时读 `SIGILC_TOKEN` 环境变量。
 - `sigilc fetch` 必须调用真实 IPC 拉取，返回前完成对账和钩子；`--cert` 只强制重新下载目标证书，不强制重写未变化的输出。`reload` 必须先完整解析新配置，失败时保留旧配置；成功后在返回前按新配置从存储对账并运行钩子，同时取消在途 sync，让循环立即做一次完整拉取。reload 的本地对账成功时不清空 `LastError`，由 reload 触发的下一轮用自己的结果覆盖。`client.ipc_socket` 和 `client.data_dir` 变化要求重启。
 - 客户端对账：
   - client.yaml 按证书分组，写成 `certificates.<名字>.outputs` 和 `certificates.<名字>.on_change`；所有输出路径经 `filepath.Clean` 后不得重复，Windows 上不分大小写。
@@ -219,7 +219,7 @@ CI：`.github/workflows/test.yml` 跑 Linux 全量测试、race、vet（含 `GOO
   - 事件的 Message 中的控制字符被替换，Attrs 截断到 2 KiB，Message 截断到 1 KiB。`Private` 属性在 Ring 和 Windows 事件日志中显示为 `(withheld)`，在 stderr / journald sink 中保留全文。
   - lego 的日志行进入事件（按前缀判定 INFO / WARN，带 `component=lego`）。
   - 公网 HTTPS 的 `http.Server.ErrorLog`（握手错误等）只进服务日志，并限速：每分钟最多 10 行（`maxErrorLinesPerMinute`），超出的丢弃计数，下一行放行时附上被丢弃的行数。IPC 的 ErrorLog 不限速。
-- 鉴权中间件刷新 `last_seen`：内存节流，每个客户端每分钟最多一次条件 UPDATE，节流不能写进 SQL 条件；UPDATE 影响 0 行按 401 处理，其他写库错误只记日志、照常放行（库不可写时仍要能分发已有证书）；无论写库结果如何，节流占位都不释放。并发首次使用同一 pending 身份时，提升失败后重读一次，active 指纹已等于出示指纹就放行。
+- 鉴权中间件刷新 `last_seen`：内存节流，每个客户端名只记一条 `seenClaim`（存证书指纹和上次写入时间），每分钟最多一次条件 UPDATE，节流不能写进 SQL 条件。出示的证书指纹和记录里的不同时立即写入并替换记录，条目数不超过客户端数；待提升身份和当前身份交替请求的那一小段时间里，每换一次身份会多写一次。UPDATE 影响 0 行按 401 处理，其他写库错误只记日志、照常放行（库不可写时仍要能分发已有证书）；无论写库结果如何，节流占位都不释放。并发首次使用同一 pending 身份时，提升失败后重读一次，active 指纹已等于出示指纹就放行。
 - 客户端 mTLS 身份必须在到期前自动续签；`client.identity_renew_before` 默认 30 天，允许范围为 1 小时到 89 天。`/v1/identity/renew` 每客户端每分钟一次，超出回 429 `identity renewed less than a minute ago`，占位不论成败都不释放。
 - sync 循环、reload 和 IPC fetch 的应用阶段（身份续签、取包、写存储、对账、钩子）由同一把锁 pullMu 串行化；sync 的挂起等待不持锁。Reload、IPC fetch 和身份切换通过同一把锁里登记的 cancel 取消在途 sync，循环拿到锁后发现请求已被取消就作废本轮。
 - 客户端 socket 在 Unix 上固定为 `/var/run/sigil/sigilc.sock`，不能依赖启动用户的 `$HOME`。Unix IPC Dial 只信任属主为 root 或当前 euid 的 socket（与 Windows 管道信任 SYSTEM/Administrators 对称），Listen 替换无人应答的旧 socket 不看属主。
