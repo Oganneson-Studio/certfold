@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/sigil/internal/logging"
 	"github.com/Oganneson-Studio/sigil/internal/securefile"
 )
 
@@ -23,15 +24,14 @@ func privateConfigPath(t *testing.T) string {
 }
 
 // reloadHint is the part of the line that enroll prints when it replaced the
-// identity of a client.yaml that was there before.
+// identity of a client.yaml that was there before while a daemon answers.
 const reloadHint = "until `sigilc reload` or a restart of the sigilc service"
 
 // TestEnrollAgainKeepsConfigWithServiceVariables enrolls again, as the
 // install scripts do on a host that has sigilc, with a token for the name and
 // server URL of the client.yaml there. That client.yaml takes a password
 // from a variable that only the service's environment sets, which sudo does
-// not pass to the installer: enroll must not need it, must keep it, and must
-// say that a running daemon goes on with the identity it loaded.
+// not pass to the installer: enroll must not need it, and must keep it.
 func TestEnrollAgainKeepsConfigWithServiceVariables(t *testing.T) {
 	srv := newSigningEnrollServer(t)
 	cfgPath := privateConfigPath(t)
@@ -51,12 +51,9 @@ certificates:
 		t.Fatal(err)
 	}
 
-	out, err := runSigilcErr(t, "--config", cfgPath, "enroll", "--token", srv.token(t, "web-1"))
-	if err != nil {
+	// An endpoint of its own, so that a daemon of this host is not dialed.
+	if _, err := runSigilcErr(t, "--ipc", missingIPCSocket(t), "--config", cfgPath, "enroll", "--token", srv.token(t, "web-1")); err != nil {
 		t.Fatalf("enroll again: %v", err)
-	}
-	if !strings.Contains(out, reloadHint) {
-		t.Errorf("enroll over an existing client.yaml printed:\n%s\nwant a line that says %q", out, reloadHint)
 	}
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -73,6 +70,40 @@ certificates:
 	if cfg.Identity.ClientCert == "" || cfg.Certificates["api"].Outputs[0].Password != "secret" {
 		t.Fatalf("client.yaml after enroll: identity set %t, api password %q; want an identity and the password",
 			cfg.Identity.ClientCert != "", cfg.Certificates["api"].Outputs[0].Password)
+	}
+}
+
+// enrollAgain enrolls web-1 over a client.yaml that names it, with socket as
+// the endpoint of the daemon, and returns what enroll printed.
+func enrollAgain(t *testing.T, socket string) string {
+	t.Helper()
+	srv := newSigningEnrollServer(t)
+	cfgPath := privateConfigPath(t)
+	existing := fmt.Sprintf("client:\n  name: web-1\n  server_url: %q\n", srv.URL)
+	if err := securefile.WriteFile(cfgPath, []byte(existing)); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runSigilcErr(t, "--ipc", socket, "--config", cfgPath, "enroll", "--token", srv.token(t, "web-1"))
+	if err != nil {
+		t.Fatalf("enroll again: %v", err)
+	}
+	return out
+}
+
+// TestEnrollAgainTellsARunningDaemonToReload checks that enrolling again
+// while a daemon answers says that it goes on with the identity it loaded.
+func TestEnrollAgainTellsARunningDaemonToReload(t *testing.T) {
+	if out := enrollAgain(t, serveEvents(t, logging.NewRing())); !strings.Contains(out, reloadHint) {
+		t.Errorf("enroll again with a daemon running printed:\n%s\nwant a line that says %q", out, reloadHint)
+	}
+}
+
+// TestEnrollAgainWithoutADaemonSaysNothingOfReload checks that enrolling
+// again with no daemon running, as the install scripts do once they have
+// stopped the service, does not send the operator to reload one.
+func TestEnrollAgainWithoutADaemonSaysNothingOfReload(t *testing.T) {
+	if out := enrollAgain(t, missingIPCSocket(t)); strings.Contains(out, reloadHint) {
+		t.Errorf("enroll again without a daemon printed:\n%s\nwant no line about reloading a daemon", out)
 	}
 }
 
