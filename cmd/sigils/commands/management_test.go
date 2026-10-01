@@ -98,8 +98,8 @@ func TestServerIPCSocketResolution(t *testing.T) {
 	if err := cmd.PersistentFlags().Set("config", path); err != nil {
 		t.Fatal(err)
 	}
-	if got := serverIPCSocket(cmd); got != configured {
-		t.Fatalf("socket = %q, want configured %q", got, configured)
+	if got, err := serverIPCSocket(cmd); err != nil || got != configured {
+		t.Fatalf("socket = %q, %v; want configured %q", got, err, configured)
 	}
 
 	// Locating the daemon must not require the DNS credentials it expands.
@@ -107,24 +107,24 @@ func TestServerIPCSocketResolution(t *testing.T) {
 	if err := os.WriteFile(path, unset, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := serverIPCSocket(cmd); got != configured {
-		t.Fatalf("socket with unset credential variables = %q, want configured %q", got, configured)
+	if got, err := serverIPCSocket(cmd); err != nil || got != configured {
+		t.Fatalf("socket with unset credential variables = %q, %v; want configured %q", got, err, configured)
 	}
 
 	explicit := filepath.Join(t.TempDir(), "explicit.sock")
 	if err := cmd.PersistentFlags().Set("ipc", explicit); err != nil {
 		t.Fatal(err)
 	}
-	if got := serverIPCSocket(cmd); got != explicit {
-		t.Fatalf("socket = %q, want explicit %q", got, explicit)
+	if got, err := serverIPCSocket(cmd); err != nil || got != explicit {
+		t.Fatalf("socket = %q, %v; want explicit %q", got, err, explicit)
 	}
 
 	missing := NewRootCmd()
 	if err := missing.PersistentFlags().Set("config", filepath.Join(t.TempDir(), "missing.yaml")); err != nil {
 		t.Fatal(err)
 	}
-	if got := serverIPCSocket(missing); got != ipc.DefaultServerSocket() {
-		t.Fatalf("socket = %q, want default %q", got, ipc.DefaultServerSocket())
+	if got, err := serverIPCSocket(missing); err != nil || got != ipc.DefaultServerSocket() {
+		t.Fatalf("socket = %q, %v; want default %q", got, err, ipc.DefaultServerSocket())
 	}
 }
 
@@ -160,6 +160,43 @@ func TestReloadDoesNotFallBackToDefaultSocket(t *testing.T) {
 	}
 	if len(dialed) != 1 || dialed[0] != configured {
 		t.Fatalf("dialed %q, want only the configured socket %q", dialed, configured)
+	}
+}
+
+// An ipc_socket that cannot be read is an error that names the file, the
+// field and --ipc: the default socket may belong to another daemon, which
+// would reload its own configuration.
+func TestReloadRefusesUnreadableIPCSocket(t *testing.T) {
+	for _, socket := range []string{"configured.sock", "${SIGIL_TEST_UNSET_SOCKET}"} {
+		path := writeManagementTestConfig(t, "  []\n")
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw = bytes.Replace(raw, []byte("  data_dir:"), []byte("  ipc_socket: \""+socket+"\"\n  data_dir:"), 1)
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		var dialed []string
+		previous := dialServerReloader
+		dialServerReloader = func(socket string) (serverReloader, error) {
+			dialed = append(dialed, socket)
+			return &fakeServerReloader{}, nil
+		}
+		t.Cleanup(func() { dialServerReloader = previous })
+
+		cmd := NewRootCmd()
+		cmd.SetArgs([]string{"--config", path, "reload"})
+		err = cmd.Execute()
+		if len(dialed) != 0 {
+			t.Fatalf("ipc_socket %s: dialed %q, want no socket", socket, dialed)
+		}
+		for _, want := range []string{path, "server.ipc_socket", "--ipc"} {
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("ipc_socket %s: reload error = %v, want one that names %s", socket, err, want)
+			}
+		}
 	}
 }
 

@@ -97,7 +97,11 @@ func runServerServiceControl(action string) func(*cobra.Command, []string) error
 
 func runServerServiceStatus(cmd *cobra.Command, _ []string) error {
 	cfg := serverSvcConfig(cmd)
-	status, err := internalsvc.StatusText(internalsvc.NoopDaemon(), cfg, serverIPCSocket(cmd))
+	socket, err := serverIPCSocket(cmd)
+	if err != nil {
+		return err
+	}
+	status, err := internalsvc.StatusText(internalsvc.NoopDaemon(), cfg, socket)
 	if err != nil {
 		return err
 	}
