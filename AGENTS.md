@@ -238,7 +238,7 @@ CI：`.github/workflows/test.yml` 跑 Linux 全量测试、race、vet（含 `GOO
 - Windows 的 `os.Chmod(0600)` 不能替代 DACL。
 - Windows 安装脚本必须区分 AMD64、ARM64 和 x86。
 - Windows 上 daemon 必须以 LocalSystem 或提权管理员身份运行。IPC 客户端只信任属主为 SYSTEM 或 Administrators 的命名管道，校验在发出请求之前完成。有管理员权限的 `Listen` 会显式把属主设为 Administrators；不指定属主时，属主取令牌的默认属主，Git Bash 下会变成用户 SID。
-- Windows 服务与事件日志（2026-09-29 sigils 实测）：
+- Windows 服务与事件日志（2026-10-01 sigils 实测）：
   - install / start / stop / uninstall 退出码都为 0，以 LocalSystem 运行。安装时 System 日志记 7045。
   - 运行期间的 INFO、WARN、ERROR 分别写入 Application 日志，事件 ID 为 1、2、3，来源为服务名（`sigils`/`sigilc`），消息按 slog 的 TextHandler 格式正常渲染，与 `sigils events` 一致。
   - 启动即失败时 `ExitCode=1067`，失败原因写在 Application 日志 ID 3（`daemon failed`）。`service install` 会写入恢复动作：失败后 10 秒重启，失败计数 24 小时清零；System 日志记 7031。
@@ -247,10 +247,10 @@ CI：`.github/workflows/test.yml` 跑 Linux 全量测试、race、vet（含 `GOO
   - 带引号的属性值里 Windows 路径的反斜杠会显示成双写（slog 的引号转义）。
 - Windows 管道名被抢注时 daemon 启动失败。属主能读出时错误写明属主 SID；读不出时报 `another process holds the pipe name, and its owner cannot be read`。
 - systemd：
-  - `service install` 生成的单元包含 `Restart=on-failure`、`RestartSec=5`、`KillMode=mixed`。`KillMode=mixed` 使 stop 先只给主进程 SIGTERM，主进程退出后剩余进程 SIGKILL，exec DNS 程序才能用满关停宽限。持续失败时每 5 秒重启一次、永不放弃（systemd 默认 `StartLimitBurst=5/10s` 碰不到）。已装好的旧单元要先 `service uninstall` 再 `service install`（kardianos 遇到已存在的服务会报错）。
+  - `service install` 生成的单元包含 `Restart=on-failure`、`RestartSec=5`、`KillMode=mixed`、`EnvironmentFile=-/etc/sysconfig/<name>`。`KillMode=mixed` 使 stop 先只给主进程 SIGTERM，主进程退出后剩余进程 SIGKILL，exec DNS 程序才能用满关停宽限。持续失败时每 5 秒重启一次、永不放弃（systemd 默认 `StartLimitBurst=5/10s` 碰不到）。已装好的旧单元要先 `service uninstall` 再 `service install`（kardianos 遇到已存在的服务会报错）。
   - 环境变量放 `/etc/sysconfig/<name>`（Ubuntu 上没有这个目录，放凭据前先建）。
   - stderr 在 systemd 下进 journald。
-- Linux 一键安装（2026-09-29 Ubuntu 25.04 / systemd 257 实测）写入的路径：`/usr/local/bin/sigilc`、`/etc/sigil/client.yaml`（文件 0600、目录 0700）、`/var/lib/sigilc`（按代码：sigilc 首次启动时私有创建，0700）、`/var/run/sigil/sigilc.sock`（0660、属主 root，`sigilc status` 要加 sudo）、`/etc/systemd/system/sigilc.service` 及 multi-user.target.wants 链接。Ubuntu 上撤临时测试根要 `update-ca-certificates --fresh` 再 `keytool -delete -cacerts`，否则留悬空链接和 Java 库条目。
+- Linux 一键安装（2026-10-01 Ubuntu 25.04 / systemd 257 实测）写入的路径：`/usr/local/bin/sigilc`、`/etc/sigil/client.yaml`（文件 0600、目录 0700）、`/var/lib/sigilc`（sigilc 首次启动时私有创建，安装时就已存在，0700，属主 root:root — 2026-10-01 实测）、`/var/run/sigil/sigilc.sock`（0660、属主 root，`sigilc status` 要加 sudo）、`/etc/systemd/system/sigilc.service` 及 multi-user.target.wants 链接。Ubuntu 上撤临时测试根要 `update-ca-certificates --fresh` 再 `keytool -delete -cacerts`，否则留悬空链接和 Java 库条目。
 - launchd：系统级 LaunchDaemon 的 stderr 日志写到 `/var/log/<name>.err.log`。
 - PowerShell 5.1 的已知问题：
   - `ServerCertificateValidationCallback = {$true}` 这种 scriptblock 回调不可用，要用 C# 的 `ICertificatePolicy`。
