@@ -219,12 +219,12 @@ CI：`.github/workflows/test.yml` 跑 Linux 全量测试、race、vet（含 `GOO
   - 事件的 Message 中的控制字符被替换，Attrs 截断到 2 KiB，Message 截断到 1 KiB。`Private` 属性在 Ring 和 Windows 事件日志中显示为 `(withheld)`，在 stderr / journald sink 中保留全文。
   - lego 的日志行进入事件（按前缀判定 INFO / WARN，带 `component=lego`）。
   - 公网 HTTPS 的 `http.Server.ErrorLog`（握手错误等）只进服务日志，并限速：每分钟最多 10 行（`maxErrorLinesPerMinute`），超出的丢弃计数，下一行放行时附上被丢弃的行数。IPC 的 ErrorLog 不限速。
-- 鉴权中间件刷新 `last_seen`：内存节流，每个客户端名只记一条 `seenClaim`（存证书指纹和上次写入时间），每分钟最多一次条件 UPDATE，节流不能写进 SQL 条件。出示的证书指纹和记录里的不同时立即写入并替换记录，条目数不超过客户端数；待提升身份和当前身份交替请求的那一小段时间里，每换一次身份会多写一次。UPDATE 影响 0 行按 401 处理，其他写库错误只记日志、照常放行（库不可写时仍要能分发已有证书）；无论写库结果如何，节流占位都不释放。并发首次使用同一 pending 身份时，提升失败后重读一次，active 指纹已等于出示指纹就放行。
+- 鉴权中间件刷新 `last_seen`：内存节流，每个客户端名只记一条 `seenClaim`（存证书指纹和上次写入时间），每分钟最多一次条件 UPDATE，节流不能写进 SQL 条件。出示的证书指纹和记录里的不同时立即写入并替换记录，条目数不超过本次运行期间鉴权通过过的客户端名数（删除客户端不清理）；待提升身份和当前身份交替请求的那一小段时间里，每换一次身份会多写一次。UPDATE 影响 0 行按 401 处理，其他写库错误只记日志、照常放行（库不可写时仍要能分发已有证书）；无论写库结果如何，节流占位都不释放。并发首次使用同一 pending 身份时，提升失败后重读一次，active 指纹已等于出示指纹就放行。
 - 客户端 mTLS 身份必须在到期前自动续签；`client.identity_renew_before` 默认 30 天，允许范围为 1 小时到 89 天。`/v1/identity/renew` 每客户端每分钟一次，超出回 429 `identity renewed less than a minute ago`，占位不论成败都不释放。
 - sync 循环、reload 和 IPC fetch 的应用阶段（身份续签、取包、写存储、对账、钩子）由同一把锁 pullMu 串行化；sync 的挂起等待不持锁。Reload、IPC fetch 和身份切换通过同一把锁里登记的 cancel 取消在途 sync，循环拿到锁后发现请求已被取消就作废本轮。
 - 客户端 socket 在 Unix 上固定为 `/var/run/sigil/sigilc.sock`，不能依赖启动用户的 `$HOME`。Unix IPC Dial 只信任属主为 root 或当前 euid 的 socket（与 Windows 管道信任 SYSTEM/Administrators 对称），Listen 替换无人应答的旧 socket 不看属主。
 - 服务端外部 HTTPS 可使用公网证书，但客户端证书仍由内部 mini-CA 验证。客户端验证服务端时同时信任系统根和 mini-CA。
-- 关停上界：从取消起算 30 秒（`issuanceStopTimeout`），超时放弃 scheduler 发起的在途签发，证书和 DNS TXT 清理会丢；WARN `certificate issuance abandoned at shutdown certs=...` 列出名字。`cert renew` 经 IPC 发起的手动续期不在此等待之列，IPC 只有 10 秒排水（`shutdownTimeout`）。
+- 关停上界：从取消起算 30 秒（`issuanceStopTimeout`），超时放弃 scheduler 发起的在途签发，证书和 DNS TXT 清理会丢；WARN `certificate issuance abandoned at shutdown certs=...` 列出名字。`cert renew` 经 IPC 发起的手动续期不在此等待之列：HTTPS 和 IPC 共用 10 秒排水（`shutdownTimeout`）。
 - 签发结果校验：叶子公钥必须等于订单私钥，叶子 DNSNames 必须覆盖 spec 的全部域名；不符按签发失败处理。
 - 鉴权读库出错回 500（不再 401）。所有 500 记 ERROR 事件（`look up client failed`、`promote client identity failed`、`read certificate failed`、`read certificate view failed`、`encode certificate view failed`、`client identity renewal failed`、`enrollment failed`、`open sigilc binary failed`、`panic serving request`）。注册被拒时，已用、过期回 401 并写明原因，记 WARN `enrollment refused client=... token=<ID> error=...`；secret 不符仍是 401 `invalid token`，不记事件。
 - mini-CA 只剩一半文件时拒绝启动，报错写明两条路径。mini-CA 根证书剩余不足 1 年时，在启动时和每次服务端证书重签时记 WARN `mini-CA root certificate expires within a year`。
@@ -238,7 +238,8 @@ CI：`.github/workflows/test.yml` 跑 Linux 全量测试、race、vet（含 `GOO
 - Windows 的 `os.Chmod(0600)` 不能替代 DACL。
 - Windows 安装脚本必须区分 AMD64、ARM64 和 x86。
 - Windows 上 daemon 必须以 LocalSystem 或提权管理员身份运行。IPC 客户端只信任属主为 SYSTEM 或 Administrators 的命名管道，校验在发出请求之前完成。有管理员权限的 `Listen` 会显式把属主设为 Administrators；不指定属主时，属主取令牌的默认属主，Git Bash 下会变成用户 SID。
-- Windows 服务与事件日志（2026-10-01 sigils 实测）：
+- Windows 服务与事件日志（2026-09-29 sigils 首测；2026-10-01 复测了安装、启停卸载的退出码、事件 ID、启动失败与恢复动作，其余几条沿用首测）：
+  - 服务的环境变量放在注册表 `HKLM\SYSTEM\CurrentControlSet\Services\<name>` 的 REG_MULTI_SZ 值 `Environment`（2026-10-01 在 sigils 上实测）。写入是整体替换；改完要重启服务，`reload` 不重读环境；`service uninstall` 删除整个服务键，这个值随之消失。install.ps1 重装 sigilc 服务时保留原有的 `Environment` 值。
   - install / start / stop / uninstall 退出码都为 0，以 LocalSystem 运行。安装时 System 日志记 7045。
   - 运行期间的 INFO、WARN、ERROR 分别写入 Application 日志，事件 ID 为 1、2、3，来源为服务名（`sigils`/`sigilc`），消息按 slog 的 TextHandler 格式正常渲染，与 `sigils events` 一致。
   - 启动即失败时 `ExitCode=1067`，失败原因写在 Application 日志 ID 3（`daemon failed`）。`service install` 会写入恢复动作：失败后 10 秒重启，失败计数 24 小时清零；System 日志记 7031。
@@ -250,7 +251,7 @@ CI：`.github/workflows/test.yml` 跑 Linux 全量测试、race、vet（含 `GOO
   - `service install` 生成的单元包含 `Restart=on-failure`、`RestartSec=5`、`KillMode=mixed`、`EnvironmentFile=-/etc/sysconfig/<name>`。`KillMode=mixed` 使 stop 先只给主进程 SIGTERM，主进程退出后剩余进程 SIGKILL，exec DNS 程序才能用满关停宽限。持续失败时每 5 秒重启一次、永不放弃（systemd 默认 `StartLimitBurst=5/10s` 碰不到）。已装好的旧单元要先 `service uninstall` 再 `service install`（kardianos 遇到已存在的服务会报错）。
   - 环境变量放 `/etc/sysconfig/<name>`（Ubuntu 上没有这个目录，放凭据前先建）。
   - stderr 在 systemd 下进 journald。
-- Linux 一键安装（2026-10-01 Ubuntu 25.04 / systemd 257 实测）写入的路径：`/usr/local/bin/sigilc`、`/etc/sigil/client.yaml`（文件 0600、目录 0700）、`/var/lib/sigilc`（sigilc 首次启动时私有创建，安装时就已存在，0700，属主 root:root — 2026-10-01 实测）、`/var/run/sigil/sigilc.sock`（0660、属主 root，`sigilc status` 要加 sudo）、`/etc/systemd/system/sigilc.service` 及 multi-user.target.wants 链接。Ubuntu 上撤临时测试根要 `update-ca-certificates --fresh` 再 `keytool -delete -cacerts`，否则留悬空链接和 Java 库条目。
+- Linux 一键安装（2026-10-01 Ubuntu 25.04 / systemd 257 实测）写入的路径：`/usr/local/bin/sigilc`、`/etc/sigil/client.yaml`（文件 0600、目录 0700）、`/var/lib/sigilc`（sigilc 首次启动时私有创建，安装时就已存在，0700，属主 root:root）、`/var/run/sigil/sigilc.sock`（0660、属主 root，`sigilc status` 要加 sudo）、`/etc/systemd/system/sigilc.service` 及 multi-user.target.wants 链接。Ubuntu 上撤临时测试根要 `update-ca-certificates --fresh` 再 `keytool -delete -cacerts`，否则留悬空链接和 Java 库条目。
 - launchd：系统级 LaunchDaemon 的 stderr 日志写到 `/var/log/<name>.err.log`。
 - PowerShell 5.1 的已知问题：
   - `ServerCertificateValidationCallback = {$true}` 这种 scriptblock 回调不可用，要用 C# 的 `ICertificatePolicy`。
@@ -300,6 +301,7 @@ CI：`.github/workflows/test.yml` 跑 Linux 全量测试、race、vet（含 `GOO
 - install.ps1 不自己建 `C:\ProgramData\Sigil`（由 enroll 私有创建）。
 - bubbletea v2 在 TUI 第一次渲染时发 `ESC[?u`（kitty 键盘协议查询，无法单独关闭），支持该协议的终端若在启动后立即按 q，应答可能落到提示符上；DECRQM 2026/2027 在无 `SSH_TTY` 时也会发。
 - Windows 上第一次 `cert add`/`cert remove` 之后 server.yaml 变成私有 DACL（SYSTEM、Administrators），原先授给其他账户的访问会被去掉。
+
 ARI 简化：
 - ARI 对 5xx 不做短间隔指数退避，按 6 小时后重查（lego 拿不到 HTTP 状态码）。
 - ARI 的 `pick` 不持久化，重启后时点在同一窗口内重新随机。

@@ -119,7 +119,7 @@ sigilc reload
 sigils --config /etc/sigil/server.yaml reload
 ```
 
-On Linux, `sigils` and `sigilc` management commands need root because the IPC sockets are owned by root. When the configuration file does not exist or cannot be read, the CLI uses the platform default IPC endpoint; if `ipc_socket` is set but cannot be read, the CLI reports an error and suggests `--ipc`.
+On Linux, `sigils` and `sigilc` management commands need root because the IPC sockets are owned by root. When the configuration file does not exist or the user may not read it, the CLI uses the platform default IPC endpoint. When the file can be read but `ipc_socket` cannot be used (the file is not valid YAML, a `${VAR}` in `ipc_socket` is not set, or the path is relative), the CLI reports an error and suggests `--ipc`. If you set a custom `ipc_socket`, run the CLI as root (or elevated) or pass `--ipc`.
 
 `token create`, `reload`, `cert add`, and `cert remove` are served by the running daemon over local IPC and fail when it is not running. `token create` also refuses to run when `server.public_url` is unset and `server.listen` names no host clients can reach. When the name belongs to an enrolled client or to an unused token that has not expired, `token create` requires `--replace`; with `--replace`, it also revokes all unused tokens of that name. `cert add` and `cert remove` edit `server.yaml` and apply the new configuration atomically; if the apply fails, the file is written back to its original contents. Other hotloadable changes already in the file take effect at the same time; if the file contains a change that requires a restart, the command is refused and the file is not modified. On Windows, the first `cert add` or `cert remove` changes `server.yaml` to a private DACL (SYSTEM and Administrators only).
 
@@ -424,7 +424,7 @@ Under systemd, `service install` writes a unit with `Restart=on-failure`, `Resta
 
 `service install` resolves the configuration path to an absolute path. The search order is `--config`, then `SIGILS_CONFIG` / `SIGILC_CONFIG`, then the platform default.
 
-When running as a service, the data directory must be owned by the service account. On Linux (systemd, running as root) the owner must be root (uid 0). On Windows the owner must be SYSTEM or Administrators. If the owner does not match, the daemon refuses to start and the error prints the fix command. Under systemd, the daemon restarts every 5 seconds until the owner is corrected; on Windows, the failure appears as `ExitCode=1067` in the service status. A directory created in an elevated Git Bash session is owned by the user's own SID rather than Administrators, and will be rejected.
+When running as a service, the directories the daemon checks must be owned by the service account. On Linux, `sigils` runs as root, so its data directory must be owned by root (uid 0); `sigilc` does not check directories on Unix. On Windows, the configuration directory and the data directory of either daemon must be owned by SYSTEM or Administrators. If the owner does not match, the daemon refuses to start and the error prints the fix command (see [Directory requirements](#directory-requirements)). systemd restarts the daemon every 5 seconds until the owner is corrected; on Windows the recovery action restarts it every 10 seconds, and `sc query <name>` reports exit code 1067. A directory created by hand (for example with `mkdir`) in an elevated Git Bash session is owned by the user's own SID rather than Administrators, and is rejected; directories that `sigils` and `sigilc` create themselves are owned by Administrators.
 
 ### Windows service environment variables
 
@@ -437,16 +437,22 @@ New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\sigils' -Name En
 Restart-Service sigils
 ```
 
-cmd (elevated):
+cmd (elevated; `&&` does not work in Windows PowerShell 5.1):
 
-```
+```bat
 reg add HKLM\SYSTEM\CurrentControlSet\Services\sigils /v Environment /t REG_MULTI_SZ /d "NAME=value\0OTHER=2" /f
 net stop sigils && net start sigils
 ```
 
 Multiple variables are separated by `\0` in the `reg add` form; in PowerShell, pass an array: `@('NAME=value', 'OTHER=2')`.
 
-To remove the variables: `Remove-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\sigils' -Name Environment`. Running `service uninstall` deletes the entire service key, including this value.
+Both forms replace the whole list; they do not add to it. Writing one variable removes every other variable already set, such as DNS credentials, and a configuration that still references them then fails to start. Read the current list first and write it back complete:
+
+```powershell
+(Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\sigils').Environment
+```
+
+To remove the variables: `Remove-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\sigils' -Name Environment`. `service uninstall` deletes the entire service key, including this value: after `service uninstall` and `service install`, set the variables again before you start the service. The install script keeps the `Environment` value of the `sigilc` service when it installs the service again.
 
 When a variable referenced by `${VAR}` in the configuration is not set, the service fails to start (`ExitCode=1067`), and the Application event log (event ID 3) shows `load config: expand env: <field>: environment variable "X" is not set`.
 
@@ -464,7 +470,7 @@ When a variable referenced by `${VAR}` in the configuration is not set, the serv
 
 ## Directory requirements
 
-`sigils` and `sigilc` check certain directories at startup and refuse to run when the checks fail. On Unix, only `sigils` checks its data directory (`CheckPrivateDirectory`); `sigilc` does not check directories on Unix. On Windows, both daemons check their configuration directory and data directory. The `ca/` subdirectory is checked and tightened by `ca.Bootstrap` on every startup. `sigilc enroll` checks the configuration directory before writing. The checks vary by platform:
+`sigils` and `sigilc` check certain directories at startup and refuse to run when the checks fail. On Unix, only `sigils` checks its data directory (`CheckPrivateDirectory`); `sigilc` does not check directories on Unix. On Windows, both daemons check their configuration directory and data directory. `sigilc enroll` checks the configuration directory before writing. The checks vary by platform:
 
 - **sigils data_dir** (Unix): mode `0700`, owned by the running user. (Windows): completely private --- only SYSTEM, Administrators, and, when not elevated, the running user may access it; the owner must be one of them.
 - **Configuration directory and sigilc data_dir** (Windows): owned by SYSTEM, Administrators, or (when not elevated) the current user; no other account may write, delete, or change permissions.
