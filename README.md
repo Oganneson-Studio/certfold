@@ -520,6 +520,8 @@ A `server returned 500: internal error` means the server rolled back the entire 
 
 ## Upgrade notes
 
+**Renamed from Sigil**: until 2026-10-01 the project was called Sigil, with the binaries `sigils` and `sigilc`. Certfold reads none of Sigil's paths, service names, named pipes, or environment variables, so there is no upgrade from a Sigil installation: uninstall it and install Certfold anew.
+
 **Old Windows installations**: builds before the directory audit created `C:\ProgramData\Certfold` with the installing user's SID in the ACL. After upgrading, the `certfoldc` service and reinstall enrollment both refuse to start. Fix it with the `icacls` command the error message prints:
 
 ```powershell

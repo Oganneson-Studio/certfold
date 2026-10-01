@@ -352,7 +352,8 @@ func UnpackClients(fsys fs.FS, dataDir string, w io.Writer) (int, error) {
 // isBinaryName reports whether name looks like a certfoldc binary
 // (starts with "certfoldc-" to exclude README and similar files).
 func isBinaryName(name string) bool {
-	return len(name) > 7 && name[:7] == "certfoldc-"
+	const prefix = "certfoldc-"
+	return len(name) > len(prefix) && name[:len(prefix)] == prefix
 }
 
 func writeFile(src fs.File, dest string) error {

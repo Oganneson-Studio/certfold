@@ -301,7 +301,7 @@ func TestRunSetsConfiguredDNSResolvers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("no DNS query reached the configured resolver: %v", err)
 	}
-	if !bytes.Contains(query[:n], []byte("\x05probe\x05certfold\x04test\x00")) {
+	if !bytes.Contains(query[:n], []byte("\x05probe\x08certfold\x04test\x00")) {
 		t.Fatalf("DNS query %x does not ask for the probe name", query[:n])
 	}
 	// Echo the query back as a REFUSED answer so the lookup ends at once.
