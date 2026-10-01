@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
 )
 
 // messages returns the messages of the events m holds.
@@ -113,9 +113,9 @@ func TestRefreshShowsErrors(t *testing.T) {
 	f := newTestBackend()
 	m := newModel(t, f)
 
-	f.stateErr = errors.New("ipc request: sigilc stopped")
+	f.stateErr = errors.New("ipc request: certfoldc stopped")
 	m = press(t, m, "r")
-	if view := plain(m); !strings.Contains(view, "Error: ipc request: sigilc stopped") || !strings.Contains(view, "web-1") {
+	if view := plain(m); !strings.Contains(view, "Error: ipc request: certfoldc stopped") || !strings.Contains(view, "web-1") {
 		t.Errorf("view after a failed state read lacks the error or the last state:\n%s", view)
 	}
 

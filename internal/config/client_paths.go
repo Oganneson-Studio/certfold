@@ -1,7 +1,7 @@
 package config
 
 // ReadClientField reads the value of key in the client section of the
-// client.yaml at path, as ReadServerField does in server.yaml: sigilc enroll
+// client.yaml at path, as ReadServerField does in server.yaml: certfoldc enroll
 // compares name and server_url with its token, and CLI commands locate the
 // daemon with ipc_socket. It expands ${VAR} only in this value and does not
 // validate the file, so the variables other values reference, such as a

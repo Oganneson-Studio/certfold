@@ -10,11 +10,11 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/Oganneson-Studio/sigil/internal/securefile"
+	"github.com/Oganneson-Studio/certfold/internal/securefile"
 )
 
 // TestBootstrapRefusesCADirectoryOthersMayWrite covers a ca\ that an account
-// sigils does not trust could put a key of its own in, say one created while
+// certfolds does not trust could put a key of its own in, say one created while
 // data_dir was not private: Bootstrap must refuse it before it tightens it,
 // and write nothing to it.
 func TestBootstrapRefusesCADirectoryOthersMayWrite(t *testing.T) {

@@ -17,7 +17,7 @@ import (
 
 	"software.sslmate.com/src/go-pkcs12"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/config"
 )
 
 // makeBundle creates a self-signed cert + key for testing.
@@ -283,7 +283,7 @@ func checkContent(t *testing.T, b *CertBundle, spec config.OutputSpec) {
 func checkNoTemps(t *testing.T, dirs ...string) {
 	t.Helper()
 	for _, dir := range dirs {
-		if left, err := filepath.Glob(filepath.Join(dir, ".sigil-tmp-*")); err != nil || len(left) != 0 {
+		if left, err := filepath.Glob(filepath.Join(dir, ".certfold-tmp-*")); err != nil || len(left) != 0 {
 			t.Errorf("temporary files left in %s: %v, %v", dir, left, err)
 		}
 	}
@@ -450,7 +450,7 @@ func TestReconcile_UnknownOwnerLeavesTargetUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	spec := config.OutputSpec{Format: "pem-key", Path: path, Owner: "sigil-test-no-such-account"}
+	spec := config.OutputSpec{Format: "pem-key", Path: path, Owner: "certfold-test-no-such-account"}
 	changed, err := Reconcile(makeBundle(t), []config.OutputSpec{spec})
 	if err == nil || changed {
 		t.Fatalf("Reconcile = %v, %v; want an error and no change", changed, err)

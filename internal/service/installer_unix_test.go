@@ -11,13 +11,13 @@ import (
 	"testing/fstest"
 )
 
-// TestUnpackClientsCreatesPrivateDataDir covers `sigils service install
+// TestUnpackClientsCreatesPrivateDataDir covers `certfolds service install
 // --with-clients` before the daemon has first run: data_dir does not exist
 // yet, and one created with the default mode would let a local user put a
 // binary of their own into binaries/ for the install scripts to hand out.
 func TestUnpackClientsCreatesPrivateDataDir(t *testing.T) {
-	dataDir := filepath.Join(t.TempDir(), "sigils")
-	fsys := fstest.MapFS{"sigilc-linux-amd64": &fstest.MapFile{Data: []byte("x")}}
+	dataDir := filepath.Join(t.TempDir(), "certfolds")
+	fsys := fstest.MapFS{"certfoldc-linux-amd64": &fstest.MapFile{Data: []byte("x")}}
 	if _, err := UnpackClients(fsys, dataDir, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
@@ -31,18 +31,18 @@ func TestUnpackClientsCreatesPrivateDataDir(t *testing.T) {
 }
 
 // TestUnpackClientsRefusesDataDirOthersMayRead covers a data_dir that exists
-// but is not private, as sigils would refuse it at start: UnpackClients must
+// but is not private, as certfolds would refuse it at start: UnpackClients must
 // refuse it too, write nothing into it, and leave its mode, since it may be a
 // directory like /var/lib.
 func TestUnpackClientsRefusesDataDirOthersMayRead(t *testing.T) {
-	dataDir := filepath.Join(t.TempDir(), "sigils")
+	dataDir := filepath.Join(t.TempDir(), "certfolds")
 	if err := os.Mkdir(dataDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(dataDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	fsys := fstest.MapFS{"sigilc-linux-amd64": &fstest.MapFile{Data: []byte("x")}}
+	fsys := fstest.MapFS{"certfoldc-linux-amd64": &fstest.MapFile{Data: []byte("x")}}
 	_, err := UnpackClients(fsys, dataDir, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), `chmod 700 "`+dataDir+`"`) {
 		t.Fatalf("UnpackClients error = %v, want one that says to chmod 700 %s", err, dataDir)

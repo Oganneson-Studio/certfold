@@ -134,9 +134,9 @@ func TestFetchAndReloadShowTheirOutcome(t *testing.T) {
 				t.Errorf("view after the %s lacks %q or the state read after it:\n%s", tc.name, tc.name+": done at ", view)
 			}
 
-			tc.fail(f, errors.New("client.data_dir changed; restart sigilc to apply it"))
+			tc.fail(f, errors.New("client.data_dir changed; restart certfoldc to apply it"))
 			m = press(t, m, tc.key)
-			want := tc.name + " failed: client.data_dir changed; restart sigilc to apply it"
+			want := tc.name + " failed: client.data_dir changed; restart certfoldc to apply it"
 			if view := plain(m); !strings.Contains(view, want) || strings.Contains(view, tc.name+": done at ") {
 				t.Errorf("view after a failed %s lacks %q:\n%s", tc.name, want, view)
 			}

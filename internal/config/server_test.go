@@ -22,7 +22,7 @@ func absPath(path string) string {
 }
 
 // validDataDirLine is the line of validServerYAML that sets server.data_dir.
-var validDataDirLine = `data_dir: "` + absPath("/var/lib/sigils") + `"`
+var validDataDirLine = `data_dir: "` + absPath("/var/lib/certfolds") + `"`
 
 var validServerYAML = `
 server:
@@ -70,7 +70,7 @@ func TestParseServer_Valid(t *testing.T) {
 	if cfg.Server.Listen != ":8443" {
 		t.Errorf("listen: got %q", cfg.Server.Listen)
 	}
-	if cfg.Server.DataDir != absPath("/var/lib/sigils") {
+	if cfg.Server.DataDir != absPath("/var/lib/certfolds") {
 		t.Errorf("data_dir: got %q", cfg.Server.DataDir)
 	}
 	if len(cfg.Certificates) != 2 {
@@ -276,7 +276,7 @@ func TestParseServer_Listen(t *testing.T) {
 		"0.0.0.0:8443",
 		"[::]:8443",
 		"127.0.0.1:1",
-		"sigil.internal:65535",
+		"certfold.internal:65535",
 	} {
 		src := strings.Replace(validServerYAML, `listen: ":8443"`, "listen: "+strconv.Quote(listen), 1)
 		if _, err := ParseServer([]byte(src)); err != nil {
@@ -287,7 +287,7 @@ func TestParseServer_Listen(t *testing.T) {
 	for _, listen := range []string{
 		":",
 		"8443",
-		"sigil.internal",
+		"certfold.internal",
 		":0",
 		":65536",
 		":https",
@@ -540,7 +540,7 @@ func TestDNSProvider_Gcloud_RequiresProjectOrServiceAccountFile(t *testing.T) {
 			block: `dns_providers:
   p1:
     type: gcloud
-    service_account_file: "` + absPath("/etc/sigil/gcloud.json") + `"
+    service_account_file: "` + absPath("/etc/certfold/gcloud.json") + `"
 `,
 		},
 	}
@@ -564,7 +564,7 @@ func TestDNSProvider_Gcloud_RequiresProjectOrServiceAccountFile(t *testing.T) {
 // YAML below single-quotes it so a Windows path needs no escaping.
 func hookPath() string {
 	if runtime.GOOS == "windows" {
-		return `C:\sigil\dns-hook.exe`
+		return `C:\certfold\dns-hook.exe`
 	}
 	return "/usr/local/bin/dns-hook"
 }
@@ -668,12 +668,12 @@ func TestDNSProvider_Exec(t *testing.T) {
 }
 
 func TestDNSProvider_SkipPropagationCheck(t *testing.T) {
-	t.Setenv("SIGIL_TEST_SKIP_PROPAGATION", "true")
+	t.Setenv("CERTFOLD_TEST_SKIP_PROPAGATION", "true")
 	src := dnsServerYAML(`dns_providers:
   p1:
     type: exec
     command: ['` + hookPath() + `']
-    skip_propagation_check: ${SIGIL_TEST_SKIP_PROPAGATION}
+    skip_propagation_check: ${CERTFOLD_TEST_SKIP_PROPAGATION}
   p2:
     type: cloudflare
     api_token: "tok"
@@ -696,13 +696,13 @@ func TestDNSProvider_SkipPropagationCheck(t *testing.T) {
 
 func TestPublicBaseURL_UsesPublicURL(t *testing.T) {
 	src := strings.ReplaceAll(validServerYAML, `listen: ":8443"`,
-		"listen: \":8443\"\n  public_url: \"https://sigil.example.com:8443\"")
+		"listen: \":8443\"\n  public_url: \"https://certfold.example.com:8443\"")
 	cfg, err := ParseServer([]byte(src))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := cfg.PublicBaseURL(); got != "https://sigil.example.com:8443" {
-		t.Errorf("PublicBaseURL: got %q, want %q", got, "https://sigil.example.com:8443")
+	if got := cfg.PublicBaseURL(); got != "https://certfold.example.com:8443" {
+		t.Errorf("PublicBaseURL: got %q, want %q", got, "https://certfold.example.com:8443")
 	}
 }
 
@@ -730,14 +730,14 @@ func TestPublicBaseURL_InvalidPublicURL(t *testing.T) {
 }
 
 func TestServerTLSFilesMustBeConfiguredTogether(t *testing.T) {
-	certLine := `tls_cert_file: "` + absPath("/etc/sigil/tls.crt") + `"`
+	certLine := `tls_cert_file: "` + absPath("/etc/certfold/tls.crt") + `"`
 	src := strings.Replace(validServerYAML, validDataDirLine, validDataDirLine+"\n  "+certLine, 1)
 	_, err := ParseServer([]byte(src))
 	if err == nil || !strings.Contains(err.Error(), "tls_cert_file and tls_key_file") {
 		t.Fatalf("expected paired TLS file error, got %v", err)
 	}
 
-	src = strings.Replace(src, certLine, certLine+"\n  "+`tls_key_file: "`+absPath("/etc/sigil/tls.key")+`"`, 1)
+	src = strings.Replace(src, certLine, certLine+"\n  "+`tls_key_file: "`+absPath("/etc/certfold/tls.key")+`"`, 1)
 	if _, err := ParseServer([]byte(src)); err != nil {
 		t.Fatalf("valid TLS file config: %v", err)
 	}
@@ -757,15 +757,15 @@ func writeServerYAML(t *testing.T, raw string) string {
 }
 
 func TestReadServerField_DoesNotRequireCredentialVariables(t *testing.T) {
-	t.Setenv("SIGIL_TEST_IPC_SOCKET", absPath("/run/sigil/custom.sock"))
-	src := strings.Replace(validServerYAML, validDataDirLine, `data_dir: "${SIGIL_TEST_UNSET_DATA_DIR:-`+absPath("/srv/sigils")+`}"
-  ipc_socket: "${SIGIL_TEST_IPC_SOCKET}"`, 1)
-	src = strings.Replace(src, `api_token: "tok"`, `api_token: "${SIGIL_TEST_UNSET_API_TOKEN}"`, 1)
+	t.Setenv("CERTFOLD_TEST_IPC_SOCKET", absPath("/run/certfold/custom.sock"))
+	src := strings.Replace(validServerYAML, validDataDirLine, `data_dir: "${CERTFOLD_TEST_UNSET_DATA_DIR:-`+absPath("/srv/certfolds")+`}"
+  ipc_socket: "${CERTFOLD_TEST_IPC_SOCKET}"`, 1)
+	src = strings.Replace(src, `api_token: "tok"`, `api_token: "${CERTFOLD_TEST_UNSET_API_TOKEN}"`, 1)
 	path := writeServerYAML(t, src)
 
 	for key, want := range map[string]string{
-		"data_dir":   absPath("/srv/sigils"),
-		"ipc_socket": absPath("/run/sigil/custom.sock"),
+		"data_dir":   absPath("/srv/certfolds"),
+		"ipc_socket": absPath("/run/certfold/custom.sock"),
 	} {
 		got, err := ReadServerField(path, key)
 		if err != nil {
@@ -775,7 +775,7 @@ func TestReadServerField_DoesNotRequireCredentialVariables(t *testing.T) {
 			t.Errorf("%s: got %q, want %q", key, got, want)
 		}
 	}
-	if _, err := LoadServer(path); err == nil || !strings.Contains(err.Error(), "SIGIL_TEST_UNSET_API_TOKEN") {
+	if _, err := LoadServer(path); err == nil || !strings.Contains(err.Error(), "CERTFOLD_TEST_UNSET_API_TOKEN") {
 		t.Fatalf("LoadServer should still require the credential variable, got %v", err)
 	}
 }
@@ -783,8 +783,8 @@ func TestReadServerField_DoesNotRequireCredentialVariables(t *testing.T) {
 // A data_dir that cannot be read does not keep the CLI from finding the
 // socket of the daemon, which reports what is wrong with the file.
 func TestReadServerField_ReadsIPCSocketWhateverDataDirIs(t *testing.T) {
-	socket := absPath("/run/sigil/custom.sock")
-	for _, dataDir := range []string{`"${SIGIL_TEST_UNSET_DATA_DIR}"`, `"sigil-data"`} {
+	socket := absPath("/run/certfold/custom.sock")
+	for _, dataDir := range []string{`"${CERTFOLD_TEST_UNSET_DATA_DIR}"`, `"certfold-data"`} {
 		path := writeServerYAML(t, withServerSection("data_dir: "+dataDir+"\n  ipc_socket: \""+socket+"\""))
 		if _, err := ReadServerField(path, "data_dir"); err == nil || !strings.Contains(err.Error(), "server.data_dir") {
 			t.Errorf("data_dir %s: error = %v, want one about server.data_dir", dataDir, err)
@@ -797,9 +797,9 @@ func TestReadServerField_ReadsIPCSocketWhateverDataDirIs(t *testing.T) {
 
 func TestReadServerField_RejectsUnsetServerVariable(t *testing.T) {
 	path := writeServerYAML(t, strings.Replace(validServerYAML,
-		validDataDirLine, `data_dir: "${SIGIL_TEST_UNSET_DATA_DIR}"`, 1))
+		validDataDirLine, `data_dir: "${CERTFOLD_TEST_UNSET_DATA_DIR}"`, 1))
 	_, err := ReadServerField(path, "data_dir")
-	if err == nil || !strings.Contains(err.Error(), "server.data_dir") || !strings.Contains(err.Error(), "SIGIL_TEST_UNSET_DATA_DIR") {
+	if err == nil || !strings.Contains(err.Error(), "server.data_dir") || !strings.Contains(err.Error(), "CERTFOLD_TEST_UNSET_DATA_DIR") {
 		t.Fatalf("expected unset data_dir variable error, got %v", err)
 	}
 }

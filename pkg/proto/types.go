@@ -15,7 +15,7 @@ type EnrollRequest struct {
 }
 
 // EnrollResponse is returned on successful POST /v1/enroll. The CA that
-// signed ClientCert is the one in the token, which sigilc saves.
+// signed ClientCert is the one in the token, which certfoldc saves.
 type EnrollResponse struct {
 	ClientCert string `json:"client_cert"` // PEM
 }

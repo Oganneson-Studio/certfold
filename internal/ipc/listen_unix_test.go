@@ -16,7 +16,7 @@ import (
 func testSocketPath(t *testing.T) string {
 	t.Helper()
 	// Unix socket paths are length-limited; keep this one short.
-	dir, err := os.MkdirTemp("", "sigil")
+	dir, err := os.MkdirTemp("", "certfold")
 	if err != nil {
 		t.Fatal(err)
 	}

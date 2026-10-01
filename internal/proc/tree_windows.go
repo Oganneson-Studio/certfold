@@ -59,7 +59,7 @@ func start(ctx context.Context, cmd *exec.Cmd) (release func(), err error) {
 }
 
 // killOnClose sets whether closing the last handle of job kills the processes
-// in it. It is the only limit Sigil sets on a job.
+// in it. It is the only limit Certfold sets on a job.
 func killOnClose(job windows.Handle, kill bool) error {
 	var info windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
 	if kill {

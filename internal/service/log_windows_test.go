@@ -9,7 +9,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
 )
 
 // fakeEventLog records the events written to it as "<type> <id> <text>".
@@ -27,12 +27,12 @@ func (l *fakeEventLog) Error(eid uint32, msg string) error   { return l.record("
 func TestWriteEventMapsLevelsToEventTypesAndIDs(t *testing.T) {
 	var log fakeEventLog
 	logger := slog.New(logging.NewLineHandler(writeEvent(&log)))
-	logger.Info("sigils started", "version", "test")
+	logger.Info("certfolds started", "version", "test")
 	logger.Warn("configuration reload rejected", "error", "bad")
 	logger.Error("daemon failed", "error", "bad")
 
 	want := []string{
-		"info 1 sigils started version=test",
+		"info 1 certfolds started version=test",
 		"warning 2 configuration reload rejected error=bad",
 		"error 3 daemon failed error=bad",
 	}

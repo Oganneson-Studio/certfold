@@ -12,7 +12,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// TestUnpackClientsCreatesPrivateDataDir covers `sigils service install
+// TestUnpackClientsCreatesPrivateDataDir covers `certfolds service install
 // --with-clients` before the daemon has first run, with data_dir under a
 // directory that lets Users read what is created in it, as a new folder under
 // C:\ does: the data_dir it creates, and binaries/ in it, grant Users nothing,
@@ -38,8 +38,8 @@ func TestUnpackClientsCreatesPrivateDataDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dataDir := filepath.Join(parent, "sigils")
-	fsys := fstest.MapFS{"sigilc-windows-amd64.exe": &fstest.MapFile{Data: []byte("x")}}
+	dataDir := filepath.Join(parent, "certfolds")
+	fsys := fstest.MapFS{"certfoldc-windows-amd64.exe": &fstest.MapFile{Data: []byte("x")}}
 	if _, err := UnpackClients(fsys, dataDir, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}

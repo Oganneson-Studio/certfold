@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/ca"
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/renewal"
+	"github.com/Oganneson-Studio/certfold/internal/ca"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/renewal"
 )
 
 // tlsSource supplies the certificate of the HTTPS listener to each handshake
@@ -30,7 +30,7 @@ import (
 // A handshake always gets a certificate: whatever fails keeps the one in use.
 type tlsSource struct {
 	miniCA *ca.MiniCA
-	// cfg is the configuration sigils started with. The TLS files, the public
+	// cfg is the configuration certfolds started with. The TLS files, the public
 	// URL and the listen address it takes from cfg need a restart to change.
 	cfg *config.ServerConfig
 	now func() time.Time
@@ -55,7 +55,7 @@ type tlsSource struct {
 const reissueRetry = time.Minute
 
 // rootExpiryWarning is how long before the mini-CA root certificate expires
-// sigils starts warning of it, at startup and whenever the mini-CA issues a
+// certfolds starts warning of it, at startup and whenever the mini-CA issues a
 // new HTTPS certificate. The root signs every client certificate, and nothing
 // replaces it: once it expires, no client can connect.
 const rootExpiryWarning = 365 * 24 * time.Hour
@@ -200,7 +200,7 @@ func serverTLSCertificate(miniCA *ca.MiniCA, cfg *config.ServerConfig) (tls.Cert
 		}
 	}
 
-	// Extract hostname from listen address if it has one (e.g. "sigil.internal:8443").
+	// Extract hostname from listen address if it has one (e.g. "certfold.internal:8443").
 	if h, _, err := net.SplitHostPort(cfg.Server.Listen); err == nil && h != "" {
 		hosts = append(hosts, h)
 	}

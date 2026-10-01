@@ -33,7 +33,7 @@ type ClientSection struct {
 }
 
 // IdentitySection holds the PEM-encoded materials needed for mTLS against
-// the Sigil server. Populated either by `sigilc enroll` or by hand.
+// the Certfold server. Populated either by `certfoldc enroll` or by hand.
 type IdentitySection struct {
 	CACert     string `yaml:"ca_cert,omitempty"`
 	ClientCert string `yaml:"client_cert,omitempty"`
@@ -207,7 +207,7 @@ func (c *ClientConfig) Validate() error {
 			}
 		}
 		// Whether the program exists is not checked: that can change between
-		// runs, and a failed run is reported by sigilc status.
+		// runs, and a failed run is reported by certfoldc status.
 		for i, arg := range cert.OnChange {
 			if arg == "" {
 				v.Add(fmt.Sprintf("%s.on_change[%d]", path, i), "must not be empty")

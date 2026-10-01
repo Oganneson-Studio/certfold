@@ -8,9 +8,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
-	"github.com/Oganneson-Studio/sigil/internal/logging"
-	"github.com/Oganneson-Studio/sigil/internal/tui/shared"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/tui/shared"
 )
 
 // View renders the current model on the alternate screen.
@@ -112,7 +112,7 @@ func (m Model) renderOverview(w int) string {
 
 func (m Model) renderCertificates(w int) string {
 	if len(m.certs) == 0 {
-		return "No certificates are configured. Add one with `sigils cert add`."
+		return "No certificates are configured. Add one with `certfolds cert add`."
 	}
 	return m.certsTable.View() + "\n\n" + m.certDetails(w)
 }
@@ -183,7 +183,7 @@ func eventLines(events []logging.Event, width int) string {
 }
 
 // formatEvent formats e as "2006-01-02 15:04:05  INFO   message  attrs" in
-// local time, as `sigils events` prints it.
+// local time, as `certfolds events` prints it.
 func formatEvent(e logging.Event) string {
 	line := fmt.Sprintf("%s  %-5s  %s", e.Time.Local().Format("2006-01-02 15:04:05"), e.Level, e.Message)
 	if e.Attrs != "" {

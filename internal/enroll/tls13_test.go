@@ -10,7 +10,7 @@ import (
 )
 
 // TestPostEnrollRequiresTLS13 checks that enrollment keeps requiring TLS 1.3.
-// sigils accepts TLS 1.2 as well, but only for the sake of the install
+// certfolds accepts TLS 1.2 as well, but only for the sake of the install
 // scripts.
 func TestPostEnrollRequiresTLS13(t *testing.T) {
 	var reached atomic.Bool

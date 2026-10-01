@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/ca"
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/store"
+	"github.com/Oganneson-Studio/certfold/internal/ca"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/store"
 )
 
 func mustOpenDB(t *testing.T) *store.DB {
@@ -67,7 +67,7 @@ func TestCreateAndVerify(t *testing.T) {
 	miniCA := mustBootstrapCA(t)
 	srv := NewServer(db, miniCA)
 
-	tokenStr, err := srv.Create(ctx, "https://sigil.example.com", "web-1", time.Hour)
+	tokenStr, err := srv.Create(ctx, "https://certfold.example.com", "web-1", time.Hour)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestVerify_TamperedSecret(t *testing.T) {
 	miniCA := mustBootstrapCA(t)
 	srv := NewServer(db, miniCA)
 
-	tokenStr, _ := srv.Create(ctx, "https://sigil.example.com", "web-1", time.Hour)
+	tokenStr, _ := srv.Create(ctx, "https://certfold.example.com", "web-1", time.Hour)
 
 	// Decode, tamper secret, re-encode.
 	payload, _ := DecodeToken(tokenStr)
@@ -110,7 +110,7 @@ func TestVerify_TamperedTrustData(t *testing.T) {
 	ctx := context.Background()
 	db := mustOpenDB(t)
 	srv := NewServer(db, mustBootstrapCA(t))
-	tokenStr, err := srv.Create(ctx, "https://sigil.example.com", "web-1", time.Hour)
+	tokenStr, err := srv.Create(ctx, "https://certfold.example.com", "web-1", time.Hour)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestVerify_ExpiredToken(t *testing.T) {
 	miniCA := mustBootstrapCA(t)
 	srv := NewServer(db, miniCA)
 
-	tokenStr, err := srv.Create(ctx, "https://sigil.example.com", "web-1", -time.Hour)
+	tokenStr, err := srv.Create(ctx, "https://certfold.example.com", "web-1", -time.Hour)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestVerify_UnknownToken(t *testing.T) {
 	srv := NewServer(db, miniCA)
 
 	payload := Token{
-		ServerURL: "https://sigil.example.com",
+		ServerURL: "https://certfold.example.com",
 		Name:      "web-1",
 		TokenID:   "deadbeefdeadbeefdeadbeefdeadbeef",
 		Secret:    strings.Repeat("a", 64),
@@ -181,7 +181,7 @@ func TestSignClientCert_E2E(t *testing.T) {
 	miniCA := mustBootstrapCA(t)
 	srv := NewServer(db, miniCA)
 
-	tokenStr, err := srv.Create(ctx, "https://sigil.example.com", "web-1", time.Hour)
+	tokenStr, err := srv.Create(ctx, "https://certfold.example.com", "web-1", time.Hour)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestTokenReplay(t *testing.T) {
 	miniCA := mustBootstrapCA(t)
 	srv := NewServer(db, miniCA)
 
-	tokenStr, _ := srv.Create(ctx, "https://sigil.example.com", "web-1", time.Hour)
+	tokenStr, _ := srv.Create(ctx, "https://certfold.example.com", "web-1", time.Hour)
 	name, tokenID, _ := srv.Verify(ctx, tokenStr)
 
 	_, err := srv.SignClientCert(ctx, newCSR(t, name), name, tokenID)
@@ -253,7 +253,7 @@ func TestTokenConcurrentConsumption(t *testing.T) {
 	miniCA := mustBootstrapCA(t)
 	srv := NewServer(db, miniCA)
 
-	tokenStr, err := srv.Create(ctx, "https://sigil.example.com", "web-1", time.Hour)
+	tokenStr, err := srv.Create(ctx, "https://certfold.example.com", "web-1", time.Hour)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestVerifySaysWhyOnlyToTheTokenHolder(t *testing.T) {
 	ctx := context.Background()
 	db := mustOpenDB(t)
 	srv := NewServer(db, mustBootstrapCA(t))
-	used, err := srv.Create(ctx, "https://sigil.example.com", "web-1", time.Hour)
+	used, err := srv.Create(ctx, "https://certfold.example.com", "web-1", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func TestVerifySaysWhyOnlyToTheTokenHolder(t *testing.T) {
 	if _, err := srv.SignClientCert(ctx, newCSR(t, name), name, tokenID); err != nil {
 		t.Fatal(err)
 	}
-	expired, err := srv.Create(ctx, "https://sigil.example.com", "web-2", -time.Hour)
+	expired, err := srv.Create(ctx, "https://certfold.example.com", "web-2", -time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +358,7 @@ func TestVerifySaysWhyOnlyToTheTokenHolder(t *testing.T) {
 }
 
 // TestPostEnrollSaysWhyTheServerRefused checks that the reason the server
-// gives reaches the error that sigilc prints.
+// gives reaches the error that certfoldc prints.
 func TestPostEnrollSaysWhyTheServerRefused(t *testing.T) {
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "enrollment token was already used", http.StatusUnauthorized)
@@ -382,14 +382,14 @@ func TestPostEnrollSaysWhyTheServerRefused(t *testing.T) {
 func TestSignClientCertKeepsTokenWhenClientIsNotRecorded(t *testing.T) {
 	ctx := context.Background()
 	// A directory that store.Open creates: it refuses one that is not private.
-	path := filepath.Join(t.TempDir(), "data", "sigils.db")
+	path := filepath.Join(t.TempDir(), "data", "certfolds.db")
 	db, err := store.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	srv := NewServer(db, mustBootstrapCA(t))
-	tokenStr, err := srv.Create(ctx, "https://sigil.example.com", "web-1", time.Hour)
+	tokenStr, err := srv.Create(ctx, "https://certfold.example.com", "web-1", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +469,7 @@ func testServerCertPEM(t *testing.T, ts *httptest.Server) string {
 func TestSaveIdentity(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "client.yaml")
-	initial := "client:\n  name: web-1\n  server_url: https://sigil.example.com\n"
+	initial := "client:\n  name: web-1\n  server_url: https://certfold.example.com\n"
 	if err := os.WriteFile(cfgPath, []byte(initial), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -512,7 +512,7 @@ func absPath(path string) string {
 // would read as a number if it were not decoded into a string field.
 var clientYAMLByHand = "# managed by ops: do not reorder\n" +
 	"client:\n" +
-	"  server_url: https://sigil.example.com\n" +
+	"  server_url: https://certfold.example.com\n" +
 	"  name: web-1\n" +
 	"certificates:\n" +
 	"  api:\n" +
@@ -522,10 +522,10 @@ var clientYAMLByHand = "# managed by ops: do not reorder\n" +
 	"        password: 0123\n" +
 	"        mode: 0640 # read by the web server group\n"
 
-// TestSaveIdentityKeepsTheRestOfClientYAML covers `sigilc enroll` on a host
+// TestSaveIdentityKeepsTheRestOfClientYAML covers `certfoldc enroll` on a host
 // whose client.yaml the operator wrote, and the identity renewal of the
 // daemon, which saves through the same function: the comments, the order and
-// the text of the operator's file must survive, as they do when sigils edits
+// the text of the operator's file must survive, as they do when certfolds edits
 // server.yaml.
 func TestSaveIdentityKeepsTheRestOfClientYAML(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "client.yaml")
@@ -549,12 +549,12 @@ func TestSaveIdentityKeepsTheRestOfClientYAML(t *testing.T) {
 	}
 }
 
-// TestSaveIdentityKeepsValuesAsSigilcReadsThem covers the same save for a
-// value that sigilc reads as a string but a map[string]any reads as a number:
+// TestSaveIdentityKeepsValuesAsCertfoldcReadsThem covers the same save for a
+// value that certfoldc reads as a string but a map[string]any reads as a number:
 // the unquoted password 0123 is octal 83 to YAML, so a round trip through a
 // map writes 83, and the next load encrypts the PKCS#12 output with another
 // password than the one its consumers were given.
-func TestSaveIdentityKeepsValuesAsSigilcReadsThem(t *testing.T) {
+func TestSaveIdentityKeepsValuesAsCertfoldcReadsThem(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "client.yaml")
 	if err := os.WriteFile(path, []byte(clientYAMLByHand), 0o600); err != nil {
 		t.Fatal(err)

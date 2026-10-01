@@ -11,8 +11,8 @@ package server
 import (
 	"testing"
 
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
-	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
 )
 
 // r, the end of an action and a created token start no refresh while one is

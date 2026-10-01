@@ -45,7 +45,7 @@ func TestServerAcceptsTLS12(t *testing.T) {
 	}
 }
 
-// TestNewServerLimits checks the server that sigils runs: every timeout that
+// TestNewServerLimits checks the server that certfolds runs: every timeout that
 // keeps a slow or idle peer on the public port from holding a connection, and
 // the TLS 1.2 floor. TestServerAcceptsTLS12 shows that TLS 1.2 gets in; this
 // shows that nothing older does.

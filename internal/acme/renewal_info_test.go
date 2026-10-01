@@ -22,8 +22,8 @@ import (
 
 	"github.com/go-acme/lego/v4/certificate"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/store"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/store"
 )
 
 // ariTestAKI has bytes that base64url encodes with '-' and '_'.

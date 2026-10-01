@@ -38,7 +38,7 @@ func TestWriteFileUsesProtectedWindowsDACL(t *testing.T) {
 // everything written to it later: the file must be private as soon as it
 // exists, even in a directory whose files Users may read.
 func TestCreateTempIsPrivateBeforeWrite(t *testing.T) {
-	tmp, err := CreateTemp(usersReadableDir(t), ".sigil-private-*")
+	tmp, err := CreateTemp(usersReadableDir(t), ".certfold-private-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestCreateTempIsPrivateBeforeWrite(t *testing.T) {
 // without Administrators enabled needs the entry. The test asserts the case
 // of the shell it runs in.
 func TestCreateTempGrantsUserOnlyWithoutAdministrators(t *testing.T) {
-	tmp, err := CreateTemp(t.TempDir(), ".sigil-private-*")
+	tmp, err := CreateTemp(t.TempDir(), ".certfold-private-*")
 	if err != nil {
 		t.Fatal(err)
 	}

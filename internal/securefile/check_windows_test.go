@@ -24,9 +24,9 @@ func TestCheckSecurity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const path = `C:\ProgramData\Sigil`
+	const path = `C:\ProgramData\Certfold`
 	const trustedACEs = "(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
-	// What the errors advise: an owner sigil does not trust may have put
+	// What the errors advise: an owner certfold does not trust may have put
 	// anything in the directory.
 	const remove, check = "remove it, so that it is created again", "Check the files in it, then run:"
 	grant := `"*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F"`
@@ -257,7 +257,7 @@ func TestCreatedWithTrustedOwnerWhateverTheDefaultOwner(t *testing.T) {
 		t.Errorf("a directory WriteFile created: %v", err)
 	}
 
-	tmp, err := CreateTemp(dir, ".sigil-private-*")
+	tmp, err := CreateTemp(dir, ".certfold-private-*")
 	if err != nil {
 		t.Fatal(err)
 	}

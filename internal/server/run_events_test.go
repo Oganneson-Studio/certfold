@@ -24,11 +24,11 @@ import (
 
 	legolog "github.com/go-acme/lego/v4/log"
 
-	"github.com/Oganneson-Studio/sigil/internal/ca"
-	"github.com/Oganneson-Studio/sigil/internal/enroll"
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
-	"github.com/Oganneson-Studio/sigil/internal/logging"
-	"github.com/Oganneson-Studio/sigil/pkg/proto"
+	"github.com/Oganneson-Studio/certfold/internal/ca"
+	"github.com/Oganneson-Studio/certfold/internal/enroll"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
+	"github.com/Oganneson-Studio/certfold/pkg/proto"
 )
 
 // startRun runs the daemon on a loopback port with logs until the test ends,
@@ -97,12 +97,12 @@ func TestRunLogsEventsAndKeepsServerErrorsOutOfThem(t *testing.T) {
 	if len(events) == 0 {
 		t.Fatal("no events")
 	}
-	if e := events[0]; e.Level != "INFO" || e.Message != "sigils started" ||
+	if e := events[0]; e.Level != "INFO" || e.Message != "certfolds started" ||
 		!strings.Contains(e.Attrs, "version=") || !strings.Contains(e.Attrs, "listen="+listen+` public_url=""`) {
-		t.Errorf("first event = %+v, want INFO sigils started with the version, listen and public_url", e)
+		t.Errorf("first event = %+v, want INFO certfolds started with the version, listen and public_url", e)
 	}
-	if e := events[len(events)-1]; e.Level != "INFO" || e.Message != "sigils stopping" {
-		t.Errorf("last event = %+v, want INFO sigils stopping", e)
+	if e := events[len(events)-1]; e.Level != "INFO" || e.Message != "certfolds stopping" {
+		t.Errorf("last event = %+v, want INFO certfolds stopping", e)
 	}
 	// lego marks its lines, and the marks become levels.
 	if e := findEvent(t, events, "[api.example.com] acme: Obtaining bundled SAN certificate"); e.Level != "INFO" || e.Attrs != "component=lego" {
@@ -120,12 +120,12 @@ func TestRunLogsEventsAndKeepsServerErrorsOutOfThem(t *testing.T) {
 }
 
 // skipWithoutPipeAccess skips the test when err shows that this process may
-// not open the sigils pipe, which admits only SYSTEM and elevated
+// not open the certfolds pipe, which admits only SYSTEM and elevated
 // administrators.
 func skipWithoutPipeAccess(t *testing.T, err error) {
 	t.Helper()
 	if runtime.GOOS == "windows" && errors.Is(err, os.ErrPermission) {
-		t.Skip("the sigils pipe admits only SYSTEM and elevated administrators")
+		t.Skip("the certfolds pipe admits only SYSTEM and elevated administrators")
 	}
 }
 

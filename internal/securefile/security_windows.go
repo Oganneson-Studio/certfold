@@ -249,7 +249,7 @@ func checkSecurity(path string, descriptor *windows.SECURITY_DESCRIPTOR, trusted
 			case windows.ACCESS_ALLOWED_ACE_TYPE:
 			default:
 				// The SID of other types is not where ACCESS_ALLOWED_ACE has it.
-				return fmt.Errorf("%s has an access control entry of type %d, which sigil does not check; remove it", path, ace.Header.AceType)
+				return fmt.Errorf("%s has an access control entry of type %d, which certfold does not check; remove it", path, ace.Header.AceType)
 			}
 			sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
 			if ace.Mask&forbidden == 0 || sid.Equals(creatorOwner) || slices.ContainsFunc(trusted, sid.Equals) ||

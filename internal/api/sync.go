@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/ca"
-	"github.com/Oganneson-Studio/sigil/pkg/proto"
+	"github.com/Oganneson-Studio/certfold/internal/ca"
+	"github.com/Oganneson-Studio/certfold/pkg/proto"
 )
 
 // syncMaxWait is how long GET /v1/sync holds a request whose view has not
@@ -18,7 +18,7 @@ import (
 var syncMaxWait = proto.SyncMaxWait
 
 // maxSyncsPerClient is how many GET /v1/sync requests one client may have in
-// progress. sigilc has one; one it cancelled may linger until the server sees
+// progress. certfoldc has one; one it cancelled may linger until the server sees
 // the cancellation.
 const maxSyncsPerClient = 4
 
@@ -45,7 +45,7 @@ func (h *handlers) syncCertificates(w http.ResponseWriter, r *http.Request) {
 
 	// Every waiting request reads the store again at each change, and each
 	// read holds up the other readers and writers, so a client may not pile
-	// them up. sigilc backs off on the 429.
+	// them up. certfoldc backs off on the 429.
 	h.syncMu.Lock()
 	if h.syncing[clientName] >= maxSyncsPerClient {
 		h.syncMu.Unlock()

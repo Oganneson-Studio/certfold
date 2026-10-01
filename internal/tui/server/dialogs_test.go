@@ -10,8 +10,8 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/Oganneson-Studio/sigil/internal/api"
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/api"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
 )
 
 // A dialog gives its text and padding the width it is allowed, at most 64
@@ -83,7 +83,7 @@ func TestRenewalNotWaitedForMayStillFinish(t *testing.T) {
 	fake := newFake(3)
 	fake.setActionErr(fmt.Errorf("ipc request: %w", context.DeadlineExceeded))
 	m, _ := press(t, onTab(t, fake, tabCertificates), "R", "y")
-	if !shows(m, "the renewal may still finish in the daemon: see `sigils events` or `sigils cert show mail`") {
+	if !shows(m, "the renewal may still finish in the daemon: see `certfolds events` or `certfolds cert show mail`") {
 		t.Errorf("status after a renewal that timed out: %q", plain(m))
 	}
 }

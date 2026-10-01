@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Oganneson-Studio/sigil/internal/securefile"
+	"github.com/Oganneson-Studio/certfold/internal/securefile"
 )
 
 // writeConfigFile atomically replaces the file at path with data. When path
@@ -21,7 +21,7 @@ func writeConfigFile(path string, data []byte) error {
 	if err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
-	tmp, err := securefile.CreateTemp(filepath.Dir(target), ".sigil-private-*")
+	tmp, err := securefile.CreateTemp(filepath.Dir(target), ".certfold-private-*")
 	if err != nil {
 		return fmt.Errorf("write %s: %w", target, err)
 	}

@@ -147,28 +147,28 @@ func TestEnvValuesAreLiteralScalars(t *testing.T) {
 	tests := []struct {
 		name   string
 		server string // replaces the data_dir line of validServerYAML
-		value  string // value of SIGIL_TEST_VALUE
+		value  string // value of CERTFOLD_TEST_VALUE
 		ipc    bool   // the value under test is ipc_socket, not data_dir
 		want   string
 	}{
 		{
 			name:   "backslash escape after a variable in a double-quoted value",
-			server: `data_dir: "${SIGIL_TEST_VALUE}\\Sigil"`,
+			server: `data_dir: "${CERTFOLD_TEST_VALUE}\\Certfold"`,
 			value:  absPath(`/srv\ProgramData`),
-			want:   absPath(`/srv\ProgramData\Sigil`),
+			want:   absPath(`/srv\ProgramData\Certfold`),
 		},
 		{
 			name: "comment marker inside a plain value",
 			server: validDataDirLine + `
-  ipc_socket: ${SIGIL_TEST_VALUE}`,
-			value: absPath("/run/sigil/a.sock #x"),
+  ipc_socket: ${CERTFOLD_TEST_VALUE}`,
+			value: absPath("/run/certfold/a.sock #x"),
 			ipc:   true,
-			want:  absPath("/run/sigil/a.sock #x"),
+			want:  absPath("/run/certfold/a.sock #x"),
 		},
 		{
 			name: "backslashes inside a double-quoted value",
 			server: validDataDirLine + `
-  ipc_socket: "${SIGIL_TEST_VALUE}"`,
+  ipc_socket: "${CERTFOLD_TEST_VALUE}"`,
 			value: absPath(`/run/\\.\pipe\custom`),
 			ipc:   true,
 			want:  absPath(`/run/\\.\pipe\custom`),
@@ -176,7 +176,7 @@ func TestEnvValuesAreLiteralScalars(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("SIGIL_TEST_VALUE", tt.value)
+			t.Setenv("CERTFOLD_TEST_VALUE", tt.value)
 			src := withServerSection(tt.server)
 
 			cfg, err := ParseServer([]byte(src))
@@ -203,15 +203,15 @@ func TestEnvValuesAreLiteralScalars(t *testing.T) {
 }
 
 func TestReadServerFieldExpandsAliasesLikeLoadServer(t *testing.T) {
-	t.Setenv("SIGIL_TEST_HOST", "sigil.example.com")
+	t.Setenv("CERTFOLD_TEST_HOST", "certfold.example.com")
 	// Both paths alias one anchored value, that of another field, which
 	// server.public_url cannot be: it may not hold "$". "$$$$" shows that
 	// each path gets the value expanded exactly once.
-	path := writeServerYAML(t, withServerSection(`tls_cert_file: &base "`+absPath("/srv/${SIGIL_TEST_HOST}/$$$$")+`"
+	path := writeServerYAML(t, withServerSection(`tls_cert_file: &base "`+absPath("/srv/${CERTFOLD_TEST_HOST}/$$$$")+`"
   tls_key_file: *base
   data_dir: *base
   ipc_socket: *base`))
-	want := absPath("/srv/sigil.example.com/$$")
+	want := absPath("/srv/certfold.example.com/$$")
 
 	cfg, err := LoadServer(path)
 	if err != nil {
@@ -232,27 +232,27 @@ func TestReadServerFieldExpandsAliasesLikeLoadServer(t *testing.T) {
 }
 
 func TestEnvValueCannotAddYAMLStructure(t *testing.T) {
-	t.Setenv("SIGIL_TEST_DOMAINS", "[a.example.com, b.example.com]")
-	src := strings.Replace(validServerYAML, `domains: ["internal.example.com"]`, `domains: ${SIGIL_TEST_DOMAINS}`, 1)
+	t.Setenv("CERTFOLD_TEST_DOMAINS", "[a.example.com, b.example.com]")
+	src := strings.Replace(validServerYAML, `domains: ["internal.example.com"]`, `domains: ${CERTFOLD_TEST_DOMAINS}`, 1)
 	if _, err := ParseServer([]byte(src)); err == nil {
 		t.Fatal("an environment value was parsed as a YAML sequence")
 	}
 
-	t.Setenv("SIGIL_TEST_DATA_DIR", absPath("/srv/sigils\nfoo_bar: 1"))
-	cfg, err := ParseServer([]byte(withServerSection(`data_dir: ${SIGIL_TEST_DATA_DIR}`)))
+	t.Setenv("CERTFOLD_TEST_DATA_DIR", absPath("/srv/certfolds\nfoo_bar: 1"))
+	cfg, err := ParseServer([]byte(withServerSection(`data_dir: ${CERTFOLD_TEST_DATA_DIR}`)))
 	if err != nil {
 		t.Fatalf("ParseServer: %v", err)
 	}
-	if cfg.Server.DataDir != absPath("/srv/sigils\nfoo_bar: 1") {
+	if cfg.Server.DataDir != absPath("/srv/certfolds\nfoo_bar: 1") {
 		t.Fatalf("data_dir = %q", cfg.Server.DataDir)
 	}
 }
 
 func TestEnvValuesInPlainScalarsResolveTheirType(t *testing.T) {
-	t.Setenv("SIGIL_TEST_SKIP", "true")
-	t.Setenv("SIGIL_TEST_TOKEN", "12345")
+	t.Setenv("CERTFOLD_TEST_SKIP", "true")
+	t.Setenv("CERTFOLD_TEST_TOKEN", "12345")
 	src := strings.Replace(validServerYAML, `api_token: "tok"`,
-		`api_token: "${SIGIL_TEST_TOKEN}"`+"\n    skip_propagation_check: ${SIGIL_TEST_SKIP}", 1)
+		`api_token: "${CERTFOLD_TEST_TOKEN}"`+"\n    skip_propagation_check: ${CERTFOLD_TEST_SKIP}", 1)
 	src = strings.Replace(src, `eab_hmac: "h"`, `eab_hmac: "h$$1"`, 1)
 	cfg, err := ParseServer([]byte(src))
 	if err != nil {
@@ -269,9 +269,9 @@ func TestEnvValuesInPlainScalarsResolveTheirType(t *testing.T) {
 		t.Errorf("eab_hmac = %q, want h$1", got)
 	}
 
-	t.Setenv("SIGIL_TEST_RENEW", "48h")
-	clientSrc := strings.Replace(validClientYAML, `server_url: "https://sigil.example.com:8443"`, `server_url: "https://sigil.example.com:8443"
-  identity_renew_before: ${SIGIL_TEST_RENEW}`, 1)
+	t.Setenv("CERTFOLD_TEST_RENEW", "48h")
+	clientSrc := strings.Replace(validClientYAML, `server_url: "https://certfold.example.com:8443"`, `server_url: "https://certfold.example.com:8443"
+  identity_renew_before: ${CERTFOLD_TEST_RENEW}`, 1)
 	clientCfg, err := ParseClient([]byte(clientSrc))
 	if err != nil {
 		t.Fatalf("ParseClient: %v", err)
@@ -289,20 +289,20 @@ func TestEnvExpansionErrorNamesTheValuePath(t *testing.T) {
 	}{
 		{
 			name: "mapping value",
-			src:  strings.Replace(validServerYAML, `api_token: "tok"`, `api_token: "${SIGIL_TEST_UNSET_VALUE}"`, 1),
+			src:  strings.Replace(validServerYAML, `api_token: "tok"`, `api_token: "${CERTFOLD_TEST_UNSET_VALUE}"`, 1),
 			path: "dns_providers.cf-main.api_token",
 		},
 		{
 			name: "sequence item",
 			// Inside [...] a ${...} value must be quoted: '{' is flow syntax.
-			src:  strings.Replace(validServerYAML, "subscribers: [web-1, web-2]", `subscribers: [web-1, "${SIGIL_TEST_UNSET_VALUE}"]`, 1),
+			src:  strings.Replace(validServerYAML, "subscribers: [web-1, web-2]", `subscribers: [web-1, "${CERTFOLD_TEST_UNSET_VALUE}"]`, 1),
 			path: "certificates[0].subscribers[1]",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := ParseServer([]byte(tt.src))
-			if err == nil || !strings.Contains(err.Error(), tt.path+`: environment variable "SIGIL_TEST_UNSET_VALUE" is not set`) {
+			if err == nil || !strings.Contains(err.Error(), tt.path+`: environment variable "CERTFOLD_TEST_UNSET_VALUE" is not set`) {
 				t.Fatalf("expected an unset variable error at %s, got %v", tt.path, err)
 			}
 		})
@@ -310,7 +310,7 @@ func TestEnvExpansionErrorNamesTheValuePath(t *testing.T) {
 }
 
 func TestEnvExpansionIgnoresComments(t *testing.T) {
-	src := "# set ${SIGIL_TEST_UNSET_IN_COMMENT} before starting\n" + validServerYAML
+	src := "# set ${CERTFOLD_TEST_UNSET_IN_COMMENT} before starting\n" + validServerYAML
 	if _, err := ParseServer([]byte(src)); err != nil {
 		t.Fatalf("a variable in a comment was expanded: %v", err)
 	}
@@ -318,8 +318,8 @@ func TestEnvExpansionIgnoresComments(t *testing.T) {
 
 func TestEnvExpansionKeepsLongValues(t *testing.T) {
 	long := strings.Repeat("secret words: #1 ", 10)
-	t.Setenv("SIGIL_TEST_LONG", long)
-	src := strings.Replace(validServerYAML, `eab_hmac: "h"`, `eab_hmac: ${SIGIL_TEST_LONG}`, 1)
+	t.Setenv("CERTFOLD_TEST_LONG", long)
+	src := strings.Replace(validServerYAML, `eab_hmac: "h"`, `eab_hmac: ${CERTFOLD_TEST_LONG}`, 1)
 	cfg, err := ParseServer([]byte(src))
 	if err != nil {
 		t.Fatalf("ParseServer: %v", err)
@@ -333,8 +333,8 @@ func TestEnvExpansionKeepsLongValues(t *testing.T) {
 // same text written literally in a plain scalar would lose its outer spaces.
 func TestEnvValuesAreNotTrimmed(t *testing.T) {
 	const value = "  spaced secret \n"
-	t.Setenv("SIGIL_TEST_VALUE", value)
-	src := strings.Replace(validServerYAML, `eab_hmac: "h"`, `eab_hmac: ${SIGIL_TEST_VALUE}`, 1)
+	t.Setenv("CERTFOLD_TEST_VALUE", value)
+	src := strings.Replace(validServerYAML, `eab_hmac: "h"`, `eab_hmac: ${CERTFOLD_TEST_VALUE}`, 1)
 	cfg, err := ParseServer([]byte(src))
 	if err != nil {
 		t.Fatalf("ParseServer: %v", err)
@@ -351,10 +351,10 @@ func TestEnvExpansionLeavesKeysAlone(t *testing.T) {
 	src := strings.Replace(validServerYAML, "dns_providers:\n", `dns_providers:
   p:
     type: route53
-    "k${SIGIL_TEST_UNSET_KEY}": v
+    "k${CERTFOLD_TEST_UNSET_KEY}": v
 `, 1)
 	_, err := ParseServer([]byte(src))
-	if want := `dns_providers.p.k${SIGIL_TEST_UNSET_KEY}: unknown field`; err == nil || !strings.Contains(err.Error(), want) {
+	if want := `dns_providers.p.k${CERTFOLD_TEST_UNSET_KEY}: unknown field`; err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("error = %v, want %s: a mapping key was expanded", err, want)
 	}
 }
@@ -384,23 +384,23 @@ func TestDecodeWithEnvKeepsBlockScalars(t *testing.T) {
 func TestDecodeWithEnvMatchesExpandedTree(t *testing.T) {
 	const iterations = 20000
 	templates := []string{
-		"s: ${SIGIL_TEST_FUZZ}\n",
-		"s: \"${SIGIL_TEST_FUZZ}\"\n",
-		"s: '${SIGIL_TEST_FUZZ}'\n",
-		"s: |\n  ${SIGIL_TEST_FUZZ}\n",
-		"s: >\n  ${SIGIL_TEST_FUZZ}\n",
-		"s: |-\n  ${SIGIL_TEST_FUZZ}\n",
-		"s: >-\n  ${SIGIL_TEST_FUZZ}\n",
-		"s: |+\n  ${SIGIL_TEST_FUZZ}\n\n",
-		"m:\n  k: ${SIGIL_TEST_FUZZ}\n",
-		"l:\n  - ${SIGIL_TEST_FUZZ}\n",
+		"s: ${CERTFOLD_TEST_FUZZ}\n",
+		"s: \"${CERTFOLD_TEST_FUZZ}\"\n",
+		"s: '${CERTFOLD_TEST_FUZZ}'\n",
+		"s: |\n  ${CERTFOLD_TEST_FUZZ}\n",
+		"s: >\n  ${CERTFOLD_TEST_FUZZ}\n",
+		"s: |-\n  ${CERTFOLD_TEST_FUZZ}\n",
+		"s: >-\n  ${CERTFOLD_TEST_FUZZ}\n",
+		"s: |+\n  ${CERTFOLD_TEST_FUZZ}\n\n",
+		"m:\n  k: ${CERTFOLD_TEST_FUZZ}\n",
+		"l:\n  - ${CERTFOLD_TEST_FUZZ}\n",
 	}
 	// Blanks, every YAML line break (NEL, LS and PS are added by code point),
 	// YAML indicator characters, and a few characters that resolve to numbers
 	// or null.
 	alphabet := append([]rune("ab01.~ \t\n\r:#-?[]{},&*!|>'\"%@`\\$"), 0x85, 0x2028, 0x2029)
-	rng := rand.New(rand.NewPCG(1, 2)) // fixed seed: failures are reproducible
-	t.Setenv("SIGIL_TEST_FUZZ", "x")   // restores the variable after the test
+	rng := rand.New(rand.NewPCG(1, 2))  // fixed seed: failures are reproducible
+	t.Setenv("CERTFOLD_TEST_FUZZ", "x") // restores the variable after the test
 
 	failures := 0
 	for i := range iterations {
@@ -409,7 +409,7 @@ func TestDecodeWithEnvMatchesExpandedTree(t *testing.T) {
 			runes[j] = alphabet[rng.IntN(len(alphabet))]
 		}
 		value := string(runes)
-		if err := os.Setenv("SIGIL_TEST_FUZZ", value); err != nil {
+		if err := os.Setenv("CERTFOLD_TEST_FUZZ", value); err != nil {
 			t.Fatal(err)
 		}
 		raw := []byte(templates[i%len(templates)])

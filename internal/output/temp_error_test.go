@@ -8,12 +8,12 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/config"
 )
 
 // reconcileErrorTwice runs Reconcile twice on the same failure and returns
 // the error, which must read the same both times and name no temporary file:
-// sigilc logs its last error again whenever the text changes, so a random
+// certfoldc logs its last error again whenever the text changes, so a random
 // temporary file name in it would log the failure on every round.
 func reconcileErrorTwice(t *testing.T, b *CertBundle, spec config.OutputSpec) string {
 	t.Helper()
@@ -28,7 +28,7 @@ func reconcileErrorTwice(t *testing.T, b *CertBundle, spec config.OutputSpec) st
 	if texts[0] != texts[1] {
 		t.Fatalf("the same failure reads differently:\n%s\n%s", texts[0], texts[1])
 	}
-	if strings.Contains(texts[0], ".sigil-tmp-") {
+	if strings.Contains(texts[0], ".certfold-tmp-") {
 		t.Fatalf("error names a temporary file: %s", texts[0])
 	}
 	return texts[0]
@@ -59,8 +59,8 @@ func TestWithoutTempName(t *testing.T) {
 		err  error
 		want error
 	}{
-		{&os.PathError{Op: "write", Path: "/etc/ssl/.sigil-tmp-1", Err: cause}, cause},
-		{&os.LinkError{Op: "rename", Old: "/etc/ssl/.sigil-tmp-1", New: "/etc/ssl/cert.pem", Err: cause}, cause},
+		{&os.PathError{Op: "write", Path: "/etc/ssl/.certfold-tmp-1", Err: cause}, cause},
+		{&os.LinkError{Op: "rename", Old: "/etc/ssl/.certfold-tmp-1", New: "/etc/ssl/cert.pem", Err: cause}, cause},
 		{other, other},
 	} {
 		if got := withoutTempName(tc.err); got != tc.want {

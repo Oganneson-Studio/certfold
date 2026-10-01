@@ -21,9 +21,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/securefile"
-	"github.com/Oganneson-Studio/sigil/pkg/proto"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/securefile"
+	"github.com/Oganneson-Studio/certfold/pkg/proto"
 )
 
 // KeyAndCSR holds the generated private key (PEM) and CSR (DER bytes).
@@ -55,9 +55,9 @@ func GenerateKeyAndCSR(name string) (*KeyAndCSR, error) {
 // so tests can stand in for a publicly trusted CA.
 var SystemCertPool = x509.SystemCertPool
 
-// ServerRoots returns the roots that authenticate the sigils HTTPS endpoint:
+// ServerRoots returns the roots that authenticate the certfolds HTTPS endpoint:
 // the operating system trust store, for a publicly trusted
-// server.tls_cert_file, plus the sigil mini-CA in caCertPEM, which signs the
+// server.tls_cert_file, plus the certfold mini-CA in caCertPEM, which signs the
 // default server certificate. Enrollment and every later request use it.
 func ServerRoots(caCertPEM string) (*x509.CertPool, error) {
 	roots, err := SystemCertPool()
@@ -72,7 +72,7 @@ func ServerRoots(caCertPEM string) (*x509.CertPool, error) {
 
 // ErrUnusableAnswer marks the errors of PostEnroll that come after the server
 // answered the enrollment: it has taken the token and now accepts only the
-// identity it issued, which sigilc could not use.
+// identity it issued, which certfoldc could not use.
 var ErrUnusableAnswer = errors.New("the server's answer cannot be used")
 
 // PostEnroll sends the enroll request for tokenStr, which DecodeToken read as
@@ -81,7 +81,7 @@ var ErrUnusableAnswer = errors.New("the server's answer cannot be used")
 //
 // The token carries the expected server CA certificate. TLS is verified against
 // that pinned CA and the system roots before the bearer token or CSR is sent.
-// The client certificate is checked as sigilc checks a renewed identity: it
+// The client certificate is checked as certfoldc checks a renewed identity: it
 // must be for the token's client name, chain to the token's CA for client
 // authentication, and hold the key of the CSR. The identity to save is the
 // token's CA and this certificate.
@@ -121,7 +121,7 @@ func PostEnroll(token *Token, tokenStr string, csrDER []byte) (string, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		// The server says why, such as that the token was already used. The
-		// text comes from the network: sigilc makes the error one line.
+		// text comes from the network: certfoldc makes the error one line.
 		reason, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
 		return "", fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(reason)))
 	}
@@ -137,7 +137,7 @@ func PostEnroll(token *Token, tokenStr string, csrDER []byte) (string, error) {
 }
 
 // checkIssued checks the client certificate certPEM that the server issued at
-// enrollment, and returns it re-encoded, so that what sigilc saves is what
+// enrollment, and returns it re-encoded, so that what certfoldc saves is what
 // was checked. Its errors quote the network.
 func checkIssued(token *Token, certPEM string, csr *x509.CertificateRequest) (string, error) {
 	block, _ := pem.Decode([]byte(certPEM))

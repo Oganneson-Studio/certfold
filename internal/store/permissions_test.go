@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Oganneson-Studio/sigil/internal/securefile"
+	"github.com/Oganneson-Studio/certfold/internal/securefile"
 )
 
 func TestOpenProtectsSQLiteFiles(t *testing.T) {
@@ -18,7 +18,7 @@ func TestOpenProtectsSQLiteFiles(t *testing.T) {
 		{name: "path with parameters", params: "?_pragma=busy_timeout(10000)"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "data", "sigils.db")
+			path := filepath.Join(t.TempDir(), "data", "certfolds.db")
 			db, err := Open(path + tt.params)
 			if err != nil {
 				t.Fatalf("Open: %v", err)
@@ -39,7 +39,7 @@ func TestOpenProtectsSQLiteFiles(t *testing.T) {
 
 func TestOpenCreatesMissingPrivateDirectory(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "private", "store")
-	path := filepath.Join(dir, "sigils.db")
+	path := filepath.Join(dir, "certfolds.db")
 	db, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -60,7 +60,7 @@ func TestOpenRefusesDirectoryOthersMayAccess(t *testing.T) {
 	makeSQLiteDirectoryBroad(t, dir)
 	before := directorySecurity(t, dir)
 
-	db, err := Open(filepath.Join(dir, "sigils.db"))
+	db, err := Open(filepath.Join(dir, "certfolds.db"))
 	if err == nil {
 		_ = db.Close()
 		t.Fatal("Open used a directory that other accounts may access")
@@ -79,7 +79,7 @@ func TestOpenRefusesDirectoryOthersMayAccess(t *testing.T) {
 }
 
 func TestOpenPreservesExistingDatabase(t *testing.T) {
-	path := filepath.Join(privateDirectory(t), "sigils.db")
+	path := filepath.Join(privateDirectory(t), "certfolds.db")
 	db, err := Open(path)
 	if err != nil {
 		t.Fatalf("first Open: %v", err)

@@ -11,7 +11,7 @@ import (
 )
 
 // TestMTLSRequestsRequireTLS13 checks that requests with the client identity
-// keep requiring TLS 1.3. sigils accepts TLS 1.2 as well, but only for the
+// keep requiring TLS 1.3. certfolds accepts TLS 1.2 as well, but only for the
 // sake of the install scripts.
 func TestMTLSRequestsRequireTLS13(t *testing.T) {
 	now := time.Now()

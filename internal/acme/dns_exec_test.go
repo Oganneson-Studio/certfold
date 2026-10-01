@@ -20,15 +20,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
 )
 
 // The test binary doubles as the program of an exec provider: when
 // testHookEnv names a mode, TestMain runs that hook instead of the tests.
 const (
-	testHookEnv    = "SIGIL_TEST_DNS_HOOK"
-	testHookDirEnv = "SIGIL_TEST_DNS_HOOK_DIR"
+	testHookEnv    = "CERTFOLD_TEST_DNS_HOOK"
+	testHookDirEnv = "CERTFOLD_TEST_DNS_HOOK_DIR"
 
 	// Sentinels that an exec provider error must never contain.
 	argvSecret   = "argv-secret-7f3a"
@@ -306,7 +306,7 @@ func TestExecProviderKillsProgramAfterTimeout(t *testing.T) {
 	}
 }
 
-// TestExecProviderKillsTheProcessesItsProgramStarted covers sigils giving up
+// TestExecProviderKillsTheProcessesItsProgramStarted covers certfolds giving up
 // on an issuance at shutdown: the ctx the provider was built with ends, and
 // its running program is killed, not waited for, along with the processes it
 // started. Programs are often interpreters, such as /bin/sh or

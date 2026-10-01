@@ -11,9 +11,9 @@ import (
 // on Windows, a leading \ makes a path absolute: nothing expands ~, and \dir
 // is on the current drive, which that of a service need not be.
 func relativePaths() []string {
-	paths := []string{"var/lib/sigil", "./sigil", "~/sigil"}
+	paths := []string{"var/lib/certfold", "./certfold", "~/certfold"}
 	if runtime.GOOS == "windows" {
-		paths = append(paths, `\var\lib\sigil`, `C:sigil`)
+		paths = append(paths, `\var\lib\certfold`, `C:certfold`)
 	}
 	return paths
 }
@@ -22,9 +22,9 @@ func relativePaths() []string {
 // endpoint of the IPC is a named pipe, whose path is a UNC path.
 func absolutePaths() []string {
 	if runtime.GOOS == "windows" {
-		return []string{`C:\ProgramData\Sigil`, `\\.\pipe\sigil-custom`, `\\fileserver\share\sigil`}
+		return []string{`C:\ProgramData\Certfold`, `\\.\pipe\certfold-custom`, `\\fileserver\share\certfold`}
 	}
-	return []string{"/var/lib/sigil", "/run/sigil/custom.sock"}
+	return []string{"/var/lib/certfold", "/run/certfold/custom.sock"}
 }
 
 // pathFields are the fields of server.yaml and client.yaml that name a file,
@@ -36,8 +36,8 @@ var pathFields = []struct {
 	yaml   string
 }{
 	{"server.data_dir", true, withServerSection(`data_dir: 'PATH'`)},
-	{"server.tls_cert_file", true, withServerSection(validDataDirLine + "\n  tls_cert_file: 'PATH'\n  tls_key_file: '" + absPath("/etc/sigil/tls.key") + "'")},
-	{"server.tls_key_file", true, withServerSection(validDataDirLine + "\n  tls_cert_file: '" + absPath("/etc/sigil/tls.crt") + "'\n  tls_key_file: 'PATH'")},
+	{"server.tls_cert_file", true, withServerSection(validDataDirLine + "\n  tls_cert_file: 'PATH'\n  tls_key_file: '" + absPath("/etc/certfold/tls.key") + "'")},
+	{"server.tls_key_file", true, withServerSection(validDataDirLine + "\n  tls_cert_file: '" + absPath("/etc/certfold/tls.crt") + "'\n  tls_key_file: 'PATH'")},
 	{"server.ipc_socket", true, withServerSection(validDataDirLine + "\n  ipc_socket: 'PATH'")},
 	{"dns_providers.p1.service_account_file", true, dnsServerYAML("dns_providers:\n  p1:\n    type: gcloud\n    service_account_file: 'PATH'\n")},
 	{"client.data_dir", false, validClientYAML + "  data_dir: 'PATH'\n"},
@@ -77,16 +77,16 @@ func TestPathFieldsMustBeAbsolute(t *testing.T) {
 // A path is checked once ${VAR} is expanded: the value of the variable
 // decides, whether the variable or its default gives it.
 func TestPathFieldsAreCheckedAfterExpansion(t *testing.T) {
-	t.Setenv("SIGIL_TEST_RELATIVE", "sigil")
-	t.Setenv("SIGIL_TEST_ROOT", absPath(""))
+	t.Setenv("CERTFOLD_TEST_RELATIVE", "certfold")
+	t.Setenv("CERTFOLD_TEST_ROOT", absPath(""))
 	for _, tt := range []struct {
 		value string
 		want  string // the expanded path, if it is relative
 	}{
-		{value: "${SIGIL_TEST_RELATIVE}/data", want: "sigil/data"},
-		{value: "${SIGIL_TEST_UNSET:-data}", want: "data"},
-		{value: "${SIGIL_TEST_ROOT}/var/lib/${SIGIL_TEST_RELATIVE}"},
-		{value: "${SIGIL_TEST_UNSET:-" + absPath("/var/lib/sigil") + "}"},
+		{value: "${CERTFOLD_TEST_RELATIVE}/data", want: "certfold/data"},
+		{value: "${CERTFOLD_TEST_UNSET:-data}", want: "data"},
+		{value: "${CERTFOLD_TEST_ROOT}/var/lib/${CERTFOLD_TEST_RELATIVE}"},
+		{value: "${CERTFOLD_TEST_UNSET:-" + absPath("/var/lib/certfold") + "}"},
 	} {
 		err := parse(true, withServerSection(`data_dir: "`+tt.value+`"`))
 		if tt.want == "" {

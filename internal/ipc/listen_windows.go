@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	serverPipe = `\\.\pipe\sigil-server`
-	clientPipe = `\\.\pipe\sigil-client`
+	serverPipe = `\\.\pipe\certfold-server`
+	clientPipe = `\\.\pipe\certfold-client`
 	// DACL: local system + built-in administrators only.
 	pipeSddl = "D:P(A;;GA;;;SY)(A;;GA;;;BA)"
 )
@@ -125,8 +125,8 @@ func checkPipeOwner(sd *windows.SECURITY_DESCRIPTOR) error {
 	return nil
 }
 
-// DefaultServerSocket returns the default sigils IPC named pipe.
+// DefaultServerSocket returns the default certfolds IPC named pipe.
 func DefaultServerSocket() string { return serverPipe }
 
-// DefaultClientSocket returns the default sigilc IPC named pipe.
+// DefaultClientSocket returns the default certfoldc IPC named pipe.
 func DefaultClientSocket() string { return clientPipe }

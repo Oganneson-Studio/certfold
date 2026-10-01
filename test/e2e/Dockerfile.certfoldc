@@ -1,0 +1,15 @@
+FROM golang:1.26-alpine AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/certfoldc ./cmd/certfoldc
+
+FROM alpine:3.20
+RUN apk add --no-cache curl ca-certificates
+# Under Docker on Linux the e2e runs the container as the host's user, who
+# must be able to create the IPC socket in its default directory and the
+# outputs in /cert-output.
+RUN mkdir -p /var/run/certfold /cert-output && chmod 1777 /var/run/certfold /cert-output
+COPY --from=builder /out/certfoldc /usr/local/bin/certfoldc
+ENTRYPOINT ["certfoldc", "serve"]

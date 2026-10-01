@@ -17,5 +17,5 @@ func programDataPath(filename string) string {
 	if base == "" {
 		base = `C:\ProgramData`
 	}
-	return base + `\Sigil\` + filename
+	return base + `\Certfold\` + filename
 }

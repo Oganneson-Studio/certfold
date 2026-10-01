@@ -10,16 +10,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/securefile"
+	"github.com/Oganneson-Studio/certfold/internal/securefile"
 )
 
 func testIPCSocket(t *testing.T) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		return fmt.Sprintf(`\\.\pipe\sigil-client-test-%d-%d`, os.Getpid(), time.Now().UnixNano())
+		return fmt.Sprintf(`\\.\pipe\certfold-client-test-%d-%d`, os.Getpid(), time.Now().UnixNano())
 	}
 	// Unix socket paths are length-limited; keep this one short.
-	dir, err := os.MkdirTemp("", "sigil")
+	dir, err := os.MkdirTemp("", "certfold")
 	if err != nil {
 		t.Fatal(err)
 	}

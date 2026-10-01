@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
 )
 
 // TestDueFollowsRenewAt covers the yellow Not After: a certificate is due
@@ -65,7 +65,7 @@ func TestViewShowsState(t *testing.T) {
 	}
 	view := plain(newModel(t, f))
 	for _, want := range []string{
-		"web-1", "https://sigil.example.com", "online", "Last pull:  2026-09-28 10:11:12", "Last error: sync: server returned 503",
+		"web-1", "https://certfold.example.com", "online", "Last pull:  2026-09-28 10:11:12", "Last error: sync: server returned 503",
 		"Name      Not After             Outputs  on_change  Pending",
 		"api-prod  " + time.Now().Add(60*24*time.Hour+time.Hour).Format("2006-01-02") + " (60d)      3        yes        yes",
 	} {

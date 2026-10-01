@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Oganneson-Studio/sigil/internal/securefile"
+	"github.com/Oganneson-Studio/certfold/internal/securefile"
 )
 
 // storeFileName names the private store in client.data_dir. The server's
@@ -33,7 +33,7 @@ type storeFile struct {
 }
 
 // loadStore reads the store in dataDir. A missing file is an empty store. An
-// existing one is made private before it is read, as sigils tightens its
+// existing one is made private before it is read, as certfolds tightens its
 // SQLite files when it reopens them. A file that is not valid JSON is logged
 // and read as an empty store: the next sync downloads the material again,
 // and only the pending on_change runs are lost.

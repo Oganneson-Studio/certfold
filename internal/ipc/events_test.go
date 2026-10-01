@@ -11,7 +11,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
 )
 
 // logEvents returns a Ring holding the events "event 1" ... "event n".
@@ -158,13 +158,13 @@ func TestEventsRouteFollowsDeps(t *testing.T) {
 		name string
 		deps ServerDeps
 	}{
-		{"sigils", ServerDeps{
+		{"certfolds", ServerDeps{
 			DB:           mustOpenDB(t),
 			Server:       &ServerControlDeps{},
 			Certificates: certDeps(testCertConfig()),
 			Tokens:       &TokenControlDeps{},
 		}},
-		{"sigilc", ServerDeps{Client: &ClientControlDeps{}}},
+		{"certfoldc", ServerDeps{Client: &ClientControlDeps{}}},
 	}
 	for _, daemon := range daemons {
 		for _, ring := range []*logging.Ring{logEvents(1), nil} {

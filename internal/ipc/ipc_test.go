@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/store"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/store"
 )
 
 func mustOpenDB(t *testing.T) *store.DB {
@@ -399,7 +399,7 @@ func TestCreateToken(t *testing.T) {
 		TokenID:             "0123456789abcdef0123456789abcdef",
 		ExpiresAt:           time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC),
 		Revoked:             1,
-		ServerURL:           "https://sigil.example.com",
+		ServerURL:           "https://certfold.example.com",
 		PublicURLConfigured: true,
 	}
 	h := &ipcHandlers{deps: ServerDeps{Tokens: &TokenControlDeps{
@@ -449,7 +449,7 @@ func TestCreateTokenReportsDaemonRejection(t *testing.T) {
 func TestCreateTokenRefusesAnswerOfOutdatedDaemon(t *testing.T) {
 	for _, answer := range []string{
 		`{"token":"0123456789abcdef"}`,
-		`{"token":"token","server_url":"https://sigil.example.com","public_url_configured":true}`,
+		`{"token":"token","server_url":"https://certfold.example.com","public_url_configured":true}`,
 	} {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -458,7 +458,7 @@ func TestCreateTokenRefusesAnswerOfOutdatedDaemon(t *testing.T) {
 		}))
 		created, err := newTestClient(ts).CreateToken(context.Background(), CreateTokenRequest{Name: "web-1", TTL: time.Hour})
 		ts.Close()
-		if err == nil || !strings.Contains(err.Error(), "restart the sigils service") {
+		if err == nil || !strings.Contains(err.Error(), "restart the certfolds service") {
 			t.Errorf("answer %s: token %+v, error %v; want a request to restart the daemon", answer, created, err)
 		}
 	}
@@ -628,7 +628,7 @@ func TestClientControlEndpoints(t *testing.T) {
 		State: func(context.Context) (ClientState, error) {
 			return ClientState{
 				Name:      "web-1",
-				ServerURL: "https://sigil.example.com",
+				ServerURL: "https://certfold.example.com",
 				Online:    true,
 				Certs:     []ClientCertState{{Name: "api-prod", Fingerprint: "sha256:AA"}},
 			}, nil

@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
 )
 
 // TestRefreshWaitsForTheOneInFlight covers r and the end of a fetch while a

@@ -19,8 +19,8 @@ import (
 // mode, TestMain runs that program instead of the tests. This is the only
 // TestMain of the package.
 const (
-	testHookEnv    = "SIGIL_TEST_ON_CHANGE"
-	testHookDirEnv = "SIGIL_TEST_ON_CHANGE_DIR"
+	testHookEnv    = "CERTFOLD_TEST_ON_CHANGE"
+	testHookDirEnv = "CERTFOLD_TEST_ON_CHANGE_DIR"
 
 	// Sentinels that a runHook error must never contain.
 	argvSecret   = "argv-secret-5d1e"
@@ -154,7 +154,7 @@ func setHookBounds(t *testing.T, timeout, waitDelay time.Duration) {
 
 // TestRunHookRunsArgvAsGiven covers how the program runs: its arguments reach
 // it unchanged, with no shell in between, its stdin is empty, and it works in
-// the working directory of sigilc.
+// the working directory of certfoldc.
 func TestRunHookRunsArgvAsGiven(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(testHookDirEnv, dir)

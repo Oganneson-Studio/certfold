@@ -24,7 +24,7 @@ func (s fakeService) Status() (ksvc.Status, error) { return s.status, s.statusEr
 // again, which kardianos refuses: the error says to uninstall first, but only
 // when the service exists.
 func TestInstallOverExistingServiceSaysHowToGoOn(t *testing.T) {
-	failed := errors.New("service sigilc already exists")
+	failed := errors.New("service certfoldc already exists")
 	for _, tc := range []struct {
 		name      string
 		svc       fakeService
@@ -47,7 +47,7 @@ func TestInstallOverExistingServiceSaysHowToGoOn(t *testing.T) {
 			if !errors.Is(err, tc.svc.installErr) {
 				t.Errorf("install error = %v, want it to wrap %v", err, tc.svc.installErr)
 			}
-			if hint := strings.Contains(err.Error(), "run `sigilc service uninstall` first"); hint != tc.wantHint {
+			if hint := strings.Contains(err.Error(), "run `certfoldc service uninstall` first"); hint != tc.wantHint {
 				t.Errorf("install error = %v; uninstall hint %t, want %t", err, hint, tc.wantHint)
 			}
 		})

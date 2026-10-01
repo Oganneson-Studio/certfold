@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Oganneson-Studio/sigil/internal/securefile"
+	"github.com/Oganneson-Studio/certfold/internal/securefile"
 	_ "modernc.org/sqlite"
 )
 
@@ -146,7 +146,7 @@ func migrate(db *sql.DB) error {
 	// Migrations only go forward; this binary cannot know what a newer one
 	// changed.
 	if ver > currentSchemaVersion {
-		return fmt.Errorf("the database has schema version %d, newer than version %d that this sigils knows: a newer sigils has upgraded it, and upgrades cannot be undone", ver, currentSchemaVersion)
+		return fmt.Errorf("the database has schema version %d, newer than version %d that this certfolds knows: a newer certfolds has upgraded it, and upgrades cannot be undone", ver, currentSchemaVersion)
 	}
 	for ver < currentSchemaVersion {
 		ver++

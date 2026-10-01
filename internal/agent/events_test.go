@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
-	"github.com/Oganneson-Studio/sigil/internal/logging"
-	"github.com/Oganneson-Studio/sigil/internal/securefile"
-	"github.com/Oganneson-Studio/sigil/internal/version"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/securefile"
+	"github.com/Oganneson-Studio/certfold/internal/version"
 )
 
 // setupLogs runs logging.Setup with a service log that is discarded, for the
@@ -66,7 +66,7 @@ func TestRunServesItsEvents(t *testing.T) {
 			break
 		}
 		if runtime.GOOS == "windows" && errors.Is(err, os.ErrPermission) {
-			t.Skip("the sigilc pipe admits only SYSTEM and elevated administrators")
+			t.Skip("the certfoldc pipe admits only SYSTEM and elevated administrators")
 		}
 		select {
 		case err := <-result:
@@ -84,9 +84,9 @@ func TestRunServesItsEvents(t *testing.T) {
 	if len(page.Events) == 0 {
 		t.Fatal("the daemon served no events")
 	}
-	if e := page.Events[0]; e.Level != "INFO" || e.Message != "sigilc started" ||
+	if e := page.Events[0]; e.Level != "INFO" || e.Message != "certfoldc started" ||
 		e.Attrs != fmt.Sprintf("version=%s server=%s", version.Version, serverURL) {
-		t.Errorf("first event = %+v, want INFO sigilc started with the version and the server", e)
+		t.Errorf("first event = %+v, want INFO certfoldc started with the version and the server", e)
 	}
 
 	cancel()
@@ -99,7 +99,7 @@ func TestRunServesItsEvents(t *testing.T) {
 		t.Fatal("Run did not return after cancellation")
 	}
 	events := logs.Events.Since(0)
-	if e := events[len(events)-1]; e.Level != "INFO" || e.Message != "sigilc stopping" {
-		t.Errorf("last event = %+v, want INFO sigilc stopping", e)
+	if e := events[len(events)-1]; e.Level != "INFO" || e.Message != "certfoldc stopping" {
+		t.Errorf("last event = %+v, want INFO certfoldc stopping", e)
 	}
 }

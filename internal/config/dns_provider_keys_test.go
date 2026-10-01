@@ -11,7 +11,7 @@ import (
 // route53 would then sign with the ambient AWS credentials, gcloud with
 // application default credentials.
 func TestDNSProviderRejectsKeysTheIssuerIgnores(t *testing.T) {
-	t.Setenv("SIGIL_TEST_DIGITS", "12345")
+	t.Setenv("CERTFOLD_TEST_DIGITS", "12345")
 	for _, tt := range []struct {
 		name, block, want string
 	}{
@@ -37,7 +37,7 @@ func TestDNSProviderRejectsKeysTheIssuerIgnores(t *testing.T) {
 		},
 		{
 			name:  "digits expanded into a plain scalar",
-			block: "  cf2:\n    type: cloudflare\n    api_token: ${SIGIL_TEST_DIGITS}\n",
+			block: "  cf2:\n    type: cloudflare\n    api_token: ${CERTFOLD_TEST_DIGITS}\n",
 			want:  "dns_providers.cf2.api_token: must be a string",
 		},
 		{
@@ -72,8 +72,8 @@ func TestDNSProviderValueOfAnotherTypeIsNotReportedMissing(t *testing.T) {
 // A quoted value stays a string whatever it holds, and a null value, which
 // ${VAR:-} gives for an optional key, is not set.
 func TestDNSProviderStringsAndNullValues(t *testing.T) {
-	t.Setenv("SIGIL_TEST_DIGITS", "12345")
-	block := "  cf2:\n    type: cloudflare\n    api_token: \"${SIGIL_TEST_DIGITS}\"\n    zone_api_token: ${SIGIL_TEST_UNSET:-}\n" +
+	t.Setenv("CERTFOLD_TEST_DIGITS", "12345")
+	block := "  cf2:\n    type: cloudflare\n    api_token: \"${CERTFOLD_TEST_DIGITS}\"\n    zone_api_token: ${CERTFOLD_TEST_UNSET:-}\n" +
 		"  r53:\n    type: route53\n    region: \"1\"\n    access_key:\n    secret_key: ~\n"
 	cfg, err := ParseServer([]byte(strings.Replace(validServerYAML, "dns_providers:\n", "dns_providers:\n"+block, 1)))
 	if err != nil {
@@ -86,8 +86,8 @@ func TestDNSProviderStringsAndNullValues(t *testing.T) {
 
 	// A required value that is null, or an empty string, such as a quoted
 	// ${VAR} whose variable is set but empty, is missing.
-	t.Setenv("SIGIL_TEST_EMPTY", "")
-	for _, value := range []string{"${SIGIL_TEST_UNSET:-}", `"${SIGIL_TEST_EMPTY}"`} {
+	t.Setenv("CERTFOLD_TEST_EMPTY", "")
+	for _, value := range []string{"${CERTFOLD_TEST_UNSET:-}", `"${CERTFOLD_TEST_EMPTY}"`} {
 		src := strings.Replace(validServerYAML, `access_key: "k"`, "access_key: "+value, 1)
 		if _, err := ParseServer([]byte(src)); err == nil || !strings.Contains(err.Error(), `dns_providers.aliyun-a.access_key: required for provider type "aliyun"`) {
 			t.Errorf("access_key: %s: error = %v, want access_key reported as missing", value, err)

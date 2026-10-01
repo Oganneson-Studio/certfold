@@ -9,7 +9,7 @@ import (
 
 	ksvc "github.com/kardianos/service"
 
-	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
 )
 
 // Run executes fn as the daemon body until the process is asked to stop. fn

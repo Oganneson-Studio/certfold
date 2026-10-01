@@ -7,17 +7,17 @@ import "runtime"
 func defaultServerConfigPath() string {
 	switch runtime.GOOS {
 	case "darwin":
-		return "/usr/local/etc/sigil/server.yaml"
+		return "/usr/local/etc/certfold/server.yaml"
 	default: // linux
-		return "/etc/sigil/server.yaml"
+		return "/etc/certfold/server.yaml"
 	}
 }
 
 func defaultClientConfigPath() string {
 	switch runtime.GOOS {
 	case "darwin":
-		return "/usr/local/etc/sigil/client.yaml"
+		return "/usr/local/etc/certfold/client.yaml"
 	default: // linux
-		return "/etc/sigil/client.yaml"
+		return "/etc/certfold/client.yaml"
 	}
 }

@@ -6,22 +6,22 @@ import (
 	"testing"
 )
 
-// TestHeaderShowsWhenSigilcDoesNotAnswer covers a refresh that cannot read
+// TestHeaderShowsWhenCertfoldcDoesNotAnswer covers a refresh that cannot read
 // the state: the header stops calling the server online, since that comes
 // from the state of an earlier refresh, and calls it online again once a
 // refresh reads the state. A refresh that reads the state but not the events
 // keeps it.
-func TestHeaderShowsWhenSigilcDoesNotAnswer(t *testing.T) {
+func TestHeaderShowsWhenCertfoldcDoesNotAnswer(t *testing.T) {
 	f := newTestBackend()
 	m := newModel(t, f)
 	if view := plain(m); !strings.Contains(view, "online") {
-		t.Fatalf("header of an answering sigilc lacks online:\n%s", view)
+		t.Fatalf("header of an answering certfoldc lacks online:\n%s", view)
 	}
 
-	f.stateErr = errors.New("ipc request: sigilc stopped")
+	f.stateErr = errors.New("ipc request: certfoldc stopped")
 	m = press(t, m, "r")
-	if view := plain(m); strings.Contains(view, "online") || !strings.Contains(view, "unknown, sigilc is not answering") {
-		t.Errorf("header of a sigilc that does not answer:\n%s", view)
+	if view := plain(m); strings.Contains(view, "online") || !strings.Contains(view, "unknown, certfoldc is not answering") {
+		t.Errorf("header of a certfoldc that does not answer:\n%s", view)
 	}
 
 	f.stateErr = nil

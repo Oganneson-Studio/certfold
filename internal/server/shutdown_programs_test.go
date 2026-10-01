@@ -19,10 +19,10 @@ import (
 // testProgramEnv names a mode, TestMain runs that program instead of the
 // tests. This is the only TestMain of the package.
 const (
-	testProgramEnv = "SIGIL_TEST_SERVER_DNS_PROGRAM"
+	testProgramEnv = "CERTFOLD_TEST_SERVER_DNS_PROGRAM"
 	// testProgramDirEnv is the directory of the heartbeat and stop files of
 	// the "child" mode.
-	testProgramDirEnv = "SIGIL_TEST_SERVER_DNS_PROGRAM_DIR"
+	testProgramDirEnv = "CERTFOLD_TEST_SERVER_DNS_PROGRAM_DIR"
 )
 
 func TestMain(m *testing.M) {

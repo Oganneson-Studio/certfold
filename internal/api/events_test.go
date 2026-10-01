@@ -24,10 +24,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/Oganneson-Studio/sigil/internal/enroll"
-	"github.com/Oganneson-Studio/sigil/internal/logging"
-	"github.com/Oganneson-Studio/sigil/internal/store"
-	"github.com/Oganneson-Studio/sigil/pkg/proto"
+	"github.com/Oganneson-Studio/certfold/internal/enroll"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/store"
+	"github.com/Oganneson-Studio/certfold/pkg/proto"
 )
 
 // setupLogs runs logging.Setup with a service log that is discarded, for the
@@ -164,11 +164,11 @@ func TestEnrollmentRefusalsSayWhy(t *testing.T) {
 	logs := setupLogs(t)
 	deps := buildDeps(t)
 	ctx := context.Background()
-	used, err := deps.EnrollServer.Create(ctx, "https://sigil.example.com:8443", "web-1", time.Hour)
+	used, err := deps.EnrollServer.Create(ctx, "https://certfold.example.com:8443", "web-1", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	expired, err := deps.EnrollServer.Create(ctx, "https://sigil.example.com:8443", "web-2", -time.Hour)
+	expired, err := deps.EnrollServer.Create(ctx, "https://certfold.example.com:8443", "web-2", -time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestBundleReadFailureIsAServerError(t *testing.T) {
 	logs := setupLogs(t)
 	deps := buildDeps(t)
 	// A directory that store.Open creates: it refuses one that is not private.
-	path := filepath.Join(t.TempDir(), "data", "sigils.db")
+	path := filepath.Join(t.TempDir(), "data", "certfolds.db")
 	db, err := store.Open(path)
 	if err != nil {
 		t.Fatal(err)

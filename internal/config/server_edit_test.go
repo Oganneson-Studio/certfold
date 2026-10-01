@@ -8,12 +8,12 @@ import (
 
 func editTestConfig(t *testing.T, certificates string) []byte {
 	t.Helper()
-	t.Setenv("SIGIL_TEST_ACCESS_KEY", "expanded-access-key")
-	t.Setenv("SIGIL_TEST_SECRET_KEY", "expanded-secret-key")
+	t.Setenv("CERTFOLD_TEST_ACCESS_KEY", "expanded-access-key")
+	t.Setenv("CERTFOLD_TEST_SECRET_KEY", "expanded-secret-key")
 	return []byte(`# preserve this operator comment
 server:
   listen: ":8443"
-  data_dir: "` + absPath("/sigil-test") + `"
+  data_dir: "` + absPath("/certfold-test") + `"
 acme:
   email: "admin@example.com"
   default_ca: "le"
@@ -23,8 +23,8 @@ acme:
 dns_providers:
   route:
     type: route53
-    access_key: ${SIGIL_TEST_ACCESS_KEY}
-    secret_key: ${SIGIL_TEST_SECRET_KEY}
+    access_key: ${CERTFOLD_TEST_ACCESS_KEY}
+    secret_key: ${CERTFOLD_TEST_SECRET_KEY}
 certificates:
 ` + certificates)
 }
@@ -45,7 +45,7 @@ func TestAddCertificateSpecPreservesPlaceholdersAndUsesDefaultCA(t *testing.T) {
 	}
 
 	text := string(raw)
-	for _, want := range []string{"# preserve this operator comment", "${SIGIL_TEST_ACCESS_KEY}", "${SIGIL_TEST_SECRET_KEY}"} {
+	for _, want := range []string{"# preserve this operator comment", "${CERTFOLD_TEST_ACCESS_KEY}", "${CERTFOLD_TEST_SECRET_KEY}"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("updated config lost %q:\n%s", want, text)
 		}
@@ -70,15 +70,15 @@ func TestAddCertificateSpecPreservesPlaceholdersAndUsesDefaultCA(t *testing.T) {
 // value is refused as it was given, instead of expanding into one that
 // passes.
 func TestAddCertificateSpecKeepsDollarSignsLiteral(t *testing.T) {
-	t.Setenv("SIGIL_TEST_NAME", "api-prod")
-	t.Setenv("SIGIL_TEST_PROVIDER", "route")
+	t.Setenv("CERTFOLD_TEST_NAME", "api-prod")
+	t.Setenv("CERTFOLD_TEST_PROVIDER", "route")
 	raw := editTestConfig(t, "  []\n")
 	for _, tc := range []struct {
 		name, provider, want string
 	}{
-		{"${SIGIL_TEST_NAME}", "route", `invalid certificate name "${SIGIL_TEST_NAME}"`},
+		{"${CERTFOLD_TEST_NAME}", "route", `invalid certificate name "${CERTFOLD_TEST_NAME}"`},
 		{"a$$b", "route", `invalid certificate name "a$$b"`},
-		{"api-prod", "${SIGIL_TEST_PROVIDER}", `references unknown DNS provider "${SIGIL_TEST_PROVIDER}"`},
+		{"api-prod", "${CERTFOLD_TEST_PROVIDER}", `references unknown DNS provider "${CERTFOLD_TEST_PROVIDER}"`},
 	} {
 		_, _, err := AddCertificateSpec(raw, CertificateSpec{
 			Name:        tc.name,

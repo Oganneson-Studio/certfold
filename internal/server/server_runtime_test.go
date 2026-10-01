@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/config"
 )
 
 // absPath makes path, a Unix absolute path, absolute on the OS running the
@@ -25,15 +25,15 @@ func absPath(path string) string {
 
 // ipcSocketLine is the line of initialRuntimeConfig that sets
 // server.ipc_socket.
-var ipcSocketLine = `  ipc_socket: "` + absPath("/var/run/sigil/sigils.sock") + `"`
+var ipcSocketLine = `  ipc_socket: "` + absPath("/var/run/certfold/certfolds.sock") + `"`
 
 // tlsFileLines set server.tls_cert_file and server.tls_key_file.
-var tlsFileLines = "\n  tls_cert_file: \"" + absPath("/etc/sigil/cert.pem") + "\"\n  tls_key_file: \"" + absPath("/etc/sigil/key.pem") + "\""
+var tlsFileLines = "\n  tls_cert_file: \"" + absPath("/etc/certfold/cert.pem") + "\"\n  tls_key_file: \"" + absPath("/etc/certfold/key.pem") + "\""
 
 var initialRuntimeConfig = `server:
   listen: ":8443"
-  public_url: "https://sigil.example.com:8443"
-  data_dir: "` + absPath("/var/lib/sigil") + `"
+  public_url: "https://certfold.example.com:8443"
+  data_dir: "` + absPath("/var/lib/certfold") + `"
 ` + ipcSocketLine + `
 acme:
   email: "ops@example.com"
@@ -163,9 +163,9 @@ func TestServerConfigRuntimeRejectsImmutableChangesWithoutPublishing(t *testing.
 		want string
 	}{
 		{name: "listen", old: `listen: ":8443"`, new: `listen: ":9443"`, want: "server.listen"},
-		{name: "data dir", old: absPath("/var/lib/sigil"), new: absPath("/srv/sigil"), want: "server.data_dir"},
-		{name: "ipc socket", old: absPath("/var/run/sigil/sigils.sock"), new: absPath("/tmp/sigils.sock"), want: "server.ipc_socket"},
-		{name: "public URL", old: `public_url: "https://sigil.example.com:8443"`, new: `public_url: "https://new.example.com:8443"`, want: "server.public_url"},
+		{name: "data dir", old: absPath("/var/lib/certfold"), new: absPath("/srv/certfold"), want: "server.data_dir"},
+		{name: "ipc socket", old: absPath("/var/run/certfold/certfolds.sock"), new: absPath("/tmp/certfolds.sock"), want: "server.ipc_socket"},
+		{name: "public URL", old: `public_url: "https://certfold.example.com:8443"`, new: `public_url: "https://new.example.com:8443"`, want: "server.public_url"},
 		{
 			name: "TLS files",
 			old:  ipcSocketLine,
@@ -189,7 +189,7 @@ func TestServerConfigRuntimeRejectsImmutableChangesWithoutPublishing(t *testing.
 			writeRuntimeConfig(t, path, strings.Replace(initialRuntimeConfig, tt.old, tt.new, 1))
 
 			err := runtime.Reload(context.Background())
-			if err == nil || !strings.Contains(err.Error(), tt.want) || !strings.Contains(err.Error(), "restart sigils") {
+			if err == nil || !strings.Contains(err.Error(), tt.want) || !strings.Contains(err.Error(), "restart certfolds") {
 				t.Fatalf("Reload error = %v", err)
 			}
 			if runtime.Current() != initial {
@@ -211,7 +211,7 @@ func TestServerConfigRuntimeRejectsTLSKeyFileChangeAlone(t *testing.T) {
 	initial := parseRuntimeConfig(t, withFiles)
 	notified := 0
 	runtime := newServerConfigRuntime(path, initial, func() { notified++ }, publishNow)
-	writeRuntimeConfig(t, path, strings.Replace(withFiles, "/etc/sigil/key.pem", "/etc/sigil/new-key.pem", 1))
+	writeRuntimeConfig(t, path, strings.Replace(withFiles, "/etc/certfold/key.pem", "/etc/certfold/new-key.pem", 1))
 
 	err := runtime.Reload(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "server.tls_key_file") || strings.Contains(err.Error(), "server.tls_cert_file") {

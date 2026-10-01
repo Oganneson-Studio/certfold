@@ -16,8 +16,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/pkg/proto"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/pkg/proto"
 )
 
 // baseBackoff and maxBackoff bound the sleep after a round with an error: it
@@ -263,18 +263,18 @@ func (c *Client) applyViewLocked(ctx context.Context, result *syncResult, force 
 	return nil
 }
 
-// fingerprintPattern matches the fingerprints sigils sends: "sha256:" and a
+// fingerprintPattern matches the fingerprints certfolds sends: "sha256:" and a
 // SHA-256 digest in lowercase hex.
 var fingerprintPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // checkBundle rejects a bundle that is not the named certificate's, whose
-// fingerprint is not of the form sigils sends, one of whose certificates does
+// fingerprint is not of the form certfolds sends, one of whose certificates does
 // not parse, or whose private key does not belong to the leaf that
 // splitBundle gives its outputs. A certificate that does not parse would
 // reach the PEM outputs as it is, and make every encoding of a pkcs12 output
-// fail. The store keeps the fingerprint, which sigilc status --json prints:
+// fail. The store keeps the fingerprint, which certfoldc status --json prints:
 // encoding/json escapes C0 there, but not DEL and C1. The digest is not
-// computed again: what sigils digests is its own concern.
+// computed again: what certfolds digests is its own concern.
 func checkBundle(name string, bundle *proto.CertBundle) error {
 	if bundle.Name != name {
 		return fmt.Errorf("server sent certificate %q", bundle.Name)

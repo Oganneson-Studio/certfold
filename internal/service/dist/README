@@ -1,2 +1,2 @@
-Drop sigilc-{os}-{arch} binaries here before building a release.
-Example: sigilc-linux-amd64, sigilc-darwin-arm64, sigilc-windows-amd64.exe
+Drop certfoldc-{os}-{arch} binaries here before building a release.
+Example: certfoldc-linux-amd64, certfoldc-darwin-arm64, certfoldc-windows-amd64.exe

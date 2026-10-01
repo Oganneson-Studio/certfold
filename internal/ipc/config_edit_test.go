@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/config"
 )
 
 // The certificate edits of server.yaml answer with the file the daemon
@@ -20,7 +20,7 @@ func TestCertificateEditsOfTheConfiguration(t *testing.T) {
 	var removed string
 	var refusal error
 	h := &ipcHandlers{deps: ServerDeps{Server: &ServerControlDeps{
-		ConfigPath: "/etc/sigil/server.yaml",
+		ConfigPath: "/etc/certfold/server.yaml",
 		AddCertificate: func(_ context.Context, spec config.CertificateSpec) error {
 			added = spec
 			return refusal
@@ -40,7 +40,7 @@ func TestCertificateEditsOfTheConfiguration(t *testing.T) {
 		DNSProvider: "cf", KeyType: "ec384", Subscribers: []string{"web-1"},
 	}
 	changed, err := c.AddCertificate(ctx, req)
-	if err != nil || changed.ConfigPath != "/etc/sigil/server.yaml" {
+	if err != nil || changed.ConfigPath != "/etc/certfold/server.yaml" {
 		t.Fatalf("AddCertificate = %+v, %v; want the daemon's server.yaml", changed, err)
 	}
 	want := config.CertificateSpec{
@@ -52,11 +52,11 @@ func TestCertificateEditsOfTheConfiguration(t *testing.T) {
 	}
 	// Removed as typed, even with a character that would end the path.
 	changed, err = c.RemoveCertificate(ctx, "api?prod")
-	if err != nil || changed.ConfigPath != "/etc/sigil/server.yaml" || removed != "api?prod" {
+	if err != nil || changed.ConfigPath != "/etc/certfold/server.yaml" || removed != "api?prod" {
 		t.Fatalf("RemoveCertificate = %+v, %v, removing %q; want api?prod removed from the daemon's server.yaml", changed, err, removed)
 	}
 
-	refusal = errors.New("cannot hot reload changes to server.listen; restart sigils to apply them")
+	refusal = errors.New("cannot hot reload changes to server.listen; restart certfolds to apply them")
 	for what, call := range map[string]func() (*ConfigChangeResponse, error){
 		"AddCertificate":    func() (*ConfigChangeResponse, error) { return c.AddCertificate(ctx, req) },
 		"RemoveCertificate": func() (*ConfigChangeResponse, error) { return c.RemoveCertificate(ctx, "api-prod") },

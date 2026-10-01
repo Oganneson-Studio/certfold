@@ -22,12 +22,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/enroll"
-	"github.com/Oganneson-Studio/sigil/internal/logging"
-	"github.com/Oganneson-Studio/sigil/internal/output"
-	"github.com/Oganneson-Studio/sigil/internal/renewal"
-	"github.com/Oganneson-Studio/sigil/pkg/proto"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/enroll"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/output"
+	"github.com/Oganneson-Studio/certfold/internal/renewal"
+	"github.com/Oganneson-Studio/certfold/pkg/proto"
 )
 
 const jitterPct = 0.1 // ±10 % of the backoff after a failed round
@@ -37,13 +37,13 @@ const jitterPct = 0.1 // ±10 % of the backoff after a failed round
 // it. A variable only so tests can shorten it.
 var httpTimeout = 30 * time.Second
 
-// maxResponseBytes bounds how much of the body of an answer from sigils
-// sigilc reads: a renewed identity, a bundle, or a view, which lists some
-// 5000 certificates in 1 MiB. A server that sends more cannot make sigilc
+// maxResponseBytes bounds how much of the body of an answer from certfolds
+// certfoldc reads: a renewed identity, a bundle, or a view, which lists some
+// 5000 certificates in 1 MiB. A server that sends more cannot make certfoldc
 // hold it all in memory.
 const maxResponseBytes = 1 << 20
 
-// Client is the sigilc runtime.
+// Client is the certfoldc runtime.
 type Client struct {
 	// cfg and http change only while pullMu is held as well, so the holder of
 	// pullMu reads them without cfgMu.
@@ -106,7 +106,7 @@ func WithIdentitySaver(saver IdentitySaver) Option {
 	return func(c *Client) { c.identitySaver = saver }
 }
 
-// RuntimeStatus is a point-in-time snapshot of the sigilc daemon.
+// RuntimeStatus is a point-in-time snapshot of the certfoldc daemon.
 type RuntimeStatus struct {
 	Name      string
 	ServerURL string
@@ -126,7 +126,7 @@ type RuntimeStatus struct {
 // the one leafPEM returns and the outputs hold, or zero if it cannot be
 // parsed. RenewAt is when that
 // certificate is due for renewal under the ratio rule of internal/renewal, or
-// zero if renewal.RenewAt fails for it; sigils renews it later when its CA
+// zero if renewal.RenewAt fails for it; certfolds renews it later when its CA
 // suggests a later renewal window through ARI. Outputs is the number of
 // outputs client.yaml configures for it, and OnChange reports whether
 // client.yaml configures an on_change program for it. HookPending is the
@@ -170,7 +170,7 @@ func New(cfg *config.ClientConfig, options ...Option) (*Client, error) {
 	return c, nil
 }
 
-// Run removes the temporary files an earlier sigilc left behind, reconciles
+// Run removes the temporary files an earlier certfoldc left behind, reconciles
 // the outputs with the store, then runs the sync loop until ctx is cancelled.
 func (c *Client) Run(ctx context.Context) error {
 	// Restore the outputs before the first request: they come back even
@@ -189,14 +189,14 @@ func (c *Client) Run(ctx context.Context) error {
 	return err
 }
 
-// removeLeftoverTempsLocked removes the temporary files that a sigilc stopped
-// while it wrote left behind: those of output.Reconcile, named .sigil-tmp-*,
+// removeLeftoverTempsLocked removes the temporary files that a certfoldc stopped
+// while it wrote left behind: those of output.Reconcile, named .certfold-tmp-*,
 // next to every output configured, and those of securefile.WriteFile, named
-// .sigil-private-*, in the data directory. Every write of this process holds
+// .certfold-private-*, in the data directory. Every write of this process holds
 // pullMu, so none of them is its own. The directory of client.yaml is left
-// alone, since sigilc enroll may be writing there.
+// alone, since certfoldc enroll may be writing there.
 func (c *Client) removeLeftoverTempsLocked() {
-	removeTemps(c.cfg.Client.DataDir, ".sigil-private-")
+	removeTemps(c.cfg.Client.DataDir, ".certfold-private-")
 	dirs := make(map[string]bool)
 	for _, certificate := range c.cfg.Certificates {
 		for _, spec := range certificate.Outputs {
@@ -204,7 +204,7 @@ func (c *Client) removeLeftoverTempsLocked() {
 		}
 	}
 	for dir := range dirs {
-		removeTemps(dir, ".sigil-tmp-")
+		removeTemps(dir, ".certfold-tmp-")
 	}
 }
 
@@ -425,7 +425,7 @@ func (c *Client) getBundle(ctx context.Context, name string) (*proto.CertBundle,
 // an on_change program, the certificate gets hook_pending; repairing only the
 // mode or owner of an output does not set it. The new bits are written to the
 // store before any program runs, and no program runs while that write fails:
-// a program runs only once the store records that it must, so that a sigilc
+// a program runs only once the store records that it must, so that a certfoldc
 // stopped while the program runs runs it again after a restart. A program
 // does not run while its certificate's outputs failed to reconcile, since
 // they may be incomplete. A program that exits 0 clears the bit, and so does
@@ -538,7 +538,7 @@ func (c *Client) Status() RuntimeStatus {
 //
 // load runs under pullMu. An identity renewal writes client.yaml and switches
 // to the renewed identity under pullMu, so a configuration read before could
-// hold the identity that a renewal replaced in the meantime, which sigils
+// hold the identity that a renewal replaced in the meantime, which certfolds
 // refuses once the renewed one was presented.
 //
 // Once the new configuration is applied, Reload logs the event "configuration
@@ -563,11 +563,11 @@ func (c *Client) Reload(load func() (*config.ClientConfig, error)) error {
 	c.cfgMu.Lock()
 	if cfg.Client.IPCSocket != c.cfg.Client.IPCSocket {
 		c.cfgMu.Unlock()
-		return fmt.Errorf("client.ipc_socket changed; restart sigilc to apply it")
+		return fmt.Errorf("client.ipc_socket changed; restart certfoldc to apply it")
 	}
 	if cfg.Client.DataDir != c.cfg.Client.DataDir {
 		c.cfgMu.Unlock()
-		return fmt.Errorf("client.data_dir changed; restart sigilc to apply it")
+		return fmt.Errorf("client.data_dir changed; restart certfoldc to apply it")
 	}
 	c.cfg = cfg
 	c.http = httpClient
@@ -746,7 +746,7 @@ func leafPEM(cert storedCert) string {
 // splitBundle returns what the outputs of cert hold: the CERTIFICATE blocks
 // of its fullchain, the first as the leaf and the others as the chain, and the
 // first private key block of its key, the blocks tls.X509KeyPair takes. Each
-// is encoded again without PEM headers, so nothing else that sigils sent
+// is encoded again without PEM headers, so nothing else that certfolds sent
 // reaches an output: neither text around the blocks nor another block, such
 // as a private key in the fullchain, which would make a pem-cert output,
 // readable by everyone, hold the key. checkBundle has refused the material

@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/ca"
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/enroll"
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
-	"github.com/Oganneson-Studio/sigil/internal/store"
+	"github.com/Oganneson-Studio/certfold/internal/ca"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/enroll"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/store"
 )
 
 // TestCreateTokenRequiresAHostClientsCanReach covers a configuration without
@@ -38,8 +38,8 @@ func TestCreateTokenRequiresAHostClientsCanReach(t *testing.T) {
 		{listen: "0.0.0.0:8443"},
 		{listen: "[::]:8443"},
 		{listen: "127.0.0.1:8443", wantURL: "https://127.0.0.1:8443"},
-		{listen: "sigil.internal:8443", wantURL: "https://sigil.internal:8443"},
-		{listen: ":8443", publicURL: "https://sigil.example.com", wantURL: "https://sigil.example.com"},
+		{listen: "certfold.internal:8443", wantURL: "https://certfold.internal:8443"},
+		{listen: ":8443", publicURL: "https://certfold.example.com", wantURL: "https://certfold.example.com"},
 	}
 	for i, tt := range tests {
 		cfg := &config.ServerConfig{Server: config.ServerSection{Listen: tt.listen, PublicURL: tt.publicURL}}
@@ -70,7 +70,7 @@ func TestCreateTokenRequiresAHostClientsCanReach(t *testing.T) {
 	}
 }
 
-// TestCreateTokenRequiresReplaceForAnEnrolledName covers `sigils token create
+// TestCreateTokenRequiresReplaceForAnEnrolledName covers `certfolds token create
 // --name web-1` when web-1 is enrolled, such as a name mistyped as the name
 // of another host: whoever redeems the token replaces that client, so the
 // daemon issues it only when the request says to replace.
@@ -85,7 +85,7 @@ func TestCreateTokenRequiresReplaceForAnEnrolledName(t *testing.T) {
 		t.Fatal(err)
 	}
 	enrollSrv := enroll.NewServer(db, miniCA)
-	cfg := &config.ServerConfig{Server: config.ServerSection{PublicURL: "https://sigil.example.com"}}
+	cfg := &config.ServerConfig{Server: config.ServerSection{PublicURL: "https://certfold.example.com"}}
 	ctx := context.Background()
 	if err := db.Clients.Upsert(ctx, &store.ClientRecord{Name: "web-1", Fingerprint: "sha256:AA", EnrolledAt: time.Now()}, nil); err != nil {
 		t.Fatal(err)

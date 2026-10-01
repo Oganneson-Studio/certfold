@@ -7,7 +7,7 @@ import (
 
 var outputModeClientYAML = `client:
   name: web-1
-  server_url: https://sigil.example.com:8443
+  server_url: https://certfold.example.com:8443
 certificates:
   web:
     outputs:
@@ -20,7 +20,7 @@ certificates:
 // 0o. YAML alone reads 400 as decimal, which is 0o620, and 440 as 0o670, and
 // both are valid modes that let the group write the key.
 func TestOutputModeIsOctal(t *testing.T) {
-	t.Setenv("SIGIL_TEST_MODE", "640")
+	t.Setenv("CERTFOLD_TEST_MODE", "640")
 	for _, tt := range []struct {
 		text string
 		want FileMode
@@ -33,8 +33,8 @@ func TestOutputModeIsOctal(t *testing.T) {
 		{`"0600"`, 0o600},
 		{"'644'", 0o644},
 		// The text of the variable, not what YAML would make of it.
-		{"${SIGIL_TEST_MODE}", 0o640},
-		{"${SIGIL_TEST_UNSET:-0440}", 0o440},
+		{"${CERTFOLD_TEST_MODE}", 0o640},
+		{"${CERTFOLD_TEST_UNSET:-0440}", 0o440},
 		{"~", 0},
 	} {
 		cfg, err := ParseClient([]byte(strings.Replace(outputModeClientYAML, "MODE", tt.text, 1)))

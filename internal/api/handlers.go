@@ -19,24 +19,24 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/Oganneson-Studio/sigil/internal/ca"
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/enroll"
-	"github.com/Oganneson-Studio/sigil/internal/store"
-	"github.com/Oganneson-Studio/sigil/pkg/proto"
+	"github.com/Oganneson-Studio/certfold/internal/ca"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/enroll"
+	"github.com/Oganneson-Studio/certfold/internal/store"
+	"github.com/Oganneson-Studio/certfold/pkg/proto"
 )
 
 // lastSeenInterval is the least time between two writes of one client's
 // last_seen by the same identity. A variable so that tests can shorten it.
 var lastSeenInterval = time.Minute
 
-// downloadWriteTimeout is how long GET /download/sigilc may take to send the
+// downloadWriteTimeout is how long GET /download/certfoldc may take to send the
 // binary. Anyone can download it, so a reader that slow holds a connection
 // that long.
 const downloadWriteTimeout = 10 * time.Minute
 
 // renewInterval is the least time between two identity renewals of one
-// client. sigilc renews its identity about every 60 days.
+// client. certfoldc renews its identity about every 60 days.
 const renewInterval = time.Minute
 
 type handlers struct {
@@ -133,10 +133,10 @@ func (h *handlers) installPs1(w http.ResponseWriter, _ *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
-// GET /download/sigilc?os=linux&arch=amd64
+// GET /download/certfoldc?os=linux&arch=amd64
 // ---------------------------------------------------------------------------
 
-func (h *handlers) downloadSigilc(w http.ResponseWriter, r *http.Request) {
+func (h *handlers) downloadCertfoldc(w http.ResponseWriter, r *http.Request) {
 	goos := r.URL.Query().Get("os")
 	goarch := r.URL.Query().Get("arch")
 	if goos == "" {
@@ -150,7 +150,7 @@ func (h *handlers) downloadSigilc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name := fmt.Sprintf("sigilc-%s-%s", goos, goarch)
+	name := fmt.Sprintf("certfoldc-%s-%s", goos, goarch)
 	if goos == "windows" {
 		name += ".exe"
 	}
@@ -168,17 +168,17 @@ func (h *handlers) downloadSigilc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		serverError(w, "open sigilc binary failed", "error", err)
+		serverError(w, "open certfoldc binary failed", "error", err)
 		return
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		serverError(w, "open sigilc binary failed", "error", err)
+		serverError(w, "open certfoldc binary failed", "error", err)
 		return
 	}
 
-	// sigilc is about 20 MB, which a link below about 5 Mbit/s does not carry
+	// certfoldc is about 20 MB, which a link below about 5 Mbit/s does not carry
 	// within the server's WriteTimeout. Only this response's deadline moves,
 	// as in GET /v1/sync; httptest.ResponseRecorder does not support
 	// deadlines.
@@ -324,7 +324,7 @@ func (h *handlers) renewIdentity(w http.ResponseWriter, r *http.Request) {
 	// Each renewal syncs the serial file to disk and logs an event, so a
 	// client that renewed in a loop would flush the event ring within
 	// seconds. As with last_seen, the claim stands whatever the renewal
-	// returns, and sigilc backs off on the 429.
+	// returns, and certfoldc backs off on the 429.
 	now := time.Now()
 	h.renewMu.Lock()
 	last, seen := h.renewed[clientName]
