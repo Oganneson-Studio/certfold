@@ -194,6 +194,7 @@ certificates:
 
 - Which certificates a client receives is decided only by `subscribers` in `server.yaml`. An entry under `certificates` in `client.yaml` only says where to write a certificate the client already receives.
 - Output formats are `pem-cert`, `pem-key`, `pem-fullchain`, `pem-bundle`, `pkcs12` (requires `password`), and `der`. `mode`, `owner`, and `group` are optional. Private-key outputs default to `0600`, the others to `0644`. `mode` is read as octal: `640` means `0640`; `0o640` also works.
+- All path fields (`data_dir`, `ipc_socket`, `tls_cert_file`, `tls_key_file`, output `path`) must be absolute paths. On Windows, `\dir` and `C:dir` are not absolute; named pipes must be written as `\\.\pipe\...`. `${VAR}` references are expanded before the check.
 - Two outputs cannot share a path. Paths are compared after cleaning, and case-insensitively on Windows.
 - `enroll` adds the client's mTLS identity to this file.
 - The top-level `outputs` map and the `client.pull_interval`, `client.push_listen`, and `client.push_token` keys of earlier builds are rejected as unknown fields, as is the `clients` section of `server.yaml`.
