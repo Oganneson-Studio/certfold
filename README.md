@@ -131,7 +131,7 @@ On Linux, the install script writes:
 
 - `/usr/local/bin/sigilc`
 - `/etc/sigil/client.yaml` (file `0600`, directory `0700`)
-- `/var/lib/sigilc` (created at first startup, mode `0700`)
+- `/var/lib/sigilc` (created by `sigilc` at first startup; already present after installation, mode `0700`, owned by root --- 2026-10-01 verified)
 - `/var/run/sigil/sigilc.sock` (`0660`, owned by root; `sudo sigilc status` to query)
 - `/etc/systemd/system/sigilc.service` with `Restart=on-failure`, `RestartSec=5`, and `KillMode=mixed`
 
@@ -369,7 +369,7 @@ certificates:
 
 On Windows, run a PowerShell script through its full path, for example `command: ['C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', 'C:\sigil\hook.ps1']`.
 
-On Windows, do not use a `.bat` or `.cmd` file: `cmd.exe` re-parses the arguments, and values that contain special characters are mangled. Write the hook as a `.ps1` script and run it through `powershell.exe -File`. To suppress lego's CNAME lookups when you do not use CNAME delegation, set `LEGO_DISABLE_CNAME_SUPPORT=true` in the service environment.
+On Windows, do not use a `.bat` or `.cmd` file: `cmd.exe` re-parses the arguments, and values that contain special characters are mangled. Write the hook as a `.ps1` script and run it through `powershell.exe -File`. To suppress lego's CNAME lookups when you do not use CNAME delegation, set `LEGO_DISABLE_CNAME_SUPPORT=true` in the service environment (see [Windows service environment variables](#windows-service-environment-variables) for how).
 
 Each built-in provider type accepts only these keys besides `type` and `skip_propagation_check` (an unknown key or a non-string value is an error):
 
@@ -423,6 +423,32 @@ On Windows, `service install` registers the daemon and writes a recovery action 
 Under systemd, `service install` writes a unit with `Restart=on-failure`, `RestartSec=5`, and `KillMode=mixed`. `KillMode=mixed` sends SIGTERM to the daemon alone on stop; processes it started (exec DNS programs) keep running until the daemon exits, then receive SIGKILL. A daemon that keeps failing restarts every 5 seconds indefinitely. To update an existing unit, run `service uninstall` then `service install`; kardianos reports an error when the service already exists. Environment variables for the service (DNS credentials, `LEGO_CA_CERTIFICATES`, etc.) go in `/etc/sysconfig/<name>`. Create the directory first on distributions that do not ship it.
 
 `service install` resolves the configuration path to an absolute path. The search order is `--config`, then `SIGILS_CONFIG` / `SIGILC_CONFIG`, then the platform default.
+
+When running as a service, the data directory must be owned by the service account. On Linux (systemd, running as root) the owner must be root (uid 0). On Windows the owner must be SYSTEM or Administrators. If the owner does not match, the daemon refuses to start and the error prints the fix command. Under systemd, the daemon restarts every 5 seconds until the owner is corrected; on Windows, the failure appears as `ExitCode=1067` in the service status. A directory created in an elevated Git Bash session is owned by the user's own SID rather than Administrators, and will be rejected.
+
+### Windows service environment variables
+
+DNS credentials, `LEGO_CA_CERTIFICATES`, and other environment variables for a Windows service go in the registry. The `sigilc` service uses the same mechanism; replace `sigils` with `sigilc` in the paths below. Changes take effect only after a service restart; `sigils reload` does not re-read environment variables (2026-10-01 verified on `sigils`; `sigilc` uses the same mechanism but was not separately tested).
+
+PowerShell (elevated):
+
+```powershell
+New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\sigils' -Name Environment -PropertyType MultiString -Value @('NAME=value') -Force
+Restart-Service sigils
+```
+
+cmd (elevated):
+
+```
+reg add HKLM\SYSTEM\CurrentControlSet\Services\sigils /v Environment /t REG_MULTI_SZ /d "NAME=value\0OTHER=2" /f
+net stop sigils && net start sigils
+```
+
+Multiple variables are separated by `\0` in the `reg add` form; in PowerShell, pass an array: `@('NAME=value', 'OTHER=2')`.
+
+To remove the variables: `Remove-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\sigils' -Name Environment`. Running `service uninstall` deletes the entire service key, including this value.
+
+When a variable referenced by `${VAR}` in the configuration is not set, the service fails to start (`ExitCode=1067`), and the Application event log (event ID 3) shows `load config: expand env: <field>: environment variable "X" is not set`.
 
 ## Current limitations
 
