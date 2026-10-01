@@ -151,7 +151,7 @@ func TestInstallPs1ReplacesSigilc(t *testing.T) {
 		"\n    & $Download version\n",
 		"\n    if ($Service) {\n",
 		"\n        $ServicePid = (Get-CimInstance -ClassName Win32_Service -Filter \"Name='sigilc'\").ProcessId\n"+
-			"        $ServiceProcess = if ($ServicePid) { Get-Process -Id $ServicePid }\n",
+			"        $ServiceProcess = if ($ServicePid) { Get-Process -Id $ServicePid -ErrorAction SilentlyContinue }\n",
 		"\n        Write-Host 'Stopping service...'\n        Stop-Service -Name sigilc\n",
 		"\n        if ($ServiceProcess -and -not $ServiceProcess.WaitForExit(30000)) {\n"+
 			"            throw \"Process $ServicePid of the sigilc service did not exit within 30 seconds",
@@ -203,12 +203,12 @@ func TestInstallPs1FinishesByHand(t *testing.T) {
 		"\n    $SetEnvironment = ''\n",
 		"\n        if ($null -ne $Environment) {\n",
 		"\n            $SetEnvironment = \" Before that start, give the service its Environment back, with the values it had: \" +\n"+
-			"                \"New-ItemProperty -LiteralPath '$ServiceKey' -Name Environment -PropertyType MultiString -Force -Value @($Variables)\"\n",
+			"                \"[Microsoft.Win32.Registry]::SetValue('$ServiceKey', 'Environment', [string[]]@($Variables), 'MultiString')\"\n",
 		"\n        & $Dest service uninstall\n",
 		"sigilc is enrolled: once that is fixed, run & '$Dest' service uninstall, then & '$Dest' service install and & '$Dest' service start.$SetEnvironment\" }\n",
 		"\n    & $Dest service install\n",
 		"sigilc is enrolled: once that is fixed, run & '$Dest' service install, then & '$Dest' service start.$SetEnvironment\" }\n",
-		"sigilc is enrolled and its service installed: once that is fixed, run & '$Dest' service start.$SetEnvironment\"\n",
+		"sigilc is enrolled and its service installed: run & '$Dest' service start.$SetEnvironment\"\n",
 	)
 }
 
@@ -217,25 +217,37 @@ func TestInstallPs1FinishesByHand(t *testing.T) {
 // their values and which the uninstall deletes with the registry key of the
 // service: it is read before the uninstall and written back after the
 // install, before the service starts. The values may be secrets, which no
-// message holds: an error names only the variables.
+// message holds: an error names only the variables. Nor do they pass through
+// the parameters of a command or a pipeline, which module logging writes to
+// an event log that every user may read, but only through method calls and
+// statements.
 func TestInstallPs1KeepsTheServiceEnvironment(t *testing.T) {
 	script := getInstallScript(t, "/install.ps1").Body.String()
 	inOrder(t, script,
-		"\n    $ServiceKey = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\sigilc'\n",
-		"\n        $Environment = (Get-Item -LiteralPath $ServiceKey).GetValue('Environment')\n",
+		"\n    $ServiceKey = 'HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\sigilc'\n",
+		"\n        $Environment = [Microsoft.Win32.Registry]::GetValue($ServiceKey, 'Environment', $null)\n",
 		"\n        & $Dest service uninstall\n",
 		"\n    & $Dest service install\n",
 		"\n    if ($Service -and $null -ne $Environment) {\n",
-		"\n            New-ItemProperty -LiteralPath $ServiceKey -Name Environment -PropertyType MultiString -Value ([string[]]$Environment) | Out-Null\n",
+		"\n            [Microsoft.Win32.Registry]::SetValue($ServiceKey, 'Environment', [string[]]$Environment, 'MultiString')\n",
 		"\n& $Dest service start\n",
 	)
-	onlyOn(t, script, regexp.MustCompile(`(?i)\$\{?Environment\b`),
-		"        $Environment = (Get-Item -LiteralPath $ServiceKey).GetValue('Environment')",
+	environment := regexp.MustCompile(`(?i)\$\{?Environment\b`)
+	onlyOn(t, script, environment,
+		"        $Environment = [Microsoft.Win32.Registry]::GetValue($ServiceKey, 'Environment', $null)",
 		"        if ($null -ne $Environment) {",
-		`            $Variables = ($Environment | ForEach-Object { "'" + ($_ -split '=', 2)[0] + "=<value>'" }) -join ', '`,
+		`            $Variables = @(foreach ($Variable in $Environment) { "'" + ($Variable -split '=', 2)[0] + "=<value>'" }) -join ', '`,
 		"    if ($Service -and $null -ne $Environment) {",
-		"            New-ItemProperty -LiteralPath $ServiceKey -Name Environment -PropertyType MultiString -Value ([string[]]$Environment) | Out-Null",
+		"            [Microsoft.Win32.Registry]::SetValue($ServiceKey, 'Environment', [string[]]$Environment, 'MultiString')",
 	)
+	if found := regexp.MustCompile(`(?i)\b(New|Set)-ItemProperty\b`).FindString(script); found != "" {
+		t.Errorf("script runs %s, whose parameters module logging records", found)
+	}
+	for _, line := range strings.Split(script, "\n") {
+		if environment.MatchString(line) && strings.Contains(line, "|") {
+			t.Errorf("$Environment goes down a pipeline, which module logging records: %q", line)
+		}
+	}
 }
 
 // TestInstallPs1WaitsForTheDaemon checks that install.ps1 does not report a

@@ -237,9 +237,10 @@ try {
         # Stop-Service returns once the SCM reports the service stopped,
         # which may be before its process exits: ReplaceFile then cannot
         # delete the sigilc.exe that process runs, and leaves it beside the
-        # new one as sigilc.exe~RF*.TMP.
+        # new one as sigilc.exe~RF*.TMP. A process that has exited by the
+        # time Get-Process looks for it leaves nothing to wait for.
         $ServicePid = (Get-CimInstance -ClassName Win32_Service -Filter "Name='sigilc'").ProcessId
-        $ServiceProcess = if ($ServicePid) { Get-Process -Id $ServicePid }
+        $ServiceProcess = if ($ServicePid) { Get-Process -Id $ServicePid -ErrorAction SilentlyContinue }
         Write-Host 'Stopping service...'
         Stop-Service -Name sigilc
         if ($ServiceProcess -and -not $ServiceProcess.WaitForExit(30000)) {
@@ -283,19 +284,22 @@ if (-not $Upgrade) {
     }
     # sigilc is enrolled by now, and running the installer again would need a
     # new token: the rest of the reinstall is left to do by hand.
-    $ServiceKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\sigilc'
+    $ServiceKey = 'HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\sigilc'
     $SetEnvironment = ''
     if ($Service) {
         # The uninstall deletes the registry key of the service, and with it
         # its Environment, which gives the ${VAR}s of client.yaml their
         # values: it is written back once the service is installed anew, and
         # what is left to do by hand says how. The values may be secrets,
-        # which no message shows: it names only the variables.
-        $Environment = (Get-Item -LiteralPath $ServiceKey).GetValue('Environment')
+        # which no message shows: it names only the variables. They pass
+        # only through method calls and statements, never through the
+        # parameters of a command or a pipeline, which module logging writes
+        # to an event log that every user may read.
+        $Environment = [Microsoft.Win32.Registry]::GetValue($ServiceKey, 'Environment', $null)
         if ($null -ne $Environment) {
-            $Variables = ($Environment | ForEach-Object { "'" + ($_ -split '=', 2)[0] + "=<value>'" }) -join ', '
+            $Variables = @(foreach ($Variable in $Environment) { "'" + ($Variable -split '=', 2)[0] + "=<value>'" }) -join ', '
             $SetEnvironment = " Before that start, give the service its Environment back, with the values it had: " +
-                "New-ItemProperty -LiteralPath '$ServiceKey' -Name Environment -PropertyType MultiString -Force -Value @($Variables)"
+                "[Microsoft.Win32.Registry]::SetValue('$ServiceKey', 'Environment', [string[]]@($Variables), 'MultiString')"
         }
         Write-Host 'Uninstalling the service of the earlier install...'
         & $Dest service uninstall
@@ -306,9 +310,9 @@ if (-not $Upgrade) {
     if ($LASTEXITCODE -ne 0) { throw "sigilc service install failed with exit code $LASTEXITCODE. sigilc is enrolled: once that is fixed, run & '$Dest' service install, then & '$Dest' service start.$SetEnvironment" }
     if ($Service -and $null -ne $Environment) {
         try {
-            New-ItemProperty -LiteralPath $ServiceKey -Name Environment -PropertyType MultiString -Value ([string[]]$Environment) | Out-Null
+            [Microsoft.Win32.Registry]::SetValue($ServiceKey, 'Environment', [string[]]$Environment, 'MultiString')
         } catch {
-            throw "Writing back the Environment of the sigilc service failed: $($_.Exception.Message). sigilc is enrolled and its service installed: once that is fixed, run & '$Dest' service start.$SetEnvironment"
+            throw "Writing back the Environment of the sigilc service failed: $($_.Exception.Message). sigilc is enrolled and its service installed: run & '$Dest' service start.$SetEnvironment"
         }
     }
 }
