@@ -140,13 +140,19 @@ func roleAttrs(r Role) (name, displayName, desc, defaultConfig string) {
 	}
 }
 
-// Install registers the service with the OS service manager.
+// Install registers the service with the OS service manager. On Windows it
+// then leaves the registry key of the service, where its environment goes,
+// to SYSTEM and Administrators (protectServiceKey).
 func Install(d Daemon, cfg Config) error {
 	svc, err := New(d, cfg)
 	if err != nil {
 		return err
 	}
-	return install(svc, cfg.Role)
+	if err := install(svc, cfg.Role); err != nil {
+		return err
+	}
+	name, _, _, _ := roleAttrs(cfg.Role)
+	return protectServiceKey(name)
 }
 
 // install registers svc, the service of role. kardianos refuses to install
