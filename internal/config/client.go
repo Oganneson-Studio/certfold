@@ -158,9 +158,13 @@ func (c *ClientConfig) Validate() error {
 	c.validateIdentity(v)
 
 	// Two outputs at one path would overwrite each other on every reconcile,
-	// running their on_change programs each time. Paths are absolute, so
-	// after Clean a file has one spelling, except through links and, on
-	// Windows, aliases such as \\?\C:\ and 8.3 short names.
+	// running their on_change programs each time. Paths are compared as
+	// text, after Clean, and in lower case on Windows only. That misses two
+	// spellings of one file through a symbolic or hard link; paths differing
+	// in case on macOS, whose default APFS ignores case; and, on Windows, the
+	// prefixes \\?\ and \\.\ (\\?\C:\x and \\.\C:\x are C:\x), 8.3 short
+	// names, the dots and spaces Windows drops from the end of a name, and a
+	// mapped drive letter against the UNC path of its share.
 	outputPaths := make(map[string]string)
 	for _, certName := range slices.Sorted(maps.Keys(c.Certificates)) {
 		// An invalid name is reported alone: the paths of the other errors
