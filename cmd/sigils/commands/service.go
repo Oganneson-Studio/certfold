@@ -97,7 +97,11 @@ func runServerServiceControl(action string) func(*cobra.Command, []string) error
 
 func runServerServiceStatus(cmd *cobra.Command, _ []string) error {
 	cfg := serverSvcConfig(cmd)
-	status, err := internalsvc.StatusText(internalsvc.NoopDaemon(), cfg, serverIPCSocket(cmd))
+	socket, err := serverIPCSocket(cmd)
+	if err != nil {
+		return err
+	}
+	status, err := internalsvc.StatusText(internalsvc.NoopDaemon(), cfg, socket)
 	if err != nil {
 		return err
 	}
@@ -108,7 +112,7 @@ func runServerServiceStatus(cmd *cobra.Command, _ []string) error {
 // serviceDataDir returns server.data_dir from the configuration file the
 // installed service is started with.
 func serviceDataDir(cfg internalsvc.Config) (string, error) {
-	dataDir, _, err := config.ReadServerPaths(cfg.ConfigPath)
+	dataDir, err := config.ReadServerField(cfg.ConfigPath, "data_dir")
 	if err != nil {
 		return "", fmt.Errorf("read server.data_dir to unpack sigilc binaries: %w", err)
 	}

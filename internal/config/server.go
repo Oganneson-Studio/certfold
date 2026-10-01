@@ -134,33 +134,49 @@ func ParseServer(raw []byte) (*ServerConfig, error) {
 	return &cfg, nil
 }
 
-// ReadServerPaths reads server.data_dir and server.ipc_socket from the
-// server.yaml at path so CLI commands can locate the daemon. Unlike LoadServer
-// it expands ${VAR} only in these two values and does not validate the file,
-// so the DNS credentials other sections reference need not be set in the
-// caller's environment. The two values are expanded exactly as LoadServer
-// expands them. Empty results mean the field is not set.
-func ReadServerPaths(path string) (dataDir, ipcSocket string, err error) {
+// ReadServerField reads the value of key in the server section of the
+// server.yaml at path: CLI commands locate the daemon with ipc_socket, and
+// service install unpacks the sigilc binaries under data_dir. Unlike
+// LoadServer it expands ${VAR} only in this value and does not validate the
+// file, so the DNS credentials other sections reference need not be set in
+// the caller's environment, and a mistake elsewhere in the file, the other
+// of these two values included, does not keep the CLI from reaching the
+// daemon, which reports it. The value is expanded exactly as LoadServer
+// expands it, and a relative data_dir or ipc_socket is refused as LoadServer
+// refuses it. An empty value means the key is not set.
+func ReadServerField(path, key string) (string, error) {
+	return readField(path, "server", key)
+}
+
+// readField reads the value of key in section of the YAML file at path, for
+// ReadServerField and ReadClientField.
+func readField(path, section, key string) (string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return "", "", fmt.Errorf("read %s: %w", path, err)
+		return "", fmt.Errorf("read %s: %w", path, err)
 	}
-	var doc struct {
-		Server struct {
-			DataDir   yaml.Node `yaml:"data_dir"`
-			IPCSocket yaml.Node `yaml:"ipc_socket"`
-		} `yaml:"server"`
-	}
+	var doc map[string]yaml.Node
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return "", "", fmt.Errorf("parse %s: %w", path, err)
+		return "", fmt.Errorf("parse %s: %w", path, err)
 	}
-	if dataDir, err = expandedString(&doc.Server.DataDir, "server.data_dir"); err != nil {
-		return "", "", err
+	var fields map[string]yaml.Node
+	if n, ok := doc[section]; ok {
+		if err := n.Decode(&fields); err != nil {
+			return "", fmt.Errorf("parse %s: %w", path, err)
+		}
 	}
-	if ipcSocket, err = expandedString(&doc.Server.IPCSocket, "server.ipc_socket"); err != nil {
-		return "", "", err
+	field := section + "." + key
+	n := fields[key]
+	value, err := expandedString(&n, field)
+	if err != nil {
+		return "", err
 	}
-	return dataDir, ipcSocket, nil
+	if (key == "data_dir" || key == "ipc_socket") && value != "" {
+		if err := checkAbsolute(value); err != nil {
+			return "", fmt.Errorf("%s: %w", field, err)
+		}
+	}
+	return value, nil
 }
 
 // expandedString expands the value node n at path as LoadServer does and
@@ -198,12 +214,26 @@ func (c *ServerConfig) Validate() error {
 
 	if strings.TrimSpace(c.Server.DataDir) == "" {
 		v.Add("server.data_dir", "must be set")
+	} else if err := checkAbsolute(c.Server.DataDir); err != nil {
+		v.Add("server.data_dir", "%v", err)
 	}
 	if !isValidListen(c.Server.Listen) {
 		v.Add("server.listen", "invalid listen address %q (want host:port with a port from 1 to 65535; the host may be empty)", c.Server.Listen)
 	}
 	if (c.Server.TLSCertFile == "") != (c.Server.TLSKeyFile == "") {
 		v.Add("server.tls", "tls_cert_file and tls_key_file must be set together")
+	}
+	for _, f := range []struct{ field, path string }{
+		{"server.tls_cert_file", c.Server.TLSCertFile},
+		{"server.tls_key_file", c.Server.TLSKeyFile},
+		{"server.ipc_socket", c.Server.IPCSocket},
+	} {
+		if f.path == "" {
+			continue
+		}
+		if err := checkAbsolute(f.path); err != nil {
+			v.Add(f.field, "%v", err)
+		}
 	}
 	if c.Server.PublicURL != "" {
 		if err := ValidatePublicURL(c.Server.PublicURL); err != nil {
@@ -377,6 +407,11 @@ func validateDNSProviderFields(v *ValidationError, path string, p DNSProvider) {
 		if !set("project") && !set("service_account_file") {
 			v.Add(path, "gcloud provider requires project (used with application default credentials) or service_account_file")
 		}
+		if file, ok := p.Config["service_account_file"].(string); ok && file != "" {
+			if err := checkAbsolute(file); err != nil {
+				v.Add(path+".service_account_file", "%v", err)
+			}
+		}
 	case "exec":
 		// Whether the program exists is not checked: that can change between
 		// runs, and a failed run is reported as the certificate's last error.
@@ -439,6 +474,21 @@ func ValidatePublicURL(s string) error {
 // to U+201E for double quotes, hence ASCII only.
 func unquotable(r rune) bool {
 	return r > unicode.MaxASCII || unicode.IsSpace(r) || unicode.IsControl(r) || strings.ContainsRune("'\"`$\\", r)
+}
+
+// checkAbsolute reports an error unless path, the value of a field that names
+// a file, a directory, a socket or a pipe, is absolute. A relative one would
+// be resolved against the working directory of each process that uses it,
+// and neither that of a service nor that of the CLI is the directory of the
+// configuration. On Windows a path is absolute only with a drive letter, as
+// C:\ProgramData has, or with two leading separators, as a share such as
+// \\fileserver\sigil and the named pipe \\.\pipe\sigil-server have: \dir is
+// on the current drive.
+func checkAbsolute(path string) error {
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("must be an absolute path, got %q", path)
+	}
+	return nil
 }
 
 // isValidDNSResolver reports whether s works as a resolver address after

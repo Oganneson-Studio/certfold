@@ -10,10 +10,24 @@ import (
 	"testing"
 )
 
-const validServerYAML = `
+// absPath makes path, a Unix absolute path, absolute on the OS running the
+// test: on Windows it puts it on drive C:. Windows takes the slashes of
+// C:/var/lib for separators, and YAML reads slashes as they are in any
+// quoting, unlike backslashes.
+func absPath(path string) string {
+	if runtime.GOOS == "windows" {
+		return "C:" + path
+	}
+	return path
+}
+
+// validDataDirLine is the line of validServerYAML that sets server.data_dir.
+var validDataDirLine = `data_dir: "` + absPath("/var/lib/sigils") + `"`
+
+var validServerYAML = `
 server:
   listen: ":8443"
-  data_dir: "/var/lib/sigils"
+  ` + validDataDirLine + `
 
 acme:
   email: "ops@example.com"
@@ -56,7 +70,7 @@ func TestParseServer_Valid(t *testing.T) {
 	if cfg.Server.Listen != ":8443" {
 		t.Errorf("listen: got %q", cfg.Server.Listen)
 	}
-	if cfg.Server.DataDir != "/var/lib/sigils" {
+	if cfg.Server.DataDir != absPath("/var/lib/sigils") {
 		t.Errorf("data_dir: got %q", cfg.Server.DataDir)
 	}
 	if len(cfg.Certificates) != 2 {
@@ -97,7 +111,7 @@ func TestParseServer_ValidationErrors(t *testing.T) {
 	}{
 		{
 			name:   "missing data_dir",
-			mutate: func(s string) string { return strings.Replace(s, `data_dir: "/var/lib/sigils"`, "", 1) },
+			mutate: func(s string) string { return strings.Replace(s, validDataDirLine, "", 1) },
 			want:   "server.data_dir",
 		},
 		{
@@ -302,7 +316,7 @@ func dnsServerYAML(providersBlock string) string {
 	return `
 server:
   listen: ":8443"
-  data_dir: "/var/lib/sigils"
+  ` + validDataDirLine + `
 
 acme:
   email: "ops@example.com"
@@ -526,7 +540,7 @@ func TestDNSProvider_Gcloud_RequiresProjectOrServiceAccountFile(t *testing.T) {
 			block: `dns_providers:
   p1:
     type: gcloud
-    service_account_file: "/etc/sigil/gcloud.json"
+    service_account_file: "` + absPath("/etc/sigil/gcloud.json") + `"
 `,
 		},
 	}
@@ -716,22 +730,21 @@ func TestPublicBaseURL_InvalidPublicURL(t *testing.T) {
 }
 
 func TestServerTLSFilesMustBeConfiguredTogether(t *testing.T) {
-	src := strings.Replace(validServerYAML, `data_dir: "/var/lib/sigils"`, `data_dir: "/var/lib/sigils"
-  tls_cert_file: "/etc/sigil/tls.crt"`, 1)
+	certLine := `tls_cert_file: "` + absPath("/etc/sigil/tls.crt") + `"`
+	src := strings.Replace(validServerYAML, validDataDirLine, validDataDirLine+"\n  "+certLine, 1)
 	_, err := ParseServer([]byte(src))
 	if err == nil || !strings.Contains(err.Error(), "tls_cert_file and tls_key_file") {
 		t.Fatalf("expected paired TLS file error, got %v", err)
 	}
 
-	src = strings.Replace(src, `tls_cert_file: "/etc/sigil/tls.crt"`, `tls_cert_file: "/etc/sigil/tls.crt"
-  tls_key_file: "/etc/sigil/tls.key"`, 1)
+	src = strings.Replace(src, certLine, certLine+"\n  "+`tls_key_file: "`+absPath("/etc/sigil/tls.key")+`"`, 1)
 	if _, err := ParseServer([]byte(src)); err != nil {
 		t.Fatalf("valid TLS file config: %v", err)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// ReadServerPaths
+// ReadServerField
 // ---------------------------------------------------------------------------
 
 func writeServerYAML(t *testing.T, raw string) string {
@@ -743,32 +756,49 @@ func writeServerYAML(t *testing.T, raw string) string {
 	return path
 }
 
-func TestReadServerPaths_DoesNotRequireCredentialVariables(t *testing.T) {
-	t.Setenv("SIGIL_TEST_IPC_SOCKET", "/run/sigil/custom.sock")
-	src := strings.Replace(validServerYAML, `data_dir: "/var/lib/sigils"`, `data_dir: "${SIGIL_TEST_UNSET_DATA_DIR:-/srv/sigils}"
+func TestReadServerField_DoesNotRequireCredentialVariables(t *testing.T) {
+	t.Setenv("SIGIL_TEST_IPC_SOCKET", absPath("/run/sigil/custom.sock"))
+	src := strings.Replace(validServerYAML, validDataDirLine, `data_dir: "${SIGIL_TEST_UNSET_DATA_DIR:-`+absPath("/srv/sigils")+`}"
   ipc_socket: "${SIGIL_TEST_IPC_SOCKET}"`, 1)
 	src = strings.Replace(src, `api_token: "tok"`, `api_token: "${SIGIL_TEST_UNSET_API_TOKEN}"`, 1)
 	path := writeServerYAML(t, src)
 
-	dataDir, ipcSocket, err := ReadServerPaths(path)
-	if err != nil {
-		t.Fatalf("ReadServerPaths: %v", err)
-	}
-	if dataDir != "/srv/sigils" {
-		t.Errorf("data_dir: got %q", dataDir)
-	}
-	if ipcSocket != "/run/sigil/custom.sock" {
-		t.Errorf("ipc_socket: got %q", ipcSocket)
+	for key, want := range map[string]string{
+		"data_dir":   absPath("/srv/sigils"),
+		"ipc_socket": absPath("/run/sigil/custom.sock"),
+	} {
+		got, err := ReadServerField(path, key)
+		if err != nil {
+			t.Fatalf("ReadServerField %s: %v", key, err)
+		}
+		if got != want {
+			t.Errorf("%s: got %q, want %q", key, got, want)
+		}
 	}
 	if _, err := LoadServer(path); err == nil || !strings.Contains(err.Error(), "SIGIL_TEST_UNSET_API_TOKEN") {
 		t.Fatalf("LoadServer should still require the credential variable, got %v", err)
 	}
 }
 
-func TestReadServerPaths_RejectsUnsetServerVariable(t *testing.T) {
+// A data_dir that cannot be read does not keep the CLI from finding the
+// socket of the daemon, which reports what is wrong with the file.
+func TestReadServerField_ReadsIPCSocketWhateverDataDirIs(t *testing.T) {
+	socket := absPath("/run/sigil/custom.sock")
+	for _, dataDir := range []string{`"${SIGIL_TEST_UNSET_DATA_DIR}"`, `"sigil-data"`} {
+		path := writeServerYAML(t, withServerSection("data_dir: "+dataDir+"\n  ipc_socket: \""+socket+"\""))
+		if _, err := ReadServerField(path, "data_dir"); err == nil || !strings.Contains(err.Error(), "server.data_dir") {
+			t.Errorf("data_dir %s: error = %v, want one about server.data_dir", dataDir, err)
+		}
+		if got, err := ReadServerField(path, "ipc_socket"); err != nil || got != socket {
+			t.Errorf("data_dir %s: ipc_socket = %q, %v; want %q", dataDir, got, err, socket)
+		}
+	}
+}
+
+func TestReadServerField_RejectsUnsetServerVariable(t *testing.T) {
 	path := writeServerYAML(t, strings.Replace(validServerYAML,
-		`data_dir: "/var/lib/sigils"`, `data_dir: "${SIGIL_TEST_UNSET_DATA_DIR}"`, 1))
-	_, _, err := ReadServerPaths(path)
+		validDataDirLine, `data_dir: "${SIGIL_TEST_UNSET_DATA_DIR}"`, 1))
+	_, err := ReadServerField(path, "data_dir")
 	if err == nil || !strings.Contains(err.Error(), "server.data_dir") || !strings.Contains(err.Error(), "SIGIL_TEST_UNSET_DATA_DIR") {
 		t.Fatalf("expected unset data_dir variable error, got %v", err)
 	}

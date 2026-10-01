@@ -118,12 +118,12 @@ func TestParseClient_DataDir(t *testing.T) {
 	}
 
 	src := strings.Replace(validClientYAML, `server_url: "https://sigil.example.com:8443"`, `server_url: "https://sigil.example.com:8443"
-  data_dir: "/srv/sigilc"`, 1)
+  data_dir: "`+absPath("/srv/sigilc")+`"`, 1)
 	cfg, err = ParseClient([]byte(src))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Client.DataDir != "/srv/sigilc" {
+	if cfg.Client.DataDir != absPath("/srv/sigilc") {
 		t.Errorf("explicit data_dir: got %q", cfg.Client.DataDir)
 	}
 }
@@ -200,19 +200,19 @@ certificates:
   api-prod:
     outputs:
       - format: pem-fullchain
-        path: /etc/nginx/certs/api.crt
+        path: ` + absPath("/etc/nginx/certs/api.crt") + `
         mode: 0644
       - format: pem-key
-        path: /etc/nginx/certs/api.key
+        path: ` + absPath("/etc/nginx/certs/api.key") + `
         mode: 600
       - format: pkcs12
-        path: /etc/app/keystore.p12
+        path: ` + absPath("/etc/app/keystore.p12") + `
         password: "secret"
     on_change: ['` + hookPath() + `', '-s', 'reload']
   api-stage:
     outputs:
       - format: pem-bundle
-        path: /etc/nginx/certs/stage.pem
+        path: ` + absPath("/etc/nginx/certs/stage.pem") + `
 `
 	cfg, err := ParseClient([]byte(src))
 	if err != nil {
@@ -221,14 +221,14 @@ certificates:
 	want := map[string]CertificateOutputs{
 		"api-prod": {
 			Outputs: []OutputSpec{
-				{Format: "pem-fullchain", Path: "/etc/nginx/certs/api.crt", Mode: 0o644},
-				{Format: "pem-key", Path: "/etc/nginx/certs/api.key", Mode: 0o600},
-				{Format: "pkcs12", Path: "/etc/app/keystore.p12", Password: "secret"},
+				{Format: "pem-fullchain", Path: absPath("/etc/nginx/certs/api.crt"), Mode: 0o644},
+				{Format: "pem-key", Path: absPath("/etc/nginx/certs/api.key"), Mode: 0o600},
+				{Format: "pkcs12", Path: absPath("/etc/app/keystore.p12"), Password: "secret"},
 			},
 			OnChange: []string{hookPath(), "-s", "reload"},
 		},
 		"api-stage": {
-			Outputs: []OutputSpec{{Format: "pem-bundle", Path: "/etc/nginx/certs/stage.pem"}},
+			Outputs: []OutputSpec{{Format: "pem-bundle", Path: absPath("/etc/nginx/certs/stage.pem")}},
 		},
 	}
 	if !reflect.DeepEqual(cfg.Certificates, want) {
@@ -243,7 +243,7 @@ func TestParseClient_TopLevelOutputsRejected(t *testing.T) {
 outputs:
   api-prod:
     - format: pem-fullchain
-      path: /etc/nginx/certs/api.crt
+      path: ` + absPath("/etc/nginx/certs/api.crt") + `
 `
 	_, err := ParseClient([]byte(src))
 	if err == nil || !strings.Contains(err.Error(), "field outputs not found") {
@@ -263,7 +263,7 @@ certificates:
   api-prod:
     outputs:
       - format: pem-fullchain
-        path: /etc/nginx/certs/api.crt
+        path: ` + absPath("/etc/nginx/certs/api.crt") + `
 ` + tt.onChange
 			cfg, err := ParseClient([]byte(src))
 			if err != nil {
@@ -287,7 +287,7 @@ func TestParseClient_CertificatesValidationErrors(t *testing.T) {
 			block: `  api-prod:
     outputs:
       - format: jks
-        path: /etc/app/keystore.jks
+        path: ` + absPath("/etc/app/keystore.jks") + `
 `,
 			want: `certificates.api-prod.outputs[0].format: invalid format "jks"`,
 		},
@@ -304,7 +304,7 @@ func TestParseClient_CertificatesValidationErrors(t *testing.T) {
 			block: `  api-prod:
     outputs:
       - format: pkcs12
-        path: /etc/app/keystore.p12
+        path: ` + absPath("/etc/app/keystore.p12") + `
 `,
 			want: "certificates.api-prod.outputs[0].password: required for pkcs12 format",
 		},
@@ -313,7 +313,7 @@ func TestParseClient_CertificatesValidationErrors(t *testing.T) {
 			block: `  api-prod:
     outputs:
       - format: pem-cert
-        path: /etc/nginx/certs/api.crt
+        path: ` + absPath("/etc/nginx/certs/api.crt") + `
         mode: 1000
 `,
 			want: "certificates.api-prod.outputs[0].mode: must be a valid octal file mode",
@@ -330,7 +330,7 @@ func TestParseClient_CertificatesValidationErrors(t *testing.T) {
 			block: `  "":
     outputs:
       - format: pem-cert
-        path: /etc/nginx/certs/api.crt
+        path: ` + absPath("/etc/nginx/certs/api.crt") + `
 `,
 			want: `certificates: invalid certificate name ""`,
 		},
@@ -341,7 +341,7 @@ func TestParseClient_CertificatesValidationErrors(t *testing.T) {
 			block: `  Api_Prod:
     outputs:
       - format: pem-cert
-        path: /etc/nginx/certs/api.crt
+        path: ` + absPath("/etc/nginx/certs/api.crt") + `
 `,
 			want: `certificates: invalid certificate name "Api_Prod": must be a lowercase DNS label`,
 		},
@@ -350,7 +350,7 @@ func TestParseClient_CertificatesValidationErrors(t *testing.T) {
 			block: `  api-prod:
     outputs:
       - format: pem-cert
-        path: /etc/nginx/certs/api.crt
+        path: ` + absPath("/etc/nginx/certs/api.crt") + `
     on_change: ['bin/reload', '--all']
 `,
 			want: "certificates.api-prod.on_change[0]: must be an absolute program path",
@@ -360,7 +360,7 @@ func TestParseClient_CertificatesValidationErrors(t *testing.T) {
 			block: `  api-prod:
     outputs:
       - format: pem-cert
-        path: /etc/nginx/certs/api.crt
+        path: ` + absPath("/etc/nginx/certs/api.crt") + `
     on_change: ['']
 `,
 			want: "certificates.api-prod.on_change[0]: must not be empty",
@@ -370,7 +370,7 @@ func TestParseClient_CertificatesValidationErrors(t *testing.T) {
 			block: `  api-prod:
     outputs:
       - format: pem-cert
-        path: /etc/nginx/certs/api.crt
+        path: ` + absPath("/etc/nginx/certs/api.crt") + `
     on_change: ['` + hookPath() + `', '']
 `,
 			want: "certificates.api-prod.on_change[1]: must not be empty",
@@ -380,24 +380,24 @@ func TestParseClient_CertificatesValidationErrors(t *testing.T) {
 			block: `  api-prod:
     outputs:
       - format: pem-cert
-        path: /etc/nginx/certs/api.pem
+        path: ` + absPath("/etc/nginx/certs/api.pem") + `
       - format: pem-key
-        path: /etc/nginx/certs/api.pem
+        path: ` + absPath("/etc/nginx/certs/api.pem") + `
 `,
-			want: `certificates.api-prod.outputs[1].path: duplicate output path "/etc/nginx/certs/api.pem" (also at certificates.api-prod.outputs[0])`,
+			want: `certificates.api-prod.outputs[1].path: duplicate output path "` + absPath("/etc/nginx/certs/api.pem") + `" (also at certificates.api-prod.outputs[0])`,
 		},
 		{
 			name: "output path equal once cleaned",
 			block: `  api-prod:
     outputs:
       - format: pem-cert
-        path: /etc/nginx/certs/api.pem
+        path: ` + absPath("/etc/nginx/certs/api.pem") + `
   api-stage:
     outputs:
       - format: pem-cert
-        path: /etc/nginx/./certs/api.pem
+        path: ` + absPath("/etc/nginx/./certs/api.pem") + `
 `,
-			want: `certificates.api-stage.outputs[0].path: duplicate output path "/etc/nginx/./certs/api.pem" (also at certificates.api-prod.outputs[0])`,
+			want: `certificates.api-stage.outputs[0].path: duplicate output path "` + absPath("/etc/nginx/./certs/api.pem") + `" (also at certificates.api-prod.outputs[0])`,
 		},
 	}
 	for _, tt := range tests {
@@ -414,9 +414,9 @@ func TestParseClient_OutputPathsDifferingInCase(t *testing.T) {
 	block := `  api-prod:
     outputs:
       - format: pem-cert
-        path: /etc/nginx/certs/Api.pem
+        path: ` + absPath("/etc/nginx/certs/Api.pem") + `
       - format: pem-key
-        path: /etc/nginx/certs/api.pem
+        path: ` + absPath("/etc/nginx/certs/api.pem") + `
 `
 	_, err := ParseClient([]byte(validClientYAML + "certificates:\n" + block))
 	if runtime.GOOS != "windows" {
@@ -425,7 +425,7 @@ func TestParseClient_OutputPathsDifferingInCase(t *testing.T) {
 		}
 		return
 	}
-	want := `certificates.api-prod.outputs[1].path: duplicate output path "/etc/nginx/certs/api.pem" (also at certificates.api-prod.outputs[0])`
+	want := `certificates.api-prod.outputs[1].path: duplicate output path "` + absPath("/etc/nginx/certs/api.pem") + `" (also at certificates.api-prod.outputs[0])`
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("expected error containing %q, got %v", want, err)
 	}

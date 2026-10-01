@@ -7,8 +7,8 @@ import (
 )
 
 func withPublicURL(publicURL string) string {
-	return strings.Replace(validServerYAML, `  data_dir: "/var/lib/sigils"`,
-		`  data_dir: "/var/lib/sigils"`+"\n  public_url: "+strconv.Quote(publicURL), 1)
+	return strings.Replace(validServerYAML, validDataDirLine,
+		validDataDirLine+"\n  public_url: "+strconv.Quote(publicURL), 1)
 }
 
 // The install commands put server.public_url between single quotes for sh

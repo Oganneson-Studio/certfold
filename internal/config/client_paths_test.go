@@ -50,14 +50,14 @@ func TestReadClientFieldAgreesWithLoadClient(t *testing.T) {
 		{
 			name:  "comment marker inside a plain value",
 			yaml:  "client:\n  name: web-1\n  server_url: https://sigil.example.com\n  ipc_socket: ${SIGIL_TEST_VALUE}\n",
-			value: "/run/sigil/a.sock #x",
-			want:  []string{"web-1", "https://sigil.example.com", "/run/sigil/a.sock #x"},
+			value: absPath("/run/sigil/a.sock #x"),
+			want:  []string{"web-1", "https://sigil.example.com", absPath("/run/sigil/a.sock #x")},
 		},
 		{
 			name:  "backslashes inside a double-quoted value",
 			yaml:  "client:\n  name: web-1\n  server_url: https://sigil.example.com\n  ipc_socket: \"${SIGIL_TEST_VALUE}\"\n",
-			value: `\\.\pipe\custom`,
-			want:  []string{"web-1", "https://sigil.example.com", `\\.\pipe\custom`},
+			value: absPath(`/run/\\.\pipe\custom`),
+			want:  []string{"web-1", "https://sigil.example.com", absPath(`/run/\\.\pipe\custom`)},
 		},
 		{
 			name:  "name and server URL from variables",
@@ -67,25 +67,25 @@ func TestReadClientFieldAgreesWithLoadClient(t *testing.T) {
 		},
 		{
 			name: "default of an unset variable",
-			yaml: "client:\n  name: web-1\n  server_url: https://sigil.example.com\n  ipc_socket: \"${SIGIL_TEST_UNSET_SOCKET:-/run/sigil/d.sock}\"\n",
-			want: []string{"web-1", "https://sigil.example.com", "/run/sigil/d.sock"},
+			yaml: "client:\n  name: web-1\n  server_url: https://sigil.example.com\n  ipc_socket: \"${SIGIL_TEST_UNSET_SOCKET:-" + absPath("/run/sigil/d.sock") + "}\"\n",
+			want: []string{"web-1", "https://sigil.example.com", absPath("/run/sigil/d.sock")},
 		},
 		{
 			name: "escaped dollar",
-			yaml: "client:\n  name: web-1\n  server_url: https://sigil.example.com\n  ipc_socket: \"/run/$$sigil.sock\"\n",
-			want: []string{"web-1", "https://sigil.example.com", "/run/$sigil.sock"},
+			yaml: "client:\n  name: web-1\n  server_url: https://sigil.example.com\n  ipc_socket: \"" + absPath("/run/$$sigil.sock") + "\"\n",
+			want: []string{"web-1", "https://sigil.example.com", absPath("/run/$sigil.sock")},
 		},
 		{
 			name:  "alias of an anchored value with a variable",
-			yaml:  "client:\n  name: &n web-${SIGIL_TEST_VALUE}\n  server_url: https://sigil.example.com\n  ipc_socket: *n\n",
+			yaml:  "client:\n  name: web-1\n  server_url: https://sigil.example.com\n  data_dir: &d " + absPath("/run/sigil-${SIGIL_TEST_VALUE}") + "\n  ipc_socket: *d\n",
 			value: "3",
-			want:  []string{"web-3", "https://sigil.example.com", "web-3"},
+			want:  []string{"web-1", "https://sigil.example.com", absPath("/run/sigil-3")},
 		},
 		{
 			name:  "merge key",
-			yaml:  "client:\n  <<: {name: \"web-${SIGIL_TEST_VALUE}\", server_url: \"https://sigil.example.com\"}\n  ipc_socket: /run/sigil/m.sock\n",
+			yaml:  "client:\n  <<: {name: \"web-${SIGIL_TEST_VALUE}\", server_url: \"https://sigil.example.com\"}\n  ipc_socket: " + absPath("/run/sigil/m.sock") + "\n",
 			value: "4",
-			want:  []string{"web-4", "https://sigil.example.com", "/run/sigil/m.sock"},
+			want:  []string{"web-4", "https://sigil.example.com", absPath("/run/sigil/m.sock")},
 		},
 		{
 			name:  "anchored merge key, overridden by the mapping",
@@ -120,21 +120,21 @@ func TestReadClientFieldDoesNotRequireOtherVariables(t *testing.T) {
 	path := writeClientYAML(t, `client:
   name: ${SIGIL_TEST_UNSET_NAME}
   server_url: https://sigil.example.com:8443
-  ipc_socket: /run/sigil/custom.sock
+  ipc_socket: `+absPath("/run/sigil/custom.sock")+`
   data_dir: ${SIGIL_TEST_UNSET_DATA_DIR}
 certificates:
   api:
     outputs:
       - format: pkcs12
-        path: /etc/ssl/api.p12
+        path: `+absPath("/etc/ssl/api.p12")+`
         password: ${SIGIL_TEST_UNSET_P12_PASSWORD}
 `)
 	got, err := ReadClientField(path, "ipc_socket")
 	if err != nil {
 		t.Fatalf("ReadClientField: %v", err)
 	}
-	if got != "/run/sigil/custom.sock" {
-		t.Errorf("ReadClientField = %q, want /run/sigil/custom.sock", got)
+	if want := absPath("/run/sigil/custom.sock"); got != want {
+		t.Errorf("ReadClientField = %q, want %s", got, want)
 	}
 	if _, err := LoadClient(path); err == nil || !strings.Contains(err.Error(), "SIGIL_TEST_UNSET_") {
 		t.Fatalf("LoadClient should still require the other variables, got %v", err)

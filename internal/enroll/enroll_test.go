@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -496,10 +497,20 @@ func TestSaveIdentity(t *testing.T) {
 	}
 }
 
+// absPath makes path, a Unix absolute path, absolute on the OS running the
+// test: on Windows it puts it on drive C:, and Windows takes the slashes of
+// C:/etc/ssl for separators.
+func absPath(path string) string {
+	if runtime.GOOS == "windows" {
+		return "C:" + path
+	}
+	return path
+}
+
 // clientYAMLByHand is a client.yaml as an operator writes it: comments, keys
 // in the order they chose, a mode in octal and a PKCS#12 password that YAML
 // would read as a number if it were not decoded into a string field.
-const clientYAMLByHand = "# managed by ops: do not reorder\n" +
+var clientYAMLByHand = "# managed by ops: do not reorder\n" +
 	"client:\n" +
 	"  server_url: https://sigil.example.com\n" +
 	"  name: web-1\n" +
@@ -507,7 +518,7 @@ const clientYAMLByHand = "# managed by ops: do not reorder\n" +
 	"  api:\n" +
 	"    outputs:\n" +
 	"      - format: pkcs12\n" +
-	"        path: /etc/ssl/api.p12\n" +
+	"        path: " + absPath("/etc/ssl/api.p12") + "\n" +
 	"        password: 0123\n" +
 	"        mode: 0640 # read by the web server group\n"
 
