@@ -231,7 +231,7 @@ CI：`.github/workflows/test.yml` 跑 Linux 全量测试、race、vet（含 `GOO
 - 鉴权读库出错回 500（不再 401）。所有 500 记 ERROR 事件（`look up client failed`、`promote client identity failed`、`read certificate failed`、`read certificate view failed`、`encode certificate view failed`、`client identity renewal failed`、`enrollment failed`、`open certfoldc binary failed`、`panic serving request`）。注册被拒时，已用、过期回 401 并写明原因，记 WARN `enrollment refused client=... token=<ID> error=...`；secret 不符仍是 401 `invalid token`，不记事件。
 - mini-CA 只剩一半文件时拒绝启动，报错写明两条路径。mini-CA 根证书剩余不足 1 年时，在启动时和每次服务端证书重签时记 WARN `mini-CA root certificate expires within a year`。
 - `SaveIdentity` 用 `yaml.Node` 只替换或追加 `identity`，保留注释、键序和原文本，空行会丢。
-- SQLite 和 WAL 包含私钥材料，创建与重开时都必须保持私有权限。schema 迁移只进不退：v5 删除了 clients 表的 push 两列，升级后的数据库不能再用旧版 certfolds 打开。库版本比程序新时拒绝打开并写明两个版本。`store.Open` 只接受路径（可带 `?` 参数）或 `:memory:`。
+- SQLite 和 WAL 包含私钥材料，创建与重开时都必须保持私有权限。schema 迁移只进不退：升级后的数据库不能再用旧版 certfolds 打开（当前 schema 为 v5）。库版本比程序新时拒绝打开并写明两个版本。`store.Open` 只接受路径（可带 `?` 参数）或 `:memory:`。
 - TUI 刷新的每次 IPC 调用使用 10 秒超时（`shared.Within`），daemon 冻结时状态行最迟约 12 秒出现错误，下一个 tick 照常刷新。操作类调用（certfoldc 的 `f`/`R`，certfolds TUI 的 `R`/`d`/`n`）不套 10 秒超时，只受 IPC 客户端 5 分钟总超时限制。
 
 ## 平台约束
@@ -242,7 +242,7 @@ CI：`.github/workflows/test.yml` 跑 Linux 全量测试、race、vet（含 `GOO
 - Windows 上 daemon 必须以 LocalSystem 或提权管理员身份运行。IPC 客户端只信任属主为 SYSTEM 或 Administrators 的命名管道，校验在发出请求之前完成。有管理员权限的 `Listen` 会显式把属主设为 Administrators；不指定属主时，属主取令牌的默认属主，Git Bash 下会变成用户 SID。
 - Windows 服务与事件日志（2026-09-29 certfolds 首测；2026-10-01 复测了安装、启停卸载的退出码、事件 ID、启动失败与恢复动作，其余几条沿用首测）：
   - 服务的环境变量放在注册表 `HKLM\SYSTEM\CurrentControlSet\Services\<name>` 的 REG_MULTI_SZ 值 `Environment`（2026-10-01 在 certfolds 上实测）。写入是整体替换；改完要重启服务，`reload` 不重读环境；`service uninstall` 删除整个服务键，这个值随之消失。
-  - `service install` 装好服务后把服务键设为受保护 DACL `D:P(A;CI;KA;;;SY)(A;CI;KA;;;BA)`（`internal/service/servicekey_windows.go`），否则它从 Services 继承 Users 的读权限，Environment 里的凭据人人可读；事件源键（`Services\EventLog\...`）不动。设置失败时 `service install` 报错退出并给出手工 `Set-Acl` 命令。非提权的 `Get-Service`、`sc query`、`sc qfailure` 不受影响（走 SCM），直接读服务键会被拒（2026-10-01 实测）。已有安装和 `-Upgrade` 不收紧，要 uninstall 再 install。
+  - `service install` 装好服务后把服务键设为受保护 DACL `D:P(A;CI;KA;;;SY)(A;CI;KA;;;BA)`（`internal/service/servicekey_windows.go`），否则它从 Services 继承 Users 的读权限，Environment 里的凭据人人可读；事件源键（`Services\EventLog\...`）不动。设置失败时 `service install` 报错退出并给出手工 `Set-Acl` 命令。非提权的 `Get-Service`、`sc query`、`sc qfailure` 不受影响（走 SCM），直接读服务键会被拒（2026-10-01 实测）。`-Upgrade` 只换二进制，不重新设置服务键的 DACL。
   - install.ps1 重装 certfoldc 服务时，在 uninstall 之前读出 `Environment`，install 之后、start 之前写回；停服务后按服务 PID `WaitForExit(30000)` 等旧进程退出再 `[IO.File]::Replace`（否则留下 `certfoldc.exe~RF*.TMP`）。凭据只经 .NET 方法调用（`[Microsoft.Win32.Registry]::GetValue/SetValue`）和 `foreach` 语句处理，不经 cmdlet 参数或管道，因为模块日志（事件 4103）会记录参数绑定；`install_script_test.go` 的两条静态断言守住（不得出现 `New-ItemProperty`/`Set-ItemProperty`，含 `$Environment` 的行不得有管道）。失败提示只列变量名。
   - install / start / stop / uninstall 退出码都为 0，以 LocalSystem 运行。安装时 System 日志记 7045。
   - 运行期间的 INFO、WARN、ERROR 分别写入 Application 日志，事件 ID 为 1、2、3，来源为服务名（`certfolds`/`certfoldc`），消息按 slog 的 TextHandler 格式正常渲染，与 `certfolds events` 一致。
@@ -323,11 +323,7 @@ ARI 简化：
 - 视图或 bundle 超过 1 MiB 时报的是 JSON 解码错误，看不出是超限。
 
 升级期间：
-- 升级二进制后没重启服务时，daemon 没有 `/ipc/v1/events`，TUI 只显示 404 和空列表，重启服务即可。
-- 二进制升级但 daemon 没重启时，新 CLI/TUI 会打印旧 daemon 没净化的 LastError。新 CLI 拒绝旧 daemon 的 token 应答（无 `token_id`），但令牌已入库、到期作废；先重启 certfolds 再签。旧 daemon 对 `cert add`/`cert remove` 的新路由回 `404 page not found`，重启 certfolds 即可。
-- 终端注入加固（`3212e5e`）之前写下的 certs.json 若含不合规的证书名，要到第一次收到 200 后才清掉。
-- 输出改为重新编码写出，CA 的 PEM 不是 Go 标准格式时，升级后每张证书重写一次、on_change 跑一次。
-- 审查前在 Windows 上 enroll 过的主机，`C:\ProgramData\Certfold` 带安装者 SID，升级后服务和重装 enroll 都会被拒，按报错的 `icacls` 修。
+- Certfold 还没有发布过版本，没有要维护的升级路径；Sigil 时期的安装不兼容，只能卸载后重装（README「Upgrade notes」）。以后引入不兼容的变化时，在这里记录升级注意事项。
 
 各家云 DNS provider 仍然没有 E2E。`skip_propagation_check` 的接线只有 E2E 的"签发成功"能守住，`acme.dns_resolvers` 的生效只有 `TestIssuanceUsesDNSResolvers` 能守住。改这两处时必须跑 E2E。
 

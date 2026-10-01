@@ -430,7 +430,7 @@ When running as a service, the directories the daemon checks must be owned by th
 
 DNS credentials, `LEGO_CA_CERTIFICATES`, and other environment variables for a Windows service go in the registry. The `certfoldc` service uses the same mechanism; replace `certfolds` with `certfoldc` in the paths below. Changes take effect only after a service restart; `certfolds reload` does not re-read environment variables (2026-10-01 verified on `certfolds`; `certfoldc` uses the same mechanism but was not separately tested).
 
-`service install` leaves the service's registry key to SYSTEM and Administrators, so values kept there are not readable by other local users. A service installed by an earlier release keeps the key's old permissions, which let every local user read it, until it is installed again (`service uninstall`, then `service install`, then set the variables again).
+`service install` leaves the service's registry key to SYSTEM and Administrators, so values kept there are not readable by other local users.
 
 PowerShell (elevated):
 
@@ -520,29 +520,9 @@ A `server returned 500: internal error` means the server rolled back the entire 
 
 ## Upgrade notes
 
-**Renamed from Sigil**: until 2026-10-01 the project was called Sigil, with the binaries `sigils` and `sigilc`. Certfold reads none of Sigil's paths, service names, named pipes, or environment variables, so there is no upgrade from a Sigil installation: uninstall it and install Certfold anew.
+**Renamed from Sigil**: until 2026-10-01 the project was called Sigil, with the binaries `sigils` and `sigilc`. Certfold reads none of Sigil's paths, service names, named pipes, or environment variables, so there is no upgrade from a Sigil installation: uninstall it and install Certfold anew. Certfold has no earlier release to upgrade from.
 
-**Old Windows installations**: builds before the directory audit created `C:\ProgramData\Certfold` with the installing user's SID in the ACL. After upgrading, the `certfoldc` service and reinstall enrollment both refuse to start. Fix it with the `icacls` command the error message prints:
+If you carry over a `server.yaml` or `client.yaml` written for Sigil, check two rules that Sigil did not enforce:
 
-```powershell
-icacls "C:\ProgramData\Certfold" /setowner *S-1-5-32-544
-icacls "C:\ProgramData\Certfold" /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" /remove:g *S-1-5-21-...
-```
-
-The exact command is in the error message; copy it from there. If `certfolds` is not on the same host, you can instead remove `C:\ProgramData\Certfold` and re-enroll with a `certfolds token create --name <name> --replace` token.
-
-If the `certfolds` data directory was created interactively with elevation, it may have the same problem. Fix it with the `icacls` command the error prints; do not remove the certfolds data directory, or you lose the mini-CA and certificate database.
-
-**New CLI with old daemon**: after upgrading the binary but before restarting the daemon, the new CLI's `token create` rejects the old daemon's response (which lacks `token_id`), though the token is already stored in the database and will expire. Restart `certfolds` before creating tokens. `cert add` and `cert remove` return `404 page not found` with the old daemon; restart `certfolds` to use them.
-
-**Windows service keys**: builds before the audit left the service's registry key readable by every local user, and with it the `Environment` value that may hold credentials. `-Upgrade` does not change the key; a reinstall with a token does (it runs `service uninstall` and `service install`, and keeps the `Environment` value of `certfoldc`). For `certfolds`, run `service stop`, `service uninstall`, `service install`, set the variables again, then `service start`.
-
-**Systemd units**: builds before the audit did not include `KillMode=mixed`. After upgrading, run `service stop`, `service uninstall`, `service install`, then `service start` to update the unit. The install script's `--upgrade` does not rewrite the unit; only a reinstall with a token does.
-
-**Old certfoldc with new certfolds**: the enrollment response no longer carries `ca_cert`. An old `certfoldc` that enrolls with a new `certfolds` saves an empty CA certificate in `client.yaml`; the daemon then refuses to start with `identity: ca_cert, client_cert, and client_key must all be present (or all absent)`. The enrollment already consumed the token. Fix: replace the binaries in `<data_dir>/binaries/` before enrolling, or re-enroll with a `--replace` token after replacing them.
-
-**Absolute paths**: all path fields now require absolute paths. A `server.yaml` or `client.yaml` that uses relative paths causes the daemon to fail at startup, `reload` to be rejected, or CLI commands to report `<field>: must be an absolute path, got "<value>"`. Fix the paths before upgrading.
-
-**Mode field**: the `mode` field in output specifications is now read as octal. A value that was written as decimal (such as `mode: 400`, which was `0620` in older builds) now means `0400`. Values that contain `8` or `9` (such as `384`, the decimal of `0600`) are rejected and `certfoldc` refuses to start; fix them in `client.yaml`.
-
-**Output re-encoding**: the current build re-encodes certificate PEM blocks before writing outputs. If a CA's PEM was not in Go's standard format, each certificate's outputs are rewritten once after the upgrade, and `on_change` runs once.
+- Every path field must be absolute. A relative path makes the daemon fail at startup and `reload` be rejected, with `<field>: must be an absolute path, got "<value>"`.
+- `mode` in an output is read as octal: `mode: 400` means `0400`. A value that contains `8` or `9` (such as `384`, the decimal form of `0600`) is rejected, and `certfoldc` refuses to start.
