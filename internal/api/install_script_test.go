@@ -131,9 +131,11 @@ func TestInstallPs1KeepsTokenOffCommandLines(t *testing.T) {
 
 // TestInstallPs1ReplacesSigilc checks the steps of install.ps1, which are
 // those of install.sh (TestInstallShReplacesSigilc). Windows does not let a
-// sigilc.exe that runs be replaced, so the service stops first; ReplaceFile
-// then puts the new one in place in one step. A download or a downloaded
-// sigilc that fails leaves no sigilc.download.exe behind.
+// sigilc.exe that runs be replaced, so the service stops first, and the
+// installer waits for the process it had, which may outlast the stop, to
+// exit; ReplaceFile then puts the new one in place in one step, and has no
+// old one left that it cannot delete. A download or a downloaded sigilc that
+// fails leaves no sigilc.download.exe behind.
 func TestInstallPs1ReplacesSigilc(t *testing.T) {
 	script := getInstallScript(t, "/install.ps1").Body.String()
 	if strings.Contains(script, "-OutFile $Dest") {
@@ -147,7 +149,12 @@ func TestInstallPs1ReplacesSigilc(t *testing.T) {
 		"\ntry {\n",
 		" -OutFile $Download\n",
 		"\n    & $Download version\n",
-		"\n    if ($Service) {\n        Write-Host 'Stopping service...'\n        Stop-Service -Name sigilc\n    }\n",
+		"\n    if ($Service) {\n",
+		"\n        $ServicePid = (Get-CimInstance -ClassName Win32_Service -Filter \"Name='sigilc'\").ProcessId\n"+
+			"        $ServiceProcess = if ($ServicePid) { Get-Process -Id $ServicePid -ErrorAction SilentlyContinue }\n",
+		"\n        Write-Host 'Stopping service...'\n        Stop-Service -Name sigilc\n",
+		"\n        if ($ServiceProcess -and -not $ServiceProcess.WaitForExit(30000)) {\n"+
+			"            throw \"Process $ServicePid of the sigilc service did not exit within 30 seconds",
 		"\n    if (Test-Path -LiteralPath $Dest) {\n",
 		"\n        [IO.File]::Replace($Download, $Dest, [NullString]::Value)\n    } else {\n"+
 			"        Move-Item -LiteralPath $Download -Destination $Dest\n    }\n",
@@ -187,15 +194,60 @@ func TestInstallPs1StartsServiceWhenEnrollFails(t *testing.T) {
 
 // TestInstallPs1FinishesByHand checks that a reinstall that enrolled and then
 // failed to install the service anew says how to finish by hand: running the
-// installer again would need a new token.
+// installer again would need a new token. Where the service had an
+// Environment, which the uninstall deletes, that includes giving it back
+// before the start.
 func TestInstallPs1FinishesByHand(t *testing.T) {
 	script := getInstallScript(t, "/install.ps1").Body.String()
 	inOrder(t, script,
+		"\n    $SetEnvironment = ''\n",
+		"\n        if ($null -ne $Environment) {\n",
+		"\n            $SetEnvironment = \" Before that start, give the service its Environment back, with the values it had: \" +\n"+
+			"                \"[Microsoft.Win32.Registry]::SetValue('$ServiceKey', 'Environment', [string[]]@($Variables), 'MultiString')\"\n",
 		"\n        & $Dest service uninstall\n",
-		"sigilc is enrolled: once that is fixed, run & '$Dest' service uninstall, then & '$Dest' service install and & '$Dest' service start.\" }\n",
+		"sigilc is enrolled: once that is fixed, run & '$Dest' service uninstall, then & '$Dest' service install and & '$Dest' service start.$SetEnvironment\" }\n",
 		"\n    & $Dest service install\n",
-		"sigilc is enrolled: once that is fixed, run & '$Dest' service install, then & '$Dest' service start.\" }\n",
+		"sigilc is enrolled: once that is fixed, run & '$Dest' service install, then & '$Dest' service start.$SetEnvironment\" }\n",
+		"sigilc is enrolled and its service installed: run & '$Dest' service start.$SetEnvironment\"\n",
 	)
+}
+
+// TestInstallPs1KeepsTheServiceEnvironment checks that a reinstall keeps the
+// Environment of the sigilc service, which gives the ${VAR}s of client.yaml
+// their values and which the uninstall deletes with the registry key of the
+// service: it is read before the uninstall and written back after the
+// install, before the service starts. The values may be secrets, which no
+// message holds: an error names only the variables. Nor do they pass through
+// the parameters of a command or a pipeline, which module logging writes to
+// an event log that every user may read, but only through method calls and
+// statements.
+func TestInstallPs1KeepsTheServiceEnvironment(t *testing.T) {
+	script := getInstallScript(t, "/install.ps1").Body.String()
+	inOrder(t, script,
+		"\n    $ServiceKey = 'HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\sigilc'\n",
+		"\n        $Environment = [Microsoft.Win32.Registry]::GetValue($ServiceKey, 'Environment', $null)\n",
+		"\n        & $Dest service uninstall\n",
+		"\n    & $Dest service install\n",
+		"\n    if ($Service -and $null -ne $Environment) {\n",
+		"\n            [Microsoft.Win32.Registry]::SetValue($ServiceKey, 'Environment', [string[]]$Environment, 'MultiString')\n",
+		"\n& $Dest service start\n",
+	)
+	environment := regexp.MustCompile(`(?i)\$\{?Environment\b`)
+	onlyOn(t, script, environment,
+		"        $Environment = [Microsoft.Win32.Registry]::GetValue($ServiceKey, 'Environment', $null)",
+		"        if ($null -ne $Environment) {",
+		`            $Variables = @(foreach ($Variable in $Environment) { "'" + ($Variable -split '=', 2)[0] + "=<value>'" }) -join ', '`,
+		"    if ($Service -and $null -ne $Environment) {",
+		"            [Microsoft.Win32.Registry]::SetValue($ServiceKey, 'Environment', [string[]]$Environment, 'MultiString')",
+	)
+	if found := regexp.MustCompile(`(?i)\b(New|Set)-ItemProperty\b`).FindString(script); found != "" {
+		t.Errorf("script runs %s, whose parameters module logging records", found)
+	}
+	for _, line := range strings.Split(script, "\n") {
+		if environment.MatchString(line) && strings.Contains(line, "|") {
+			t.Errorf("$Environment goes down a pipeline, which module logging records: %q", line)
+		}
+	}
 }
 
 // TestInstallPs1WaitsForTheDaemon checks that install.ps1 does not report a
