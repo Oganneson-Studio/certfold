@@ -1564,6 +1564,40 @@ func TestAuthenticatedRequestsRecordLastSeenAtMostOncePerInterval(t *testing.T) 
 	}
 }
 
+// A client enrolled again, as `sigils token create --replace` lets an install
+// do, has a new identity and no last_seen. Its first request records
+// last_seen at once, though the old identity was seen within the interval,
+// and its claim replaces that of the old identity.
+func TestEnrolledAgainClientRecordsLastSeenOnFirstRequest(t *testing.T) {
+	deps := buildDeps(t)
+	h := newHandlers(deps)
+	handler := buildRouter(h)
+	request := func(identity *tls.Certificate) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, syncRequest(identity, ""))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	request(makeEnrolledClientCert(t, deps, "web-1"))
+	request(makeEnrolledClientCert(t, deps, "web-1"))
+	got, err := deps.DB.Clients.Get(context.Background(), "web-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LastSeen.IsZero() {
+		t.Fatal("the first request of the new identity did not record last_seen")
+	}
+	h.seenMu.Lock()
+	n := len(h.lastSeen)
+	h.seenMu.Unlock()
+	if n != 1 {
+		t.Fatalf("last_seen claims = %d, want 1 for the one client", n)
+	}
+}
+
 // last_seen only records that an authenticated client was here: a request
 // whose write of it fails is served all the same, and the write is tried
 // again only after the interval.
@@ -1755,17 +1789,13 @@ func TestAuthenticatedRequestRejectsPendingIdentityReplacedDuringRequest(t *test
 	}
 	restaged.PendingFingerprint = ca.Fingerprint(newer.Certificate[0])
 
-	// A request of the active identity claims this interval's last_seen
-	// write, so no MarkSeen runs for the request under test: its WHERE on the
-	// fingerprint would refuse the replaced identity too and hide a missing
-	// check. It must come before the transaction, whose write lock it would
-	// otherwise wait for.
-	handler := newHandler(deps)
-	active := httptest.NewRecorder()
-	handler.ServeHTTP(active, syncRequest(enrolled, ""))
-	if active.Code != http.StatusOK {
-		t.Fatalf("active identity: status = %d", active.Code)
-	}
+	// Claim this interval's last_seen write for the replaced identity, so no
+	// MarkSeen runs for the request under test: its WHERE on the fingerprint
+	// would refuse the replaced identity too and hide a missing check. No
+	// request can claim it: one by the replaced identity would promote it.
+	h := newHandlers(deps)
+	h.lastSeen["web-1"] = seenClaim{fingerprint: ca.Fingerprint(replaced.Certificate[0]), at: time.Now()}
+	handler := buildRouter(h)
 
 	tx, err := other.BeginTx(ctx)
 	if err != nil {
