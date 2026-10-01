@@ -114,9 +114,14 @@ func runEnroll(cmd *cobra.Command, _ []string) (err error) {
 	if !created {
 		// The server now accepts only the new identity, and a daemon that
 		// runs goes on with the one it loaded until it reads client.yaml
-		// again.
-		fmt.Println("a running sigilc daemon keeps its old identity, which the server no longer accepts, " +
-			"until `sigilc reload` or a restart of the sigilc service")
+		// again. The line is printed only when a daemon answers on its
+		// endpoint: the install scripts stop the service before they enroll.
+		// The dial takes at most the two seconds for which a busy Windows
+		// pipe is retried, and any error counts as no daemon.
+		if _, err := dialDaemon(cmd); err == nil {
+			fmt.Println("a running sigilc daemon keeps its old identity, which the server no longer accepts, " +
+				"until `sigilc reload` or a restart of the sigilc service")
+		}
 	}
 	return nil
 }
