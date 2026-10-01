@@ -131,9 +131,11 @@ func TestInstallPs1KeepsTokenOffCommandLines(t *testing.T) {
 
 // TestInstallPs1ReplacesSigilc checks the steps of install.ps1, which are
 // those of install.sh (TestInstallShReplacesSigilc). Windows does not let a
-// sigilc.exe that runs be replaced, so the service stops first; ReplaceFile
-// then puts the new one in place in one step. A download or a downloaded
-// sigilc that fails leaves no sigilc.download.exe behind.
+// sigilc.exe that runs be replaced, so the service stops first, and the
+// installer waits for the process it had, which may outlast the stop, to
+// exit; ReplaceFile then puts the new one in place in one step, and has no
+// old one left that it cannot delete. A download or a downloaded sigilc that
+// fails leaves no sigilc.download.exe behind.
 func TestInstallPs1ReplacesSigilc(t *testing.T) {
 	script := getInstallScript(t, "/install.ps1").Body.String()
 	if strings.Contains(script, "-OutFile $Dest") {
@@ -147,7 +149,12 @@ func TestInstallPs1ReplacesSigilc(t *testing.T) {
 		"\ntry {\n",
 		" -OutFile $Download\n",
 		"\n    & $Download version\n",
-		"\n    if ($Service) {\n        Write-Host 'Stopping service...'\n        Stop-Service -Name sigilc\n    }\n",
+		"\n    if ($Service) {\n",
+		"\n        $ServicePid = (Get-CimInstance -ClassName Win32_Service -Filter \"Name='sigilc'\").ProcessId\n"+
+			"        $ServiceProcess = if ($ServicePid) { Get-Process -Id $ServicePid }\n",
+		"\n        Write-Host 'Stopping service...'\n        Stop-Service -Name sigilc\n",
+		"\n        if ($ServiceProcess -and -not $ServiceProcess.WaitForExit(30000)) {\n"+
+			"            throw \"Process $ServicePid of the sigilc service did not exit within 30 seconds",
 		"\n    if (Test-Path -LiteralPath $Dest) {\n",
 		"\n        [IO.File]::Replace($Download, $Dest, [NullString]::Value)\n    } else {\n"+
 			"        Move-Item -LiteralPath $Download -Destination $Dest\n    }\n",
@@ -187,14 +194,21 @@ func TestInstallPs1StartsServiceWhenEnrollFails(t *testing.T) {
 
 // TestInstallPs1FinishesByHand checks that a reinstall that enrolled and then
 // failed to install the service anew says how to finish by hand: running the
-// installer again would need a new token.
+// installer again would need a new token. Where the service had an
+// Environment, which the uninstall deletes, that includes giving it back
+// before the start.
 func TestInstallPs1FinishesByHand(t *testing.T) {
 	script := getInstallScript(t, "/install.ps1").Body.String()
 	inOrder(t, script,
+		"\n    $SetEnvironment = ''\n",
+		"\n        if ($null -ne $Environment) {\n",
+		"\n            $SetEnvironment = \" Before that start, give the service its Environment back, with the values it had: \" +\n"+
+			"                \"New-ItemProperty -LiteralPath '$ServiceKey' -Name Environment -PropertyType MultiString -Force -Value @($Variables)\"\n",
 		"\n        & $Dest service uninstall\n",
-		"sigilc is enrolled: once that is fixed, run & '$Dest' service uninstall, then & '$Dest' service install and & '$Dest' service start.\" }\n",
+		"sigilc is enrolled: once that is fixed, run & '$Dest' service uninstall, then & '$Dest' service install and & '$Dest' service start.$SetEnvironment\" }\n",
 		"\n    & $Dest service install\n",
-		"sigilc is enrolled: once that is fixed, run & '$Dest' service install, then & '$Dest' service start.\" }\n",
+		"sigilc is enrolled: once that is fixed, run & '$Dest' service install, then & '$Dest' service start.$SetEnvironment\" }\n",
+		"sigilc is enrolled and its service installed: once that is fixed, run & '$Dest' service start.$SetEnvironment\"\n",
 	)
 }
 
@@ -217,9 +231,10 @@ func TestInstallPs1KeepsTheServiceEnvironment(t *testing.T) {
 	)
 	onlyOn(t, script, regexp.MustCompile(`(?i)\$\{?Environment\b`),
 		"        $Environment = (Get-Item -LiteralPath $ServiceKey).GetValue('Environment')",
+		"        if ($null -ne $Environment) {",
+		`            $Variables = ($Environment | ForEach-Object { "'" + ($_ -split '=', 2)[0] + "=<value>'" }) -join ', '`,
 		"    if ($Service -and $null -ne $Environment) {",
 		"            New-ItemProperty -LiteralPath $ServiceKey -Name Environment -PropertyType MultiString -Value ([string[]]$Environment) | Out-Null",
-		"            $Names = ($Environment | ForEach-Object { ($_ -split '=', 2)[0] }) -join ', '",
 	)
 }
 
