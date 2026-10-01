@@ -29,6 +29,14 @@ jobs:
       - name: Vet e2e tests
         run: go vet -tags e2e ./test/e2e
 
+      # The _windows.go files: go test in the Windows job runs only a few of
+      # the checks of vet.
+      - name: Vet for Windows
+        run: GOOS=windows go vet ./...
+
+      - name: Vet e2e tests for Windows
+        run: GOOS=windows go vet -tags e2e ./test/e2e
+
       - name: Test
         run: go test ./... -count=1
 
