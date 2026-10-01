@@ -1,528 +1,113 @@
+English | [简体中文](README.zh-CN.md)
+
 # Certfold
 
-Certfold is a central certificate issuer and distributor for server fleets.
+Certfold is a central ACME certificate issuer and distributor for server fleets. The server (`certfolds`) obtains and renews certificates automatically through DNS-01 validation; clients (`certfoldc`) on each host pull their subscribed certificates over mTLS, write them in PEM, DER, or PKCS#12 format, and can run a configured program when a certificate changes.
 
-- `certfolds` manages ACME certificates, enrollment, subscriptions, and distribution.
-- `certfoldc` enrolls with mTLS, pulls subscribed certificates, and writes them in PEM, DER, or PKCS#12 formats.
-
-## Project status
-
-Active development. Enrollment, certificate distribution, management commands, runtime reload, client identity renewal, long-poll delivery, parallel issuance, ARI-directed renewal, HTTPS certificate hot-reload, server and client TUIs, and structured logging with events are implemented. The security-critical enrollment and pull path is covered by unit tests and a WSLC-native end-to-end test that includes real ACME issuance through Pebble and ARI. Review the limitations below before production use.
-
-## Build and test
-
-```bash
-go build ./cmd/certfolds
-go build ./cmd/certfoldc
-go test ./... -count=1
-go vet ./...
+```
+                        ACME CA
+                           |
+               order, DNS-01 challenge
+                    certificate
+                           |
+  DNS provider <----> certfolds
+    (TXT record)           |
+                     mTLS long poll
+                    _______|_______
+                   |       |       |
+              certfoldc certfoldc certfoldc
+              (host 1)  (host 2)  (host N)
+                  |
+             write outputs
+             run on_change
 ```
 
-On Windows, the end-to-end suite uses WSLC directly and does not require Docker Desktop or Compose:
+## Key features
 
-```powershell
-go test -v -tags e2e -count=1 -timeout 10m ./test/e2e
-```
+- Automatic ACME issuance and renewal with ARI (RFC 9773) support
+- Long-poll delivery: the server answers as soon as a subscribed certificate is issued
+- One-time enrollment tokens; enrolled clients authenticate with mTLS
+- Declarative output reconciliation: outputs are restored automatically
+- `on_change` hooks for reloading services after certificate updates
+- One-line installation on Linux, macOS, and Windows
+- Server and client TUIs
+- Structured logging with the last 500 events kept in memory
 
-The `-count=1` flag is required. The test builds temporary OCI images through `wslc build`, and Go's test cache cannot see those reads; without the flag a second run reports `(cached)` even when the code changed.
+## Quick start
 
-The test builds temporary OCI images, creates an isolated WSLC network, and issues real certificates from a Pebble ACME server through the `exec` DNS hook and a challenge test DNS server. It verifies enrollment, certificate fetch, delivery of a renewed certificate over the long poll, restoring deleted and modified outputs, `on_change` runs, reload wake-ups, client revocation, token expiry/revocation, ARI renewal-window tracking and ARI-directed renewal with `replaces`, HTTPS certificate hot-reload, static install.ps1, deletion of non-existent objects returning 404, and renewal events, then removes its containers, network, and images.
-
-Linux CI can run the same orchestration with Docker Engine. Set `CERTFOLD_CONTAINER_CLI=docker` and `CERTFOLD_E2E_REQUIRED=1` (without the latter, a missing container runtime silently exits 0). Run as a regular user in the `docker` group, without `sudo`; cleanup does not need `sudo` either.
-
-## One-line installation
-
-Place platform binaries in `<data_dir>/binaries/` using names such as `certfoldc-linux-amd64` and `certfoldc-windows-amd64.exe`. After creating an enrollment token, `certfolds token create` prints the install commands with the token filled in.
-
-**Linux / macOS** (as a user who may sudo):
-
-```bash
-curl -fsSL --proto '=https' --proto-redir '=https' 'https://certfold.example.com:8443/install.sh' | sudo sh -s -- --token '<token>'
-```
-
-Without `--token`, the script asks for the token on the terminal (not echoed), which keeps it off the command line. Prefer this on a host that others use. On macOS, the terminal's single-line input limit (1024 characters) may truncate the token (about 1050 characters); use `--token` there instead:
-
-```bash
-curl -fsSL --proto '=https' --proto-redir '=https' 'https://certfold.example.com:8443/install.sh' | sudo sh
-```
-
-**Windows** (elevated PowerShell, 5.1 or 7):
-
-```powershell
-[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; & ([scriptblock]::Create((irm 'https://certfold.example.com:8443/install.ps1'))) -Token '<token>'
-```
-
-Without `-Token`, the script prompts for the token with `Read-Host -AsSecureString` (only asterisks on screen):
-
-```powershell
-[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; & ([scriptblock]::Create((irm 'https://certfold.example.com:8443/install.ps1')))
-```
-
-The `-bor 3072` prefix adds TLS 1.2 to the protocols Windows PowerShell 5.1 offers. The Certfold server accepts TLS 1.2 and above on its public HTTPS listener, while `certfoldc`'s own connections (enrollment and mTLS) require TLS 1.3.
-
-With `--token` / `-Token`, the token appears in the process command line: `sh -s -- --token` is visible to other users and saved to the shell history; `-Token '...'` stays in the PowerShell session history (`Get-History`) and may be written to the history file by older PSReadLine versions. To keep the token off the command line, omit the flag so that the script prompts for it interactively. `certfoldc enroll` without `--token` reads the `CERTFOLDC_TOKEN` environment variable; both scripts use this to pass the token to `certfoldc`. In automated environments without a terminal, pass `--token` or `-Token` (Linux reports "No terminal to read the token from"; Windows `Read-Host` is not available in non-interactive sessions).
-
-**Reinstalling** on a host where `certfoldc` is already installed: run the same command with a new token (created with `certfolds token create --name <name> --replace`). The script stops the service, replaces the binary, enrolls with the new token, reinstalls the service, and starts it. If enrollment fails, the service is restarted with the earlier `client.yaml`; if the error says the server took the token, the earlier identity no longer works and you need a new `--replace` token. If `client.yaml` already exists with a different name or server URL, the script reports the path and asks you to remove it. After the service starts, the script polls `certfoldc status` for up to 15 seconds and reports the log location if the daemon does not answer.
-
-**Upgrading** the binary without re-enrolling:
-
-```bash
-curl -fsSL --proto '=https' --proto-redir '=https' 'https://certfold.example.com:8443/install.sh' | sudo sh -s -- --upgrade
-```
-
-```powershell
-[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; & ([scriptblock]::Create((irm 'https://certfold.example.com:8443/install.ps1'))) -Upgrade
-```
-
-`--upgrade` / `-Upgrade` stops the service, replaces the binary, and restarts; it fails if `certfoldc` was never installed. You cannot combine `--upgrade` with `--token`.
-
-## Production TLS
-
-The one-line installer downloads `certfoldc` before enrollment, so the public Certfold endpoint must present a certificate already trusted by the operating system. Configure a public certificate directly:
+Build `certfolds` and `certfoldc` first (see [Build and test](docs/en/development.md)). Write a minimal `/etc/certfold/server.yaml`:
 
 ```yaml
 server:
   listen: ":8443"
   public_url: "https://certfold.example.com:8443"
   data_dir: "/var/lib/certfolds"
-  tls_cert_file: "/etc/certfold/tls/fullchain.pem"
-  tls_key_file: "/etc/certfold/tls/key.pem"
+
+acme:
+  email: "ops@example.com"
+  default_ca: letsencrypt
+  cas:
+    letsencrypt:
+      directory: "https://acme-v02.api.letsencrypt.org/directory"
+
+dns_providers:
+  cloudflare:
+    type: cloudflare
+    api_token: "${CF_API_TOKEN}"
+
+certificates:
+  - name: api-prod
+    domains: ["api.example.com"]
+    ca: letsencrypt
+    dns_provider: cloudflare
+    subscribers: [web-1]
 ```
 
-Replace the certificate and key files in place; `certfolds` reloads them on the next TLS handshake without a restart. A certificate that does not pair with its key is skipped with a warning, and the previous certificate remains in use. Keep the files on a local filesystem: a network mount where `stat` stalls will block all handshakes.
-
-When these fields are omitted, `certfolds` uses its internal mini-CA certificate and reissues it automatically before it expires. A failed reissue retries after one minute.
-
-`server.public_url` must be a pure-ASCII `https` URL. It may not contain quotes, backticks, `$`, `\`, whitespace or control characters: `install.sh` puts it in double quotes (`SERVER_URL="..."`), so `$`, backtick, `\` and `"` would be interpolated; `install.ps1` and the enrollment token put it in single quotes for PowerShell, where curly quotes (U+2018-U+201E) also act as quote characters.
-
-Enrollment tokens carry the expected client name, server URL, and mini-CA certificate. `certfoldc` validates TLS before sending the token or CSR, then stores its mTLS identity in a private, atomically replaced configuration file. `certfoldc` verifies the server against the operating system's roots plus the Certfold mini-CA, so either kind of server certificate works. Client certificates are always issued and verified by the mini-CA.
-
-## Basic flow
+Set `CF_API_TOKEN` in the server's environment, then start the server (on Linux, as root):
 
 ```bash
-# Start the server
 certfolds --config /etc/certfold/server.yaml serve
+```
 
-# Create a short-lived enrollment token (--expires up to 168h, default 1h)
+Create a short-lived enrollment token:
+
+```bash
 certfolds --config /etc/certfold/server.yaml token create --name web-1 --expires 10m
+```
 
-# Enroll and run a client
+On web-1, enroll and start the client:
+
+```bash
 certfoldc --config /etc/certfold/client.yaml enroll --token <token>
 certfoldc --config /etc/certfold/client.yaml serve
+```
 
-# Inspect or trigger the running client through local IPC
+See [Client configuration](docs/en/configuration.md#client-configuration) for how to configure outputs and `on_change`. The [one-line installer](docs/en/installation.md#one-line-installation) automates enrollment and service setup, but requires platform binaries in `<data_dir>/binaries/` and a server certificate the operating system already trusts (see [Production TLS](docs/en/installation.md#production-tls)).
+
+Inspect or trigger the running client:
+
+```bash
 certfoldc status
 certfoldc fetch --cert api-prod
 certfoldc reload
-
-# Validate and apply supported server.yaml changes through local IPC
-certfolds --config /etc/certfold/server.yaml reload
 ```
 
-On Linux, `certfolds` and `certfoldc` management commands need root because the IPC sockets are owned by root. When the configuration file does not exist or the user may not read it, the CLI uses the platform default IPC endpoint. When the file can be read but `ipc_socket` cannot be used (the file is not valid YAML, a `${VAR}` in `ipc_socket` is not set, or the path is relative), the CLI reports an error and suggests `--ipc`. If you set a custom `ipc_socket`, run the CLI as root (or elevated) or pass `--ipc`.
+## Documentation
 
-`token create`, `reload`, `cert add`, and `cert remove` are served by the running daemon over local IPC and fail when it is not running. `token create` also refuses to run when `server.public_url` is unset and `server.listen` names no host clients can reach. When the name belongs to an enrolled client or to an unused token that has not expired, `token create` requires `--replace`; with `--replace`, it also revokes all unused tokens of that name. `cert add` and `cert remove` edit `server.yaml` and apply the new configuration atomically; if the apply fails, the file is written back to its original contents. Other hotloadable changes already in the file take effect at the same time; if the file contains a change that requires a restart, the command is refused and the file is not modified. On Windows, the first `cert add` or `cert remove` changes `server.yaml` to a private DACL (SYSTEM and Administrators only).
-
-`certfoldc enroll` writes `client.yaml` before sending the token; if enrollment fails, the file it created is removed (an existing file is not touched). A token whose name or server URL does not pass the naming rules is rejected before any network request. Without `--token`, `certfoldc enroll` reads the `CERTFOLDC_TOKEN` environment variable. When `enroll` overwrites an existing identity, a running `certfoldc` daemon keeps the old one (which the server no longer accepts) until `certfoldc reload` or a service restart.
-
-`client remove` and `token revoke` report an error (exit code 1) when the name or ID does not exist, instead of silently claiming success. After removing a client, `client remove` lists the certificates it subscribed to and suggests `certfolds cert renew` for each. The old certificates and private keys the client holds remain valid until they expire; renewing issues new ones but does not revoke the old.
-
-On Linux, the install script writes:
-
-- `/usr/local/bin/certfoldc`
-- `/etc/certfold/client.yaml` (file `0600`, directory `0700`)
-- `/var/lib/certfoldc` (created by `certfoldc` at first startup; already present after installation, mode `0700`, owned by root --- 2026-10-01 verified)
-- `/var/run/certfold/certfoldc.sock` (`0660`, owned by root; `sudo certfoldc status` to query)
-- `/etc/systemd/system/certfoldc.service` with `Restart=on-failure`, `RestartSec=5`, and `KillMode=mixed`
-
-To uninstall (do not remove `/var/run/certfold`; `certfolds` uses it too):
-
-```bash
-sudo certfoldc service stop
-sudo certfoldc service uninstall
-sudo rm -f /usr/local/bin/certfoldc /etc/certfold/client.yaml
-sudo rm -rf /var/lib/certfoldc
-# on the server, to revoke access:
-sudo certfolds client remove <name>
-```
-
-To uninstall on Windows (elevated PowerShell):
-
-```powershell
-& 'C:\Program Files\Certfold\certfoldc.exe' service stop
-& 'C:\Program Files\Certfold\certfoldc.exe' service uninstall
-Remove-Item -Recurse -Force 'C:\Program Files\Certfold'
-Remove-Item -Force 'C:\ProgramData\Certfold\client.yaml'
-Remove-Item -Recurse -Force 'C:\ProgramData\Certfold\client'
-# on the server, to revoke access:
-certfolds client remove <name>
-```
-
-Do not remove `C:\ProgramData\Certfold` entirely if `certfolds` shares it on the same host.
-
-On Windows, run the daemons as services (LocalSystem) or from an elevated prompt. The CLI only talks to a named pipe owned by SYSTEM or Administrators, so a low-privilege process cannot impersonate the daemon.
-
-To register `certfolds` as a Windows service:
-
-```powershell
-certfolds --config <path> service install    # registers "serve --config <path>" as LocalSystem
-certfolds service start
-```
-
-Events go to the Application event log with `certfolds` as the source. `service uninstall` removes the event log source.
-
-`service install` registers a daemon with the system service manager, which restarts it after a failure; see [Services](#services) for details.
-
-## Client configuration
-
-`client.yaml` names the server, the client's data directory, and what to do with each certificate:
-
-```yaml
-client:
-  name: web-1
-  server_url: "https://certfold.example.com:8443"
-  data_dir: "/var/lib/certfoldc"
-certificates:
-  api-prod:
-    outputs:
-      - format: pem-fullchain
-        path: /etc/nginx/certs/api.pem
-      - format: pem-key
-        path: /etc/nginx/certs/api.key
-    on_change: ["/usr/sbin/nginx", "-s", "reload"]
-```
-
-- Which certificates a client receives is decided only by `subscribers` in `server.yaml`. An entry under `certificates` in `client.yaml` only says where to write a certificate the client already receives.
-- Output formats are `pem-cert`, `pem-key`, `pem-fullchain`, `pem-bundle`, `pkcs12` (requires `password`), and `der`. `mode`, `owner`, and `group` are optional. Private-key outputs default to `0600`, the others to `0644`. `mode` is read as octal: `640` means `0640`; `0o640` also works.
-- All path fields in both `server.yaml` (`data_dir`, `ipc_socket`, `tls_cert_file`, `tls_key_file`, gcloud `service_account_file`) and `client.yaml` (`data_dir`, `ipc_socket`, output `path`) must be absolute paths. On Windows, `\dir` and `C:dir` are not absolute; named pipes must be written as `\\.\pipe\...`. `${VAR}` references are expanded before the check.
-- Two outputs cannot share a path. Paths are compared after cleaning, and case-insensitively on Windows.
-- `enroll` adds the client's mTLS identity to this file.
-- The top-level `outputs` map and the `client.pull_interval`, `client.push_listen`, and `client.push_token` keys of earlier builds are rejected as unknown fields, as is the `clients` section of `server.yaml`.
-
-`data_dir` holds `certs.json`, a copy of every subscribed certificate and its private key, written with the same private permissions as `client.yaml`. Keep `data_dir` on a filesystem that stores Unix permission bits: WSL drvfs mounts and CIFS without Unix extensions do not. Earlier builds left `state.json` and a `cache/` directory there; they are no longer read and can be deleted.
-
-## Delivery and reconciliation
-
-`certfoldc` keeps one request to `GET /v1/sync` open. The server answers as soon as a certificate the client subscribes to is issued or a reload changes what the client receives, and otherwise after 55 seconds; the client then asks again. A layer-4 proxy between `certfoldc` and `certfolds` needs an idle timeout above 60 seconds, or every request fails and delivery slows to the retry interval.
-
-After every round, whether the server reported a change, reported none, or could not be reached, `certfoldc` reconciles each configured output with its local store:
-
-- An output that is missing or whose content differs is rewritten. All outputs of one certificate are staged first and then replaced together.
-- An output with the right content but the wrong permission bits or ownership is corrected in place. On Windows, reconciliation compares content only; permission and ownership changes take effect on the next content change (renewal) or when the file is deleted. This does not count as a change and does not run `on_change`.
-- On filesystems that cannot store Unix permission bits, the configured `mode` has no effect; protect such directories by other means.
-- An idle client reconciles about every 55 seconds. While errors persist, including a failing `on_change` program, rounds back off from 5 seconds to 5 minutes.
-
-This is a declarative model: manual edits to outputs are undone within a round. `certfoldc fetch` pulls and reconciles at once; `--cert NAME` also downloads that certificate again. `certfoldc reload` returns after reconciling with the new configuration; it does not clear the last error shown by `certfoldc status`, which updates on the next round. Changes to `client.data_dir` or `client.ipc_socket` require a restart.
-
-## on_change programs
-
-`on_change` runs a program after new material for the certificate is stored or the content of any of its outputs is rewritten, including when a deleted or modified output is restored. Correcting permissions or ownership alone does not run it.
-
-- It is an argument list whose first item must be an absolute path. It is not run through a shell.
-- Programs run one at a time in certificate-name order, after all outputs are reconciled. A certificate whose outputs could not all be written does not run its program.
-- Each run times out after 2 minutes. The program runs as the `certfoldc` service account with its full environment and an empty stdin. Its working directory is the service's (`/` under systemd, `System32` for a Windows service), so use absolute paths.
-- A failed run is retried every round until it succeeds. Meanwhile the client backs off, so new certificates can arrive up to about 5 minutes late. `certfoldc status` shows the error, which names only the certificate and the exit status or timeout; the last 4 KiB of the program's output goes to the service log only (see [Events and logging](#events-and-logging)), not to the events shown by `certfoldc events`.
-- A background process the program starts must redirect its own stdout and stderr. Otherwise `certfoldc` waits 5 seconds after the program exits, then closes the pipe, logs it, and counts the run as successful; on Unix the process may be killed by `SIGPIPE` on its next write. `nohup` does not redirect output that is a pipe.
-- Values in `client.yaml` go through `${VAR}` expansion, so a literal `$` in an argument is written `$$`.
-- When `certs.json` starts empty, for example on the first start after an upgrade, each certificate with an `on_change` program runs it once, even if its outputs were already up to date.
-
-On Windows, run a PowerShell script through its full path, not a `.bat` or `.cmd` file: `cmd.exe` re-parses the arguments, and values that contain special characters are mangled. Use `powershell.exe -File`:
-
-```yaml
-certificates:
-  web-iis:
-    outputs:
-      - format: pkcs12
-        path: 'C:\certfold\web.pfx'
-        password: "${PFX_PASSWORD}"
-    on_change: ['C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', 'C:\certfold\reload-iis.ps1']
-```
-
-## Renewal
-
-`certfolds` renews each certificate automatically. When the ACME CA publishes a renewal window (ARI, RFC 9773), `certfolds` picks a random moment within that window and renews there; the moment stays fixed until the window changes. When the CA offers no ARI, `certfolds` uses a ratio rule aligned with Let's Encrypt's guidance: renew when a third of the certificate's lifetime remains, or when half remains for certificates with a lifetime under 10 days.
-
-`certfolds cert list` and `certfolds cert show` display the renewal moment and its source; see [Runtime reload and issuance](#runtime-reload-and-issuance).
-
-Renewal is automatic; there is nothing to configure. `renew_days_before` has been removed and is now rejected as an unknown field.
-
-**When a CA announces a mass revocation**, run `certfolds reload` to make every certificate re-query ARI immediately. Without this, the next query may be up to 24 hours away.
-
-Two guards prevent tight retry loops when a certificate arrives already due for renewal:
-
-- **Ratio rule**: the error reads `issued certificate was stored, but is already due for renewal (lifetime ..., renewal due ...)`. The certificate is stored and delivered, but the issuance counts as a failure. Fix the cause and clear the backoff with `certfolds cert renew <name>` or `certfolds reload`.
-- **ARI**: the error reads `renewal window of a newly issued certificate has already passed`. The CA returned an ARI window that is entirely in the past. A `certfolds reload` clears the database backoff, but the in-memory guard still blocks renewal until the backoff expires; to renew immediately, use `certfolds cert renew <name>`.
-
-## Events and logging
-
-Both daemons write structured log lines to stderr, which under systemd goes to journald. On Windows, when running as a service, events go to the Application event log with the service name (`certfolds` or `certfoldc`) as the source and event IDs 1 (INFO), 2 (WARN) and 3 (ERROR).
-
-Each daemon also keeps the last 500 events in memory. Read them with the `events` command:
-
-```bash
-certfolds events           # text
-certfolds events --json    # JSON array
-certfoldc events           # text
-certfoldc events --json    # JSON array
-```
-
-`certfolds events` uses the global `--json` flag; `certfoldc events` has its own local `--json` flag.
-
-Events include certificate issuance, enrollment, reload results, identity renewal, client and token management, and ARI window updates. The output of `on_change` and `exec` DNS programs is sensitive and never appears in events; it goes only to the service log (stderr or journald). On Windows, the service log is the event log, and the output is shown as `(withheld)` there too, so it is not recorded anywhere; hook scripts should log their own output.
-
-TLS handshake errors from the public HTTPS listener go only to the service log and are rate-limited to 10 per minute. They do not appear in `certfolds events`.
-
-## TUI
-
-### certfolds
-
-`certfolds` without a subcommand opens the server TUI, which refreshes from the daemon every 2 seconds.
-
-Five tabs:
-
-| Tab | Content |
+| Topic | Description |
 |---|---|
-| Overview | Certificate state counts, token counts (unused / used / expired), last 10 events |
-| Certificates | Name, State, Not After, Renew At (with `ari`/`ratio`), Domains, Subs; select a row for details |
-| Clients | Name, Last Seen, Enrolled, Certificates (reverse lookup of subscribed certificates) |
-| Tokens | ID, Name, Status, Expires |
-| Events | Auto-wrapping, follows the bottom automatically |
+| [Installation](docs/en/installation.md) | One-line install, reinstall, upgrade, uninstall, production TLS |
+| [Configuration](docs/en/configuration.md) | server.yaml, client.yaml, naming rules, environment variables, DNS-01 providers |
+| [Operations](docs/en/operations.md) | Tokens, delivery, on_change, renewal, events, TUI, reload, services |
+| [Security](docs/en/security.md) | Trust model, private key outputs on Windows, directory requirements |
+| [Troubleshooting](docs/en/troubleshooting.md) | Enrollment errors, directory errors, service status |
+| [Build and test](docs/en/development.md) | Building from source and running the test suite |
+| [Limitations](docs/en/limitations.md) | Known limitations |
 
-Keys:
+## Project status
 
-| Key | Action |
-|---|---|
-| `1`-`5` | Switch tab |
-| `tab` / `shift+tab` | Next / previous tab |
-| `k`/`up`, `j`/`down` | Move in tables and events |
-| `pgup`, `pgdn` | Page in events |
-| `g`, `G` | Oldest / newest event |
-| `R` | Renew selected certificate (confirm with `y`) |
-| `d` | Delete selected client or revoke selected token (confirm with `y`) |
-| `n` | Create a new token (enter name and TTL, then `enter`) |
-| `r` | Refresh now |
-| `?` | Show all keys |
-| `q` / `ctrl+c` | Quit (ctrl+c works inside dialogs too) |
+Active development. Enrollment, certificate distribution, management commands, runtime reload, client identity renewal, long-poll delivery, parallel issuance, ARI-directed renewal, HTTPS certificate hot-reload, server and client TUIs, and structured logging with events are implemented. The security-critical enrollment and pull path is covered by unit tests and a WSLC-native end-to-end test that includes real ACME issuance through Pebble and ARI. Review the [limitations](docs/en/limitations.md) before production use.
 
-The token is shown in the result dialog after creation, together with the install commands. Closing the dialog discards the token; for a complete command on one line, revoke it and use `certfolds token create` on the command line. The selected row is marked with `›` so it is visible without color.
+## License
 
-### certfoldc
-
-`certfoldc` without a subcommand opens the client TUI, which refreshes every 2 seconds. It fails with an error when the daemon is not running.
-
-The header shows the client name, server URL, online/offline status, last pull time, and last error. Below it is a certificate table with columns Name, Not After (date plus remaining days; `expired` when past), Outputs, on_change, and Pending. A yellow Not After means the certificate has passed its ratio-rule renewal point; `certfolds` may renew later when its CA suggests a later ARI window. Pending means the `on_change` program has not yet succeeded since the certificate or one of its outputs changed. Below the table are the most recent events.
-
-Keys:
-
-| Key | Action |
-|---|---|
-| `f` | Fetch now (runs until done, including hooks) |
-| `R` | Reload client.yaml |
-| `r` | Refresh display |
-| `e` | Full-screen events (follows the bottom) |
-| `?` | Full help and color legend |
-| `q` / `ctrl+c` | Quit |
-
-In the events view: `k`/`up`, `j`/`down`, `pgup`/`b`, `pgdn`/`space`, `u` (half page up), `d` (half page down).
-
-When the daemon restarts, events are cleared and fetched again from the beginning. If more certificates exist than the terminal can show, the last line reads `+N more; certfoldc status --json lists them all`.
-
-## Environment variables in configuration
-
-Values in `server.yaml` and `client.yaml` can reference environment variables as `${VAR}` or `${VAR:-default}`. `$$` is a literal `$`, and an unset variable without a default is an error. References are expanded after the YAML is parsed, inside each scalar value:
-
-- The value is inserted verbatim. Leading and trailing spaces and line breaks are kept, and quotes, `#`, or `: ` inside it are never re-parsed as YAML structure. However, the expanded scalar is re-typed: a `${VAR}` that expands to a bare number, `true`, or `null` becomes that type unless the YAML quotes the reference (see [DNS-01 validation](#dns-01-validation)).
-- Mapping keys are never expanded.
-- Inside a flow collection, quote the reference, as in `["${HOST}"]`, because `{` is a flow indicator there.
-
-## Private key outputs on Windows
-
-Outputs that contain a private key (`pem-key`, `pem-bundle`, `pkcs12`) are created with a protected ACL that grants full access to SYSTEM and Administrators (and the current user when the process runs without elevation). `mode` is not applied on Windows and cannot widen that ACL. To let a service such as IIS or nginx read a key, set `owner` on that output to the service's account name or SID; that account gets read access but does not become the file's owner. `owner` only takes effect on private-key outputs; on other formats it is silently ignored.
-
-On Windows, reconciliation compares only the content of each output, not its ACL or ownership. A key file whose ACL was loosened, or that inherits its directory's ACL because another tool or an earlier build wrote it, keeps that ACL until its content changes at the next renewal. Removing `owner` from the configuration likewise leaves the previous account and its read access in place, on Unix as well. To apply the configuration at once, delete the file; the next round recreates it.
-
-## DNS-01 validation
-
-Each certificate names a DNS provider from `dns_providers`. Besides lego's built-in providers, the `exec` type runs your own program to create and remove the challenge record:
-
-```yaml
-acme:
-  dns_resolvers: ["10.0.0.53"]   # optional; see below
-dns_providers:
-  internal:
-    type: exec
-    command: ["/usr/local/bin/certfold-dns-hook", "--zone", "example.com"]
-certificates:
-  - name: api-prod
-    dns_provider: internal
-    # ...
-```
-
-`command` is an argument list; its first item must be an absolute path. `certfolds` runs it as `command... present <fqdn> <value>` before validation and `command... cleanup <fqdn> <value>` afterwards:
-
-- `<fqdn>` is the TXT record name, after following CNAMEs, with a trailing dot. `<value>` is the TXT value. Exit status 0 means success.
-- The value can start with `-`, so read the last three arguments by position. Do not parse them with getopt, argparse, or a PowerShell `param()` block: a value starting with `-` would be taken as an option, and PowerShell would silently bind an empty string. In PowerShell, use `$action, $fqdn, $value = $args[-3..-1]`.
-- Each run times out after 2 minutes. The hook runs as the `certfolds` service account with its full environment, including any credentials referenced from `server.yaml`. Its working directory is the service's (`System32` for a Windows service, `/` under systemd), so use absolute paths.
-- Different certificates can run the hook at the same time. Several domains of one certificate are handled without waiting between them.
-- Background processes started by the hook must redirect their output; otherwise the hook fails 5 seconds after it exits.
-- On failure, the error names only the action, the record, and the exit status or timeout. The hook's output goes to the service log, truncated. It does not appear in `certfolds events`.
-
-On Windows, run a PowerShell script through its full path, for example `command: ['C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', 'C:\certfold\hook.ps1']`.
-
-On Windows, do not use a `.bat` or `.cmd` file: `cmd.exe` re-parses the arguments, and values that contain special characters are mangled. Write the hook as a `.ps1` script and run it through `powershell.exe -File`. To suppress lego's CNAME lookups when you do not use CNAME delegation, set `LEGO_DISABLE_CNAME_SUPPORT=true` in the service environment (see [Windows service environment variables](#windows-service-environment-variables) for how).
-
-Each built-in provider type accepts only these keys besides `type` and `skip_propagation_check` (an unknown key or a non-string value is an error):
-
-| Type | Keys |
-|---|---|
-| `cloudflare` | `api_token`, `zone_api_token`, `auth_email`, `auth_key` |
-| `aliyun` | `access_key`, `access_secret` |
-| `tencentcloud` | `secret_id`, `secret_key` |
-| `route53` | `access_key`, `secret_key`, `region` |
-| `gcloud` | `project`, `service_account_file` |
-| `exec` | *(none; uses `command`)* |
-
-Values must be strings. A bare number like `12345` is parsed as an integer by YAML; quote it as `"12345"`. A `${VAR}` whose value is a bare number, `true`, or `null` must also be quoted in the YAML as `"${VAR}"`, otherwise the expanded value is re-typed. `${VAR:-}` expands to an empty string, which counts as unset for required keys.
-
-Other DNS-01 settings:
-
-- `skip_propagation_check: true` on a provider skips lego's check that the TXT record is visible on the zone's authoritative nameservers. Use it with DNS servers that cannot answer that check; lego still waits one 4-second polling interval.
-- `acme.dns_resolvers` sets the resolvers lego uses for zone lookups, CNAME following, and the propagation check. It applies to the whole process, so changing it requires a restart. When it is empty, lego uses the system resolvers, and on Windows it falls back to Google Public DNS.
-- Certificates that share a domain are issued in parallel and use the same `_acme-challenge` record. A provider may reject the second record, and one certificate's cleanup removes the record for both, so one of them fails and is retried after its backoff. Avoid overlapping domains across certificates.
-- To use a private ACME CA, set `LEGO_CA_CERTIFICATES` for `certfolds` to the path of the CA's root certificate. lego panics if that file cannot be read.
-
-## Runtime reload and issuance
-
-`certfolds reload` validates `server.yaml` and applies supported changes through the local server IPC endpoint. ACME settings, DNS providers, and certificate definitions, including their subscribers, can be updated without restarting the daemon. Changes to `server.listen`, `server.public_url`, `server.data_dir`, `server.ipc_socket`, `server.tls_cert_file`, `server.tls_key_file`, or `acme.dns_resolvers` are rejected with restart guidance. The TLS file paths and listen address are fixed at startup; file content is reloaded automatically on each handshake (see [Production TLS](#production-tls)).
-
-`certfolds` issues certificates in parallel, at most four at a time and at most one issuance per certificate at a time:
-
-- Reload does not wait for in-flight issuance. It clears retry backoff (but keeps the last error message), publishes the new configuration, and immediately checks the certificate definitions.
-- An issuance that started before a reload is discarded if the certificate's CA directory, domains, or key type changed meanwhile, and the certificate is issued again under the new configuration. Stored certificate material is tied to those same settings, so stale same-name material is never distributed.
-- A failed issuance is retried after 5 minutes, doubling up to 24 hours. The backoff is stored in the database and survives a restart, so after fixing the cause (for example DNS credentials) run `certfolds reload` or `certfolds cert renew <name>` instead of restarting.
-- `certfolds cert list` shows each configured certificate's state (`issuing`, `backoff`, `valid`, or `pending`), and a RENEW AT column with the renewal moment and its source (`ari` or `ratio`). `certfolds cert show <name>` adds the subscribers, the failure count, the last error, and the next attempt.
-
-Read-only IPC responses expose metadata only and never include certificate private keys or enrollment-token hashes.
-
-`certfoldc` automatically renews its mTLS identity before expiry. `client.identity_renew_before` defaults to 30 days and accepts values from 1 hour through 89 days. A failed renewal does not stop delivery: the client keeps using its current identity and retries the renewal each round.
-
-The database schema only migrates forward. From this build on, a `certfolds` that encounters a newer schema refuses to open the database and names both versions. Earlier builds do not check and may open a newer schema silently.
-
-## Naming rules
-
-All names in `server.yaml` --- certificate names, `acme.cas` keys, `dns_providers` keys --- and client names follow the same rule: a lowercase DNS label of 1 to 63 characters from `a-z`, `0-9` and `-`, not starting or ending with `-`.
-
-**Upgrading from a build before these rules**: names that contain uppercase letters, dots or underscores must be renamed before upgrading. A certificate name appears in `server.yaml` and in every subscriber's `client.yaml` under `certificates.<name>`; rename both together. A CA or provider name appears as a key in `acme.cas` or `dns_providers` and in the references that use it; rename the key and its references together. After upgrading, `server.yaml` is rejected at startup and reload if any name is invalid. A new `certfoldc` connected to an old `certfolds` reports an error for each invalid certificate name and stops delivering those certificates; their stored material is removed, but output files are left in place.
-
-Renaming a CA registers a new ACME account under the new name. Renaming a certificate triggers a fresh issuance; the old database record becomes an orphan. When a delivered certificate is renamed but the `client.yaml` key is not, `certfoldc status` shows it with Outputs 0. Upgrade order: rename first, then upgrade the binaries.
-
-## Services
-
-On Windows, `service install` registers the daemon and writes a recovery action (restart after 10 seconds, reset the failure count after 24 hours). Events go to the Application event log. `service uninstall` removes the event log source.
-
-Under systemd, `service install` writes a unit with `Restart=on-failure`, `RestartSec=5`, and `KillMode=mixed`. `KillMode=mixed` sends SIGTERM to the daemon alone on stop; processes it started (exec DNS programs) keep running until the daemon exits, then receive SIGKILL. A daemon that keeps failing restarts every 5 seconds indefinitely. To update an existing unit, run `service uninstall` then `service install`; kardianos reports an error when the service already exists. Environment variables for the service (DNS credentials, `LEGO_CA_CERTIFICATES`, etc.) go in `/etc/sysconfig/<name>`. Create the directory first on distributions that do not ship it.
-
-`service install` resolves the configuration path to an absolute path. The search order is `--config`, then `CERTFOLDS_CONFIG` / `CERTFOLDC_CONFIG`, then the platform default.
-
-When running as a service, the directories the daemon checks must be owned by the service account. On Linux, `certfolds` runs as root, so its data directory must be owned by root (uid 0); `certfoldc` does not check directories on Unix. On Windows, the configuration directory and the data directory of either daemon must be owned by SYSTEM or Administrators. If the owner does not match, the daemon refuses to start and the error prints the fix command (see [Directory requirements](#directory-requirements)). systemd restarts the daemon every 5 seconds until the owner is corrected; on Windows the recovery action restarts it every 10 seconds, and `sc query <name>` reports exit code 1067. A directory created by hand (for example with `mkdir`) in an elevated Git Bash session is owned by the user's own SID rather than Administrators, and is rejected; directories that `certfolds` and `certfoldc` create themselves are owned by Administrators.
-
-### Windows service environment variables
-
-DNS credentials, `LEGO_CA_CERTIFICATES`, and other environment variables for a Windows service go in the registry. The `certfoldc` service uses the same mechanism; replace `certfolds` with `certfoldc` in the paths below. Changes take effect only after a service restart; `certfolds reload` does not re-read environment variables (2026-10-01 verified on `certfolds`; `certfoldc` uses the same mechanism but was not separately tested).
-
-`service install` leaves the service's registry key to SYSTEM and Administrators, so values kept there are not readable by other local users.
-
-PowerShell (elevated):
-
-```powershell
-[Microsoft.Win32.Registry]::SetValue('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\certfolds', 'Environment', [string[]]@('NAME=value'), 'MultiString')
-Restart-Service certfolds
-```
-
-A value typed into a command can be recorded by PowerShell script block logging (event 4104), and the `reg add` form below by process command-line auditing. Where either is enabled and the value is a credential, enter it with `regedit` instead.
-
-cmd (elevated; `&&` does not work in Windows PowerShell 5.1):
-
-```bat
-reg add HKLM\SYSTEM\CurrentControlSet\Services\certfolds /v Environment /t REG_MULTI_SZ /d "NAME=value\0OTHER=2" /f
-net stop certfolds && net start certfolds
-```
-
-Multiple variables are separated by `\0` in the `reg add` form; in PowerShell, pass an array: `@('NAME=value', 'OTHER=2')`.
-
-Both forms replace the whole list; they do not add to it. Writing one variable removes every other variable already set, such as DNS credentials, and a configuration that still references them then fails to start. Read the current list first and write it back complete:
-
-```powershell
-[Microsoft.Win32.Registry]::GetValue('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\certfolds', 'Environment', $null)
-```
-
-To remove the variables: `Remove-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\certfolds' -Name Environment`. `service uninstall` deletes the entire service key, including this value: after `service uninstall` and `service install`, set the variables again before you start the service. The install script keeps the `Environment` value of the `certfoldc` service when it installs the service again, and handles the values only through .NET method calls, which PowerShell module logging does not record.
-
-When a variable referenced by `${VAR}` in the configuration is not set, the service fails to start (`ExitCode=1067`), and the Application event log (event ID 3) shows `load config: expand env: <field>: environment variable "X" is not set`.
-
-## Current limitations
-
-- With `--token` / `-Token`, the token appears in the process command line; see [One-line installation](#one-line-installation) for how to avoid this.
-- The container E2E issues certificates through the `exec` DNS provider; lego's built-in cloud DNS providers are not covered by an E2E.
-- Reconciliation does not compare Windows ACLs; see [Private key outputs on Windows](#private-key-outputs-on-windows).
-- Output path deduplication compares paths after `filepath.Clean` (case-insensitively on Windows). It does not detect duplicates through symbolic or hard links; paths differing only in case on macOS APFS; or, on Windows, `\\?\` and `\\.\` prefixes, 8.3 short names, trailing dots and spaces, and mapped drive letters versus UNC paths.
-- Certificates whose lifetime does not exceed about twice the CA's NotBefore backdate (about 2 hours for Let's Encrypt, which backdates by 1 hour) are not supported: they arrive already past their renewal point and are caught by the arrival guard, which backs off instead of retrying immediately.
-- The mini-CA root certificate expires after 10 years and has no rotation mechanism. When it has less than a year remaining, the server logs a warning at startup and on each server-certificate reissue.
-- ARI does not do short-interval exponential backoff for 5xx responses (lego does not expose the HTTP status code); it retries after 6 hours.
-- The random renewal moment within an ARI window is not persisted; a restart picks a new moment within the same window.
-- A reload rejection caused by a YAML type error may include up to about 10 characters of the configuration value in the event and service log.
-
-## Directory requirements
-
-`certfolds` and `certfoldc` check certain directories at startup and refuse to run when the checks fail. On Unix, only `certfolds` checks its data directory (`CheckPrivateDirectory`); `certfoldc` does not check directories on Unix. On Windows, both daemons check their configuration directory and data directory. `certfoldc enroll` checks the configuration directory before writing. The checks vary by platform:
-
-- **certfolds data_dir** (Unix): mode `0700`, owned by the running user. (Windows): completely private --- only SYSTEM, Administrators, and, when not elevated, the running user may access it; the owner must be one of them.
-- **Configuration directory and certfoldc data_dir** (Windows): owned by SYSTEM, Administrators, or (when not elevated) the current user; no other account may write, delete, or change permissions.
-- **ca/ subdirectory**: checked and tightened by `ca.Bootstrap` on every startup. On Unix, only tightened (the check is a no-op there).
-
-When a data directory does not exist, the daemon creates it with private permissions. Configuration directories are not created automatically; `certfoldc enroll` creates the client configuration directory. When it exists but does not pass the check, the error names the directory and prints the commands to fix it:
-
-```
-configuration directory: C:\ProgramData\Certfold is owned by DESKTOP\Alice, and only NT AUTHORITY\SYSTEM and BUILTIN\Administrators may own it. Its owner may have put files in it and may change who can write to it: remove it, so that it is created again. To keep it instead, check every file in it, then run:
-  icacls "C:\ProgramData\Certfold" /setowner *S-1-5-32-544
-```
-
-On Linux, if the data directory was created with mode `0755`:
-
-```
-/var/lib/certfolds has mode 0755, and only its owner may have access to it. Check the files in it, then run:
-  chmod 700 "/var/lib/certfolds"
-```
-
-When the error does not say the owner is untrusted (a wrong mode on Unix, extra ACL entries on Windows), run the commands it prints. When the error says the owner is untrusted, its advice is to remove the directory so that the daemon creates it again; do this only when the directory's contents can be recreated. Do not remove the certfolds data directory unless you accept losing the mini-CA (all enrolled clients must re-enroll) and the certificate database.
-
-Each parent directory of the configuration directory and data_dir must not be owned by an untrusted account and must not let untrusted accounts delete or replace entries in it. The check looks only at the directory itself, not its parents; the default layout (`/etc/certfold`, `/var/lib`, `C:\ProgramData`) satisfies this requirement.
-
-Output file directories and their parents should not be writable by low-privilege accounts either: `O_NOFOLLOW` protects only the last path component, and a writable parent lets an attacker replace an earlier component with a symbolic link.
-
-## Enrollment troubleshooting
-
-When `certfoldc enroll` fails with a network error, retry with the same token. If the retry gets `server returned 401: enrollment token was already used`, the server consumed the token before the response arrived. The old identity of that name was replaced on the server. Create a new token with `certfolds token create --name <name> --replace` and enroll again.
-
-When the server answers 200 but `certfoldc` cannot use the response (certificate validation fails, response cannot be decoded) or cannot write `client.yaml`, the error says the server took the token and prints the `--replace` command. The old identity no longer works on the server.
-
-A `server returned 500: internal error` means the server rolled back the entire operation; the token is not consumed, and you can retry with the same token.
-
-## Service status
-
-`service status` queries the service manager and probes the daemon over its IPC socket:
-
-- **Running** --- the service manager reports running and the daemon answered.
-- **Running (not answering on ...: ...; see ...)** --- the service is running but the IPC endpoint does not exist, refuses connections, or times out. The message includes the log location (`journalctl -u <name>`, the Application event log, or `/var/log/<name>.err.log`).
-- **Running (cannot check the daemon on ...: ...)** --- a permission error or another non-network error when opening the socket. Permission errors add "checking it needs root or an elevated administrator".
-- **Stopped** --- the service manager reports the service is not running.
-- **query status: ...** (exit code 1) --- the service is not installed, or the service manager reported an error (such as systemd's `failed` state).
-
-## Upgrade notes
-
-**Renamed from Sigil**: until 2026-10-01 the project was called Sigil, with the binaries `sigils` and `sigilc`. Certfold reads none of Sigil's paths, service names, named pipes, or environment variables, so there is no upgrade from a Sigil installation: uninstall it and install Certfold anew. Certfold has no earlier release to upgrade from.
-
-If you carry over a `server.yaml` or `client.yaml` written for Sigil, check two rules that Sigil did not enforce:
-
-- Every path field must be absolute. A relative path makes the daemon fail at startup and `reload` be rejected, with `<field>: must be an absolute path, got "<value>"`.
-- `mode` in an output is read as octal: `mode: 400` means `0400`. A value that contains `8` or `9` (such as `384`, the decimal form of `0600`) is rejected, and `certfoldc` refuses to start.
+Licensed under the [Apache License, Version 2.0](LICENSE).
