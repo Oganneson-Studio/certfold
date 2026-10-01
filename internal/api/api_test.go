@@ -1566,10 +1566,12 @@ func TestAuthenticatedRequestsRecordLastSeenAtMostOncePerInterval(t *testing.T) 
 
 // A client enrolled again, as `sigils token create --replace` lets an install
 // do, has a new identity and no last_seen. Its first request records
-// last_seen at once, though the old identity was seen within the interval.
+// last_seen at once, though the old identity was seen within the interval,
+// and its claim replaces that of the old identity.
 func TestEnrolledAgainClientRecordsLastSeenOnFirstRequest(t *testing.T) {
 	deps := buildDeps(t)
-	handler := newHandler(deps)
+	h := newHandlers(deps)
+	handler := buildRouter(h)
 	request := func(identity *tls.Certificate) {
 		t.Helper()
 		rec := httptest.NewRecorder()
@@ -1587,6 +1589,12 @@ func TestEnrolledAgainClientRecordsLastSeenOnFirstRequest(t *testing.T) {
 	}
 	if got.LastSeen.IsZero() {
 		t.Fatal("the first request of the new identity did not record last_seen")
+	}
+	h.seenMu.Lock()
+	n := len(h.lastSeen)
+	h.seenMu.Unlock()
+	if n != 1 {
+		t.Fatalf("last_seen claims = %d, want 1 for the one client", n)
 	}
 }
 
@@ -1786,7 +1794,7 @@ func TestAuthenticatedRequestRejectsPendingIdentityReplacedDuringRequest(t *test
 	// would refuse the replaced identity too and hide a missing check. No
 	// request can claim it: one by the replaced identity would promote it.
 	h := newHandlers(deps)
-	h.lastSeen[[2]string{"web-1", ca.Fingerprint(replaced.Certificate[0])}] = time.Now()
+	h.lastSeen["web-1"] = seenClaim{fingerprint: ca.Fingerprint(replaced.Certificate[0]), at: time.Now()}
 	handler := buildRouter(h)
 
 	tx, err := other.BeginTx(ctx)
