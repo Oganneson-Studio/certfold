@@ -26,8 +26,8 @@ import (
 	"github.com/Oganneson-Studio/sigil/pkg/proto"
 )
 
-// lastSeenInterval is the least time between two writes of one client's
-// last_seen. A variable so that tests can shorten it.
+// lastSeenInterval is the least time between two writes of last_seen by one
+// identity of a client. A variable so that tests can shorten it.
 var lastSeenInterval = time.Minute
 
 // downloadWriteTimeout is how long GET /download/sigilc may take to send the
@@ -42,10 +42,12 @@ const renewInterval = time.Minute
 type handlers struct {
 	deps Deps
 
-	// seenMu guards lastSeen, which holds for each client the time its
-	// last_seen was last written, or is being written.
+	// seenMu guards lastSeen, which holds for each identity, by client name
+	// and certificate fingerprint, the time it last wrote its client's
+	// last_seen, or is writing it. Entries are never removed: a client adds
+	// one with each identity it uses, about every 60 days.
 	seenMu   sync.Mutex
-	lastSeen map[string]time.Time
+	lastSeen map[[2]string]time.Time
 
 	// syncMu guards syncing, which counts for each client its GET /v1/sync
 	// requests in progress.
@@ -61,7 +63,7 @@ type handlers struct {
 func newHandlers(deps Deps) *handlers {
 	return &handlers{
 		deps:     deps,
-		lastSeen: make(map[string]time.Time),
+		lastSeen: make(map[[2]string]time.Time),
 		syncing:  make(map[string]int),
 		renewed:  make(map[string]time.Time),
 	}
@@ -438,17 +440,21 @@ func (h *handlers) requireActiveClient(next http.Handler) http.Handler {
 			}
 		}
 
-		// Record last_seen at most once per lastSeenInterval for each client.
-		// The throttle is kept here, not in the UPDATE, so that an UPDATE of
-		// zero rows still means the client is gone. Claiming the entry before
-		// the write leaves one writer among concurrent requests. The claim
-		// stands whatever the write returns, so a database that fails it is
-		// tried again once per interval.
+		// Record last_seen at most once per lastSeenInterval for each
+		// identity. The throttle is kept here, not in the UPDATE, so that an
+		// UPDATE of zero rows still means the client is gone. Claiming the
+		// entry before the write leaves one writer among concurrent requests.
+		// The claim stands whatever the write returns, so a database that
+		// fails it is tried again once per interval. A client enrolled again
+		// has a new identity and no last_seen: a claim by name, which its old
+		// identity may hold, would show it as never seen for up to an
+		// interval.
+		key := [2]string{clientName, fingerprint}
 		h.seenMu.Lock()
-		last, seen := h.lastSeen[clientName]
+		last, seen := h.lastSeen[key]
 		write := !seen || now.Sub(last) >= lastSeenInterval
 		if write {
-			h.lastSeen[clientName] = now
+			h.lastSeen[key] = now
 		}
 		h.seenMu.Unlock()
 		if write {
