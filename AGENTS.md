@@ -6,7 +6,7 @@
 
 项目处于持续开发阶段。核心注册、mTLS 鉴权、长轮询交付与每轮对账、`on_change` 钩子、并行签发引擎、exec DNS provider、ARI 驱动的续期、HTTPS 证书热更新、服务端与客户端 TUI、slog 日志与事件环形缓冲、两个二进制的 `events` 命令均已可用，并有 WSLC 黑盒测试（含从 Pebble 真实签发并覆盖 ARI）。各家云 DNS provider 的 E2E 仍未完成。
 
-部署前审查的前两批修复（S、A、C、D、L 和 P、W、I）及 TUI 迁到 Charm v2（T 路）已合入。第三批 Z（所有路径字段要求绝对路径，以及 CI workflow）进行中。余项按 `TODO.md` 跟踪。
+部署前审查各路修复（S、A、C、D、L、P、W、I、Z）及 TUI 迁到 Charm v2（T 路）已全部合入，正在做最终验证（两套 E2E 和实机验证）。余项按 `TODO.md` 跟踪。
 
 ## 重构方向（2026-09-27 拍板）
 
@@ -103,6 +103,8 @@ go test -race ./...
 
 在 `.claude/worktrees/*` 里构建的二进制，`vcs.revision` 是主工作区的提交，不是 worktree 自己的 HEAD。发版构建要在普通 clone 里做，或用 `-ldflags -X` 显式设置版本。
 
+CI：`.github/workflows/test.yml` 跑 Linux 全量测试、race、vet（含 `GOOS=windows`）、e2e tag vet、govulncheck v1.8.0，以及 Windows 全量测试（要求提权 shell，非提权即失败）。`.github/workflows/e2e.yml` 跑 E2E（已加 `-count=1`）。仓库没有 remote，workflow 只经 actionlint v1.7.12 校验过。
+
 ## 安全约束
 
 1. `server.yaml` 的 `certificates[].subscribers` 是订阅授权的唯一来源；客户端输出配置不能扩大授权。
@@ -120,7 +122,7 @@ go test -race ./...
 7. （已作废：Phase 4 按 B3 将 install.ps1 改为静态脚本。保留编号，避免引用错位。）
 8. 生产一键安装要求公网端点使用操作系统信任的 TLS 证书。通过 `server.tls_cert_file` 与 `server.tls_key_file` 配置；内部 mini-CA 默认证书不能让首次系统 `curl` 自动信任。
 9. （已作废：Phase 3 按 B1 删除了服务端 push 和客户端 push listener。保留编号，避免引用错位。）
-10. 配置解析使用 `yaml.KnownFields(true)`。增加字段时必须同步 schema、验证和测试。`config.ReadServerPaths` 是只给 CLI 定位 IPC、给安装器找 data_dir 用的宽松读取函数，daemon 不得用它加载配置。`config.ReadClientField(path, key)` 是客户端对应的宽松读取函数，CLI 定位 daemon 和 `sigilc enroll` 比对 name/server_url 时使用，不需要服务的环境变量。`${VAR}` 和 `${VAR:-default}` 在 YAML 解析后逐个标量值展开：值原样插入、不 trim；键不展开；`$$` 表示字面 `$`；变量未设置且没有默认值时报错；嵌套默认值 `${A:-${B}}` 报错。四个解析入口（`ParseServer`、`ParseClient`、`ReadServerPaths`、`ReadClientField`）必须得到一致结果。client.yaml 的 `client.name` 和 `certificates` 键按同一命名规则校验。
+10. 配置解析使用 `yaml.KnownFields(true)`。增加字段时必须同步 schema、验证和测试。所有路径字段（`server.data_dir`、`tls_cert_file`、`tls_key_file`、`ipc_socket`、gcloud 的 `service_account_file`；`client.data_dir`、`ipc_socket`、`outputs[].path`；`on_change` 和 exec 的 `argv[0]` 原本就要求）必须是绝对路径，`${VAR}` 展开后校验，报错 `<字段>: must be an absolute path, got "<值>"`。Windows 上 `\dir`、`C:dir` 不算绝对；命名管道和 UNC 算绝对，ipc_socket 要写完整的 `\\.\pipe\...`。`config.ReadServerField(path, key)` 和 `config.ReadClientField(path, key)` 是逐字段宽松读取函数，共用 `readField` 逐字段展开和校验；CLI 定位 IPC 和安装器找 data_dir 使用，daemon 不得用它们加载配置。`sigilc enroll` 也用 `ReadClientField` 比对 name/server_url。`${VAR}` 和 `${VAR:-default}` 在 YAML 解析后逐个标量值展开：值原样插入、不 trim；键不展开；`$$` 表示字面 `$`；变量未设置且没有默认值时报错；嵌套默认值 `${A:-${B}}` 报错。四个解析入口（`ParseServer`、`ParseClient`、`ReadServerField`、`ReadClientField`）必须得到一致结果。client.yaml 的 `client.name` 和 `certificates` 键按同一命名规则校验。
 11. 服务端只读 IPC 必须使用显式 DTO，不能在线路上返回证书私钥或 enrollment-token secret hash。IPC 上没有写证书的路由，证书只能经签发进入数据库。事件环里不含令牌字符串（只记令牌 ID）、私钥、配置结构体或 panic 栈（Recoverer 记 method、path 和 panic 值，栈以 `Private` 标记）；钩子和 DNS 程序的输出以 `Private` 标记，在事件和 Windows 事件日志中显示为 `(withheld)`，只有服务日志（stderr / journald / launchd 的 `/var/log/<name>.err.log`）保留最后 4 KiB。
 12. 数据库证书记录必须绑定有效配置指纹；CA directory、domains 或 key type 变化后，旧材料不得继续分发。
 13. `exec` DNS provider 只能在 server.yaml 中配置。它以 sigils 服务账户运行、继承其全部环境变量（包括 `${VAR}` 引用的凭据），单次运行 2 分钟超时。
@@ -152,7 +154,7 @@ go test -race ./...
 
 ## 运行时约束
 
-- `sigils` 与 `sigilc` 使用不同的 IPC 端点。客户端命令解析顺序为：显式 `--ipc`、`client.ipc_socket`、平台默认客户端 socket。
+- `sigils` 与 `sigilc` 使用不同的 IPC 端点。CLI 定位 IPC 端点的规则（`serverIPCSocket` / `clientIPCSocket`，sigils 和 sigilc 一致）：有 `--ipc` 就用它；配置文件不存在、没有读权限、或 ipc_socket 为空时用平台默认端点；ipc_socket 读不出来（相对路径、变量未设置、YAML 解析失败）直接报错 `read the IPC endpoint from <文件>: <section>.ipc_socket: ... (pass --ipc to give it instead)`。
 - `sigils reload` 必须通过本地服务端 IPC 完整解析并应用新配置。可热更新 `acme`、`dns_providers` 和 `certificates`（含 subscribers）；若 `server.listen`、`server.public_url`、`server.data_dir`、`server.ipc_socket`、`server.tls_cert_file`、`server.tls_key_file` 或 `acme.dns_resolvers` 变化，必须拒绝 reload、保留旧运行配置并明确要求重启（TLS 文件路径和 listen 地址在启动时固定，文件内容的更新由 `tlsSource` 在每次握手时自动处理）。`acme.dns_resolvers` 需要重启，是因为 lego 把它存在进程级全局变量里。
 - 服务端 HTTPS 证书热更新（`tlsSource`）：
   - 配置了 `tls_cert_file` 时，每次握手都 stat 证书与私钥文件，一旦修改时间或大小变化就重新加载。加载失败（例如替换到一半）则继续用旧证书。每次文件变化只尝试加载一次、只记一次日志（成功记 INFO `server TLS certificate reloaded`，失败记 WARN `server TLS certificate not reloaded`，stat 失败同理）。证书与私钥文件要放在本地盘；网络文件系统上 stat 一旦卡住，`tlsSource` 的 mutex 会拖住所有握手。
@@ -187,9 +189,9 @@ go test -race ./...
   - 已从配置删除的证书，库里残留的记录不列出。
   - state 优先级为 issuing > backoff > valid > pending。
 - `sigils token create` 由运行中的 daemon 经服务端 IPC 签发，daemon 未运行时报错，不再在 CLI 进程里直接写库；CLI 拒绝不支持新协议的旧 daemon 的应答（缺 `token_id`）。`public_url` 为空且 `listen` 的主机部分为空或是 `0.0.0.0`、`::` 时，拒绝签发并提示设置 `server.public_url`。名字已注册或有未用未过期令牌时要 `--replace`（IPC 409）；`--replace` 先吊销同名所有未用令牌，`--json` 字段为 `token`/`token_id`/`expires_at`/`revoked`（0 时省略）/`install_sh`/`install_ps1`；人读输出多 `Token ID:` 和 `Expires:` 两行。寿命上限 168 小时由 daemon 执行。
-- `cert add`/`cert remove` 由 daemon 经服务端 IPC 修改 server.yaml 并立即应用（与 reload 语义一致），daemon 未运行时报错。文件里已有需要重启的手工改动时拒绝、文件不动。回写 server.yaml 时 Unix 保留模式和属主、写到符号链接目标；Windows 不保留属主，文件改为私有 DACL；空行丢失已接受（yaml.v3 的限制）。
+- `cert add`/`cert remove` 由 daemon 经服务端 IPC 修改 server.yaml 并立即应用（与 reload 语义一致），daemon 未运行时报错。应用失败时把 server.yaml 写回原字节。文件里已有需要重启的手工改动时拒绝、文件不动。IPC 状态码：`cert add` 成功 201，`cert remove` 成功 200、证书不存在 404、应用失败 422。回写 server.yaml 时 Unix 保留模式和属主、写到符号链接目标；Windows 不保留属主，文件改为私有 DACL；空行丢失已接受（yaml.v3 的限制）。
 - 删除不存在的客户端返回 404（body `client "x" is not enrolled`），删除不存在的令牌返回 404（body `enrollment token "x" does not exist`），CLI 退出码 1。
-- `sigilc status --json` 返回 `ClientState`，其中 `certs` 数组的字段为 `name`、`fingerprint`、`not_after`、`renew_at`、`outputs`、`on_change`、`hook_pending`。`renew_at` 按客户端的比例规则算，sigils 有 ARI 时可能更晚续期。`last_pull_at` 在第一次 sync 前不存在（`omitzero`）。`token list --json` 里未用令牌没有 `used_at`（`omitzero`）。
+- `sigilc status` 的 IPC 调用有 10 秒超时（`statusTimeout`）。`status --json` 任何失败都输出 `{"error": "..."}`。`sigilc status --json` 返回 `ClientState`，其中 `certs` 数组的字段为 `name`、`fingerprint`、`not_after`、`renew_at`、`outputs`、`on_change`、`hook_pending`。`renew_at` 按客户端的比例规则算，sigils 有 ARI 时可能更晚续期。`last_pull_at` 在第一次 sync 前不存在（`omitzero`）。`token list --json` 里未用令牌没有 `used_at`（`omitzero`）。
 - sigilc 启动时清扫上次崩溃可能留下的临时文件：data_dir 里的 `.sigil-private-*` 和各输出目录里的 `.sigil-tmp-*`，client.yaml 所在目录不碰。
 - `sigilc enroll`：失败时删掉本次新建的 client.yaml（已有的不动）；提前写入保留，作为不消耗 token 的可写性预检；mismatch 错误带上配置文件路径。拒绝 name 或 URL 不合规的 token。覆盖已有身份后提示运行中的 daemon 需 `sigilc reload` 或重启服务。没有 `--token` 时读 `SIGILC_TOKEN` 环境变量。
 - `sigilc fetch` 必须调用真实 IPC 拉取，返回前完成对账和钩子；`--cert` 只强制重新下载目标证书，不强制重写未变化的输出。`reload` 必须先完整解析新配置，失败时保留旧配置；成功后在返回前按新配置从存储对账并运行钩子，同时取消在途 sync，让循环立即做一次完整拉取。reload 的本地对账成功时不清空 `LastError`，由 reload 触发的下一轮用自己的结果覆盖。`client.ipc_socket` 和 `client.data_dir` 变化要求重启。
@@ -283,11 +285,8 @@ go test -race ./...
 
 ## 已知未完成项
 
-Z 路进行中：
-- 输出路径允许相对路径，改成要求绝对路径需要改约 48 处 Unix 风格的测试夹具。
-- 输出路径去重只比较 `filepath.Clean` 后的文本（Windows 上不分大小写），相对与绝对两种写法指向同一文件的情况查不出来。
-
 已知限制：
+- 输出路径去重只比较 `filepath.Clean` 后的文本（Windows 上转小写）。查不出的情况包括：符号链接和硬链接（两个平台都查不出）；macOS APFS 不区分大小写（去重只在 Windows 上转小写）；Windows 上 `\\?\C:\`、`\\.\C:\`、8.3 短名、结尾的点和空格、映射盘符与 UNC 路径。
 - mini-CA 根证书 10 年后到期，没有轮换机制。剩余不足 1 年时会记 WARN `mini-CA root certificate expires within a year`。
 - 非 systemd 的 Linux 上，重启语义不同（未验证）。
 - modernc sqlite 在 ctx 取消后连接 `IsValid()=false`，`store.Open` 用 Exec 设的 `PRAGMA foreign_keys=ON` 按连接生效、换连接就丢；schema 目前没有外键。以后要加按连接生效的 pragma 一律写进 DSN。
@@ -298,8 +297,10 @@ Z 路进行中：
 - 持有已用完整令牌的人可以反复请求注册刷 WARN（同 lego INFO 挤占事件环那条）。
 - client.yaml 有未知字段时重装先消耗令牌、到服务启动才报错（改好后重启服务即可）。
 - Windows 服务崩溃循环时 SCM 可能在停止与卸载之间拉起它。
+- Windows 上 Stop-Service 之后 `[IO.File]::Replace` 失败（如杀软占住文件）时服务会停着，重跑安装即可。
 - install.ps1 不自己建 `C:\ProgramData\Sigil`（由 enroll 私有创建）。
 - bubbletea v2 在 TUI 第一次渲染时发 `ESC[?u`（kitty 键盘协议查询，无法单独关闭），支持该协议的终端若在启动后立即按 q，应答可能落到提示符上；DECRQM 2026/2027 在无 `SSH_TTY` 时也会发。
+- 改 TUI 时注意：空格键名是 `"space"`；lipgloss v2 的 `Width` 包含边框；bubbles 表格要显式设宽度；lipgloss v2 在非终端下也输出 SGR，测试要经 `ansi.Strip` 读视图；在 `%TEMP%` 下起 sigils 冒烟前，要先按报错收紧配置目录（W 路目录检查）。
 - Windows 上第一次 `cert add`/`cert remove` 之后 server.yaml 变成私有 DACL（SYSTEM、Administrators），原先授给其他账户的访问会被去掉。
 ARI 简化：
 - ARI 对 5xx 不做短间隔指数退避，按 6 小时后重查（lego 拿不到 HTTP 状态码）。
