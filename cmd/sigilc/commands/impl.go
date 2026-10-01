@@ -229,7 +229,11 @@ func defaultClientCfgPath() string {
 // there: a denied permission, or a pipe that another owner holds, may hide a
 // daemon that runs.
 func dialDaemon(cmd *cobra.Command) (*ipc.Client, error) {
-	c, err := ipc.NewClient(clientIPCSocket(cmd))
+	socket, err := clientIPCSocket(cmd)
+	if err != nil {
+		return nil, err
+	}
+	c, err := ipc.NewClient(socket)
 	if daemonNotRunning(err) {
 		return nil, fmt.Errorf("sigilc daemon is not running: %w", err)
 	}
@@ -253,17 +257,29 @@ func clientConfigPath(cmd *cobra.Command) string {
 }
 
 // clientIPCSocket returns the IPC endpoint of the daemon: --ipc, else
-// client.ipc_socket, else the platform default.
-func clientIPCSocket(cmd *cobra.Command) string {
+// client.ipc_socket, else the platform default. A client.yaml this user may
+// not read counts as none: such a user may not open the endpoint of the
+// daemon either, which the error of the default one says, and sigilc
+// service status reports as a daemon it cannot check. An ipc_socket that
+// cannot be read is an error, not the default, where another daemon may
+// answer.
+func clientIPCSocket(cmd *cobra.Command) (string, error) {
 	if path, _ := cmd.Root().PersistentFlags().GetString("ipc"); path != "" {
-		return path
+		return path, nil
 	}
 	// Locating the daemon must not require the variables client.yaml takes
-	// from the service's environment.
-	if socket, err := config.ReadClientField(clientConfigPath(cmd), "ipc_socket"); err == nil && socket != "" {
-		return socket
+	// from the service's environment, other than those of ipc_socket.
+	cfgPath := clientConfigPath(cmd)
+	socket, err := config.ReadClientField(cfgPath, "ipc_socket")
+	switch {
+	case errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission):
+		return ipc.DefaultClientSocket(), nil
+	case err != nil:
+		return "", fmt.Errorf("read the IPC endpoint from %s: %w (pass --ipc to give it instead)", cfgPath, err)
+	case socket == "":
+		return ipc.DefaultClientSocket(), nil
 	}
-	return ipc.DefaultClientSocket()
+	return socket, nil
 }
 
 // ensureEnrollmentConfig returns the name to enroll as. A client.yaml at

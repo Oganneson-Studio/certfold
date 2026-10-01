@@ -13,7 +13,7 @@ func editTestConfig(t *testing.T, certificates string) []byte {
 	return []byte(`# preserve this operator comment
 server:
   listen: ":8443"
-  data_dir: "C:/sigil-test"
+  data_dir: "` + absPath("/sigil-test") + `"
 acme:
   email: "admin@example.com"
   default_ca: "le"

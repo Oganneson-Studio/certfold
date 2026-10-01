@@ -5,7 +5,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
 	"github.com/Oganneson-Studio/sigil/internal/logging"
 )
 
@@ -20,7 +19,7 @@ func newEventsCmd() *cobra.Command {
 // runEvents prints the events the daemon keeps, oldest first; with --json,
 // as a JSON array.
 func runEvents(cmd *cobra.Command, _ []string) error {
-	c, err := ipc.NewClient(serverIPCSocket(cmd))
+	c, err := dialServer(cmd)
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}

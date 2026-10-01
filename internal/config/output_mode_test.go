@@ -5,14 +5,14 @@ import (
 	"testing"
 )
 
-const outputModeClientYAML = `client:
+var outputModeClientYAML = `client:
   name: web-1
   server_url: https://sigil.example.com:8443
 certificates:
   web:
     outputs:
       - format: pem-key
-        path: /etc/ssl/web.key
+        path: ` + absPath("/etc/ssl/web.key") + `
         mode: MODE
 `
 

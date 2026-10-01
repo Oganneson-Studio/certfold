@@ -138,11 +138,11 @@ func TestExpandEnv(t *testing.T) {
 
 // withServerSection replaces the data_dir line of validServerYAML with lines.
 func withServerSection(lines string) string {
-	return strings.Replace(validServerYAML, `data_dir: "/var/lib/sigils"`, lines, 1)
+	return strings.Replace(validServerYAML, validDataDirLine, lines, 1)
 }
 
 // Environment values are inserted after YAML parsing, so YAML syntax inside a
-// value is never interpreted, and LoadServer and ReadServerPaths agree.
+// value is never interpreted, and LoadServer and ReadServerField agree.
 func TestEnvValuesAreLiteralScalars(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -154,24 +154,24 @@ func TestEnvValuesAreLiteralScalars(t *testing.T) {
 		{
 			name:   "backslash escape after a variable in a double-quoted value",
 			server: `data_dir: "${SIGIL_TEST_VALUE}\\Sigil"`,
-			value:  `C:\ProgramData`,
-			want:   `C:\ProgramData\Sigil`,
+			value:  absPath(`/srv\ProgramData`),
+			want:   absPath(`/srv\ProgramData\Sigil`),
 		},
 		{
 			name: "comment marker inside a plain value",
-			server: `data_dir: "/var/lib/sigils"
+			server: validDataDirLine + `
   ipc_socket: ${SIGIL_TEST_VALUE}`,
-			value: "/run/sigil/a.sock #x",
+			value: absPath("/run/sigil/a.sock #x"),
 			ipc:   true,
-			want:  "/run/sigil/a.sock #x",
+			want:  absPath("/run/sigil/a.sock #x"),
 		},
 		{
 			name: "backslashes inside a double-quoted value",
-			server: `data_dir: "/var/lib/sigils"
+			server: validDataDirLine + `
   ipc_socket: "${SIGIL_TEST_VALUE}"`,
-			value: `\\.\pipe\custom`,
+			value: absPath(`/run/\\.\pipe\custom`),
 			ipc:   true,
-			want:  `\\.\pipe\custom`,
+			want:  absPath(`/run/\\.\pipe\custom`),
 		},
 	}
 	for _, tt := range tests {
@@ -183,39 +183,35 @@ func TestEnvValuesAreLiteralScalars(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseServer: %v", err)
 			}
-			got := cfg.Server.DataDir
+			got, key := cfg.Server.DataDir, "data_dir"
 			if tt.ipc {
-				got = cfg.Server.IPCSocket
+				got, key = cfg.Server.IPCSocket, "ipc_socket"
 			}
 			if got != tt.want {
 				t.Errorf("ParseServer value = %q, want %q", got, tt.want)
 			}
 
-			dataDir, ipcSocket, err := ReadServerPaths(writeServerYAML(t, src))
+			got, err = ReadServerField(writeServerYAML(t, src), key)
 			if err != nil {
-				t.Fatalf("ReadServerPaths: %v", err)
-			}
-			got = dataDir
-			if tt.ipc {
-				got = ipcSocket
+				t.Fatalf("ReadServerField: %v", err)
 			}
 			if got != tt.want {
-				t.Errorf("ReadServerPaths value = %q, want %q", got, tt.want)
+				t.Errorf("ReadServerField value = %q, want %q", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestReadServerPathsExpandsAliasesLikeLoadServer(t *testing.T) {
+func TestReadServerFieldExpandsAliasesLikeLoadServer(t *testing.T) {
 	t.Setenv("SIGIL_TEST_HOST", "sigil.example.com")
 	// Both paths alias one anchored value, that of another field, which
 	// server.public_url cannot be: it may not hold "$". "$$$$" shows that
 	// each path gets the value expanded exactly once.
-	path := writeServerYAML(t, withServerSection(`tls_cert_file: &base "/srv/${SIGIL_TEST_HOST}/$$$$"
+	path := writeServerYAML(t, withServerSection(`tls_cert_file: &base "`+absPath("/srv/${SIGIL_TEST_HOST}/$$$$")+`"
   tls_key_file: *base
   data_dir: *base
   ipc_socket: *base`))
-	const want = "/srv/sigil.example.com/$$"
+	want := absPath("/srv/sigil.example.com/$$")
 
 	cfg, err := LoadServer(path)
 	if err != nil {
@@ -224,12 +220,14 @@ func TestReadServerPathsExpandsAliasesLikeLoadServer(t *testing.T) {
 	if cfg.Server.DataDir != want || cfg.Server.IPCSocket != want {
 		t.Fatalf("LoadServer data_dir = %q, ipc_socket = %q, want %q", cfg.Server.DataDir, cfg.Server.IPCSocket, want)
 	}
-	dataDir, ipcSocket, err := ReadServerPaths(path)
-	if err != nil {
-		t.Fatalf("ReadServerPaths: %v", err)
-	}
-	if dataDir != want || ipcSocket != want {
-		t.Fatalf("ReadServerPaths data_dir = %q, ipc_socket = %q, want %q", dataDir, ipcSocket, want)
+	for _, key := range []string{"data_dir", "ipc_socket"} {
+		got, err := ReadServerField(path, key)
+		if err != nil {
+			t.Fatalf("ReadServerField %s: %v", key, err)
+		}
+		if got != want {
+			t.Fatalf("ReadServerField %s = %q, want %q", key, got, want)
+		}
 	}
 }
 
@@ -240,12 +238,12 @@ func TestEnvValueCannotAddYAMLStructure(t *testing.T) {
 		t.Fatal("an environment value was parsed as a YAML sequence")
 	}
 
-	t.Setenv("SIGIL_TEST_DATA_DIR", "/srv/sigils\nfoo_bar: 1")
+	t.Setenv("SIGIL_TEST_DATA_DIR", absPath("/srv/sigils\nfoo_bar: 1"))
 	cfg, err := ParseServer([]byte(withServerSection(`data_dir: ${SIGIL_TEST_DATA_DIR}`)))
 	if err != nil {
 		t.Fatalf("ParseServer: %v", err)
 	}
-	if cfg.Server.DataDir != "/srv/sigils\nfoo_bar: 1" {
+	if cfg.Server.DataDir != absPath("/srv/sigils\nfoo_bar: 1") {
 		t.Fatalf("data_dir = %q", cfg.Server.DataDir)
 	}
 }

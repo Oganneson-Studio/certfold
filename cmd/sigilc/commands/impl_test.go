@@ -75,8 +75,8 @@ func TestClientIPCSocketUsesConfig(t *testing.T) {
 	if err := cmd.PersistentFlags().Set("config", path); err != nil {
 		t.Fatal(err)
 	}
-	if got := clientIPCSocket(cmd); got != configured {
-		t.Fatalf("socket = %q, want configured path %q", got, configured)
+	if got, err := clientIPCSocket(cmd); err != nil || got != configured {
+		t.Fatalf("socket = %q, %v; want configured path %q", got, err, configured)
 	}
 }
 
@@ -109,8 +109,8 @@ certificates:
 	if err := cmd.PersistentFlags().Set("config", path); err != nil {
 		t.Fatal(err)
 	}
-	if got := clientIPCSocket(cmd); got != configured {
-		t.Fatalf("socket with an unset variable elsewhere in client.yaml = %q, want configured %q", got, configured)
+	if got, err := clientIPCSocket(cmd); err != nil || got != configured {
+		t.Fatalf("socket with an unset variable elsewhere in client.yaml = %q, %v; want configured %q", got, err, configured)
 	}
 }
 
@@ -142,8 +142,8 @@ func TestClientIPCSocketExplicitFlagWins(t *testing.T) {
 	if err := cmd.PersistentFlags().Set("ipc", explicit); err != nil {
 		t.Fatal(err)
 	}
-	if got := clientIPCSocket(cmd); got != explicit {
-		t.Fatalf("socket = %q, want explicit path %q", got, explicit)
+	if got, err := clientIPCSocket(cmd); err != nil || got != explicit {
+		t.Fatalf("socket = %q, %v; want explicit path %q", got, err, explicit)
 	}
 }
 
@@ -167,12 +167,35 @@ func TestStatusFailsWhenDaemonIsNotRunning(t *testing.T) {
 	}
 }
 
+// An ipc_socket that cannot be read is an error that names the file, the
+// field and --ipc, not a daemon that is not running on the default socket.
+func TestStatusRefusesUnreadableIPCSocket(t *testing.T) {
+	for _, socket := range []string{"configured.sock", "${SIGIL_TEST_UNSET_SOCKET}"} {
+		path := filepath.Join(t.TempDir(), "client.yaml")
+		raw := fmt.Sprintf("client:\n  name: web-1\n  server_url: https://sigil.example.com\n  ipc_socket: %q\n", socket)
+		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cmd := NewRootCmd()
+		cmd.SetArgs([]string{"--config", path, "status"})
+		err := cmd.Execute()
+		if err != nil && strings.Contains(err.Error(), "daemon is not running") {
+			t.Fatalf("ipc_socket %s: status error = %v; it dialed the default socket", socket, err)
+		}
+		for _, want := range []string{path, "client.ipc_socket", "--ipc"} {
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("ipc_socket %s: status error = %v, want one that names %s", socket, err, want)
+			}
+		}
+	}
+}
+
 func TestClientIPCSocketFallsBackToClientDefault(t *testing.T) {
 	cmd := NewRootCmd()
 	if err := cmd.PersistentFlags().Set("config", filepath.Join(t.TempDir(), "missing.yaml")); err != nil {
 		t.Fatal(err)
 	}
-	if got := clientIPCSocket(cmd); got != ipc.DefaultClientSocket() {
-		t.Fatalf("socket = %q, want client default %q", got, ipc.DefaultClientSocket())
+	if got, err := clientIPCSocket(cmd); err != nil || got != ipc.DefaultClientSocket() {
+		t.Fatalf("socket = %q, %v; want client default %q", got, err, ipc.DefaultClientSocket())
 	}
 }

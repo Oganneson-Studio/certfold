@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/signal"
 	"strings"
@@ -76,7 +77,7 @@ func runCertAdd(cmd *cobra.Command, args []string) error {
 	// The running daemon edits the server.yaml it runs, checks the result
 	// with its own environment, which holds what the ${VAR} references of
 	// the file need, and applies it.
-	c, err := ipc.NewClient(serverIPCSocket(cmd))
+	c, err := dialServer(cmd)
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -96,7 +97,7 @@ func runCertAdd(cmd *cobra.Command, args []string) error {
 func runCertRemove(cmd *cobra.Command, args []string) error {
 	name := args[0]
 	// As for cert add, the running daemon edits and applies server.yaml.
-	c, err := ipc.NewClient(serverIPCSocket(cmd))
+	c, err := dialServer(cmd)
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -118,7 +119,7 @@ func runCertRemove(cmd *cobra.Command, args []string) error {
 }
 
 func runCertRenew(cmd *cobra.Command, args []string) error {
-	c, err := ipc.NewClient(serverIPCSocket(cmd))
+	c, err := dialServer(cmd)
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -141,7 +142,7 @@ func runCertRenew(cmd *cobra.Command, args []string) error {
 }
 
 func runClientShow(cmd *cobra.Command, args []string) error {
-	c, err := ipc.NewClient(serverIPCSocket(cmd))
+	c, err := dialServer(cmd)
 	if err != nil {
 		return fmt.Errorf("ipc unavailable: %w", err)
 	}
@@ -278,12 +279,34 @@ func serverConfigPath(cmd *cobra.Command) string {
 	return path
 }
 
-func serverIPCSocket(cmd *cobra.Command) string {
+// serverIPCSocket returns the IPC endpoint of the daemon: --ipc, else
+// server.ipc_socket, else the platform default. A server.yaml this user may
+// not read counts as none: such a user may not open the endpoint of the
+// daemon either, which the error of the default one says, and sigils service
+// status reports as a daemon it cannot check. An ipc_socket that cannot be
+// read is an error, not the default, where another daemon may answer.
+func serverIPCSocket(cmd *cobra.Command) (string, error) {
 	if path, _ := cmd.Root().PersistentFlags().GetString("ipc"); path != "" {
-		return path
+		return path, nil
 	}
-	if _, socket, err := config.ReadServerPaths(serverConfigPath(cmd)); err == nil && socket != "" {
-		return socket
+	cfgPath := serverConfigPath(cmd)
+	socket, err := config.ReadServerField(cfgPath, "ipc_socket")
+	switch {
+	case errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission):
+		return ipc.DefaultServerSocket(), nil
+	case err != nil:
+		return "", fmt.Errorf("read the IPC endpoint from %s: %w (pass --ipc to give it instead)", cfgPath, err)
+	case socket == "":
+		return ipc.DefaultServerSocket(), nil
 	}
-	return ipc.DefaultServerSocket()
+	return socket, nil
+}
+
+// dialServer connects to the daemon at the endpoint serverIPCSocket resolves.
+func dialServer(cmd *cobra.Command) (*ipc.Client, error) {
+	socket, err := serverIPCSocket(cmd)
+	if err != nil {
+		return nil, err
+	}
+	return ipc.NewClient(socket)
 }
