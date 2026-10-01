@@ -198,6 +198,31 @@ func TestInstallPs1FinishesByHand(t *testing.T) {
 	)
 }
 
+// TestInstallPs1KeepsTheServiceEnvironment checks that a reinstall keeps the
+// Environment of the sigilc service, which gives the ${VAR}s of client.yaml
+// their values and which the uninstall deletes with the registry key of the
+// service: it is read before the uninstall and written back after the
+// install, before the service starts. The values may be secrets, which no
+// message holds: an error names only the variables.
+func TestInstallPs1KeepsTheServiceEnvironment(t *testing.T) {
+	script := getInstallScript(t, "/install.ps1").Body.String()
+	inOrder(t, script,
+		"\n    $ServiceKey = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\sigilc'\n",
+		"\n        $Environment = (Get-Item -LiteralPath $ServiceKey).GetValue('Environment')\n",
+		"\n        & $Dest service uninstall\n",
+		"\n    & $Dest service install\n",
+		"\n    if ($Service -and $null -ne $Environment) {\n",
+		"\n            New-ItemProperty -LiteralPath $ServiceKey -Name Environment -PropertyType MultiString -Value ([string[]]$Environment) | Out-Null\n",
+		"\n& $Dest service start\n",
+	)
+	onlyOn(t, script, regexp.MustCompile(`(?i)\$\{?Environment\b`),
+		"        $Environment = (Get-Item -LiteralPath $ServiceKey).GetValue('Environment')",
+		"    if ($Service -and $null -ne $Environment) {",
+		"            New-ItemProperty -LiteralPath $ServiceKey -Name Environment -PropertyType MultiString -Value ([string[]]$Environment) | Out-Null",
+		"            $Names = ($Environment | ForEach-Object { ($_ -split '=', 2)[0] }) -join ', '",
+	)
+}
+
 // TestInstallPs1WaitsForTheDaemon checks that install.ps1 does not report a
 // service whose daemon does not run as done: the SCM starts one that fails
 // as well. It waits up to 15 seconds for sigilc status to succeed, prints

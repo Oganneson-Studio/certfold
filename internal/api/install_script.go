@@ -271,7 +271,12 @@ if (-not $Upgrade) {
     }
     # sigilc is enrolled by now, and running the installer again would need a
     # new token: the rest of the reinstall is left to do by hand.
+    $ServiceKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\sigilc'
     if ($Service) {
+        # The uninstall deletes the registry key of the service, and with it
+        # its Environment, which gives the ${VAR}s of client.yaml their
+        # values: it is written back once the service is installed anew.
+        $Environment = (Get-Item -LiteralPath $ServiceKey).GetValue('Environment')
         Write-Host 'Uninstalling the service of the earlier install...'
         & $Dest service uninstall
         if ($LASTEXITCODE -ne 0) { throw "sigilc service uninstall failed with exit code $LASTEXITCODE. sigilc is enrolled: once that is fixed, run & '$Dest' service uninstall, then & '$Dest' service install and & '$Dest' service start." }
@@ -279,6 +284,16 @@ if (-not $Upgrade) {
     Write-Host 'Installing system service...'
     & $Dest service install
     if ($LASTEXITCODE -ne 0) { throw "sigilc service install failed with exit code $LASTEXITCODE. sigilc is enrolled: once that is fixed, run & '$Dest' service install, then & '$Dest' service start." }
+    if ($Service -and $null -ne $Environment) {
+        try {
+            New-ItemProperty -LiteralPath $ServiceKey -Name Environment -PropertyType MultiString -Value ([string[]]$Environment) | Out-Null
+        } catch {
+            # The values may be secrets: only their names are shown.
+            $Names = ($Environment | ForEach-Object { ($_ -split '=', 2)[0] }) -join ', '
+            throw "Writing back the Environment of the sigilc service failed: $($_.Exception.Message). sigilc is enrolled and its service installed: " +
+                "set the multi-string value Environment of $ServiceKey again, to the variables $Names as they were, then run & '$Dest' service start."
+        }
+    }
 }
 
 Write-Host 'Starting service...'
