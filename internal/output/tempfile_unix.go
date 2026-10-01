@@ -7,14 +7,14 @@ import (
 	"os"
 	"syscall"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/config"
 )
 
 // createTemp creates the temporary file for an output in dir. os.CreateTemp
 // creates it with mode 0600, so it stays private until applyMetadata sets the
 // output mode.
 func createTemp(dir string, _ config.OutputSpec) (*os.File, error) {
-	return os.CreateTemp(dir, ".sigil-tmp-*")
+	return os.CreateTemp(dir, ".certfold-tmp-*")
 }
 
 // applyMetadata gives the temporary file the output's permission bits, then
@@ -30,7 +30,7 @@ func applyMetadata(tmp *os.File, spec config.OutputSpec) error {
 // fstat found for it, when that is a regular file. O_NOFOLLOW fails on a
 // symbolic link, and O_NONBLOCK returns at once from opening a FIFO, which
 // fstat then tells apart: waiting for a writer would hold pullMu and stop
-// every round of sigilc.
+// every round of certfoldc.
 func openOutput(path string) (*os.File, os.FileInfo, bool) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {

@@ -10,7 +10,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/config"
 )
 
 // TestReconcileReplacesInheritedReadableKey covers a key file that an earlier
@@ -76,7 +76,7 @@ func TestReconcileGivesKeyOutputToServiceAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	if owner, _, err := descriptor.Owner(); err != nil || owner.Equals(networkService) {
-		t.Errorf("owner of %s = %v, %v; want it left to the account of sigilc", spec.Path, owner, err)
+		t.Errorf("owner of %s = %v, %v; want it left to the account of certfoldc", spec.Path, owner, err)
 	}
 
 	before := fileState(t, spec.Path)

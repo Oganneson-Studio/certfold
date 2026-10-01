@@ -27,11 +27,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/ca"
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/enroll"
-	"github.com/Oganneson-Studio/sigil/internal/store"
-	"github.com/Oganneson-Studio/sigil/pkg/proto"
+	"github.com/Oganneson-Studio/certfold/internal/ca"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/enroll"
+	"github.com/Oganneson-Studio/certfold/internal/store"
+	"github.com/Oganneson-Studio/certfold/pkg/proto"
 )
 
 // ---------------------------------------------------------------------------
@@ -176,30 +176,30 @@ func TestEnrollRejectsOversizedBody(t *testing.T) {
 	}
 }
 
-func TestDownloadSigilc_NotFound(t *testing.T) {
+func TestDownloadCertfoldc_NotFound(t *testing.T) {
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/download/sigilc?os=linux&arch=amd64", nil)
+	req := httptest.NewRequest(http.MethodGet, "/download/certfoldc?os=linux&arch=amd64", nil)
 	newHandler(buildDeps(t)).ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", rec.Code)
 	}
 }
 
-func TestDownloadSigilc_Success(t *testing.T) {
+func TestDownloadCertfoldc_Success(t *testing.T) {
 	deps := buildDeps(t)
 	binDir := filepath.Join(deps.CurrentServer().Server.DataDir, "binaries")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir binaries: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(binDir, "sigilc-linux-amd64"), []byte("binary"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(binDir, "certfoldc-linux-amd64"), []byte("binary"), 0o755); err != nil {
 		t.Fatalf("write binary: %v", err)
 	}
 
 	// sha256=1 once made the server hash the whole binary for anyone who
 	// asked; it is an unknown parameter now.
 	for _, target := range []string{
-		"/download/sigilc?os=linux&arch=amd64",
-		"/download/sigilc?os=linux&arch=amd64&sha256=1",
+		"/download/certfoldc?os=linux&arch=amd64",
+		"/download/certfoldc?os=linux&arch=amd64&sha256=1",
 	} {
 		rec := httptest.NewRecorder()
 		newHandler(deps).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
@@ -214,7 +214,7 @@ func TestDownloadSigilc_Success(t *testing.T) {
 	}
 }
 
-// TestDownloadOutlivesWriteTimeout downloads sigilc over a link too slow to
+// TestDownloadOutlivesWriteTimeout downloads certfoldc over a link too slow to
 // finish within the server's WriteTimeout. The production binary is about
 // 20 MB and WriteTimeout is 30s, so any client below about 5 Mbit/s would get
 // a truncated download; here the binary is 32 MB, the timeout 1s and the
@@ -235,7 +235,7 @@ func TestDownloadOutlivesWriteTimeout(t *testing.T) {
 			if err := os.MkdirAll(binDir, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(binDir, "sigilc-linux-amd64"), make([]byte, size), 0o755); err != nil {
+			if err := os.WriteFile(filepath.Join(binDir, "certfoldc-linux-amd64"), make([]byte, size), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			certPEM, keyPEM, err := deps.MiniCA.IssueServerCert([]string{"127.0.0.1"})
@@ -262,7 +262,7 @@ func TestDownloadOutlivesWriteTimeout(t *testing.T) {
 				ForceAttemptHTTP2: tt.http2,
 			}}
 			defer client.CloseIdleConnections()
-			resp, err := client.Get("https://" + l.Addr().String() + "/download/sigilc?os=linux&arch=amd64")
+			resp, err := client.Get("https://" + l.Addr().String() + "/download/certfoldc?os=linux&arch=amd64")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -296,7 +296,7 @@ func TestDownloadOutlivesWriteTimeout(t *testing.T) {
 	}
 }
 
-func TestDownloadSigilc_RejectsPathTraversal(t *testing.T) {
+func TestDownloadCertfoldc_RejectsPathTraversal(t *testing.T) {
 	deps := buildDeps(t)
 	secretPath := filepath.Join(deps.CurrentServer().Server.DataDir, "ca", "ca.key")
 	if err := os.MkdirAll(filepath.Dir(secretPath), 0o700); err != nil {
@@ -307,7 +307,7 @@ func TestDownloadSigilc_RejectsPathTraversal(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/download/sigilc?os=linux&arch=../../../ca/ca.key", nil)
+	req := httptest.NewRequest(http.MethodGet, "/download/certfoldc?os=linux&arch=../../../ca/ca.key", nil)
 	newHandler(deps).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
@@ -327,7 +327,7 @@ func TestEnroll_Success(t *testing.T) {
 	ctx := context.Background()
 
 	// Create token via enroll.Server (real path — base64 payload + secret hash).
-	tokenStr, err := deps.EnrollServer.Create(ctx, "https://sigil.example.com:8443", "web-1", time.Hour)
+	tokenStr, err := deps.EnrollServer.Create(ctx, "https://certfold.example.com:8443", "web-1", time.Hour)
 	if err != nil {
 		t.Fatalf("Create token: %v", err)
 	}
@@ -379,7 +379,7 @@ func TestEnroll_ExpiredToken(t *testing.T) {
 	ctx := context.Background()
 
 	// Create an already-expired token via enroll.Server (negative TTL).
-	tokenStr, err := deps.EnrollServer.Create(ctx, "https://sigil.example.com:8443", "web-1", -time.Hour)
+	tokenStr, err := deps.EnrollServer.Create(ctx, "https://certfold.example.com:8443", "web-1", -time.Hour)
 	if err != nil {
 		t.Fatalf("Create token: %v", err)
 	}
@@ -408,7 +408,7 @@ func TestEnroll_FullPathThroughEnrollServer(t *testing.T) {
 	ctx := context.Background()
 
 	// Step 1: create a real token (stores secretHash in DB).
-	tokenStr, err := deps.EnrollServer.Create(ctx, "https://sigil.example.com:8443", "web-1", time.Hour)
+	tokenStr, err := deps.EnrollServer.Create(ctx, "https://certfold.example.com:8443", "web-1", time.Hour)
 	if err != nil {
 		t.Fatalf("Create token: %v", err)
 	}
@@ -528,7 +528,7 @@ func enrollRequest(t *testing.T, tokenStr string) *http.Request {
 // and the token stays unused for a request that gets it right.
 func TestEnrollRejectsInvalidCSR(t *testing.T) {
 	deps := buildDeps(t)
-	tokenStr, err := deps.EnrollServer.Create(context.Background(), "https://sigil.example.com:8443", "web-1", time.Hour)
+	tokenStr, err := deps.EnrollServer.Create(context.Background(), "https://certfold.example.com:8443", "web-1", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1465,7 +1465,7 @@ func TestGetCertBundle_Unauthorized(t *testing.T) {
 func buildFileDeps(t *testing.T) (Deps, *store.DB) {
 	t.Helper()
 	// A directory that store.Open creates: it refuses one that is not private.
-	path := filepath.Join(t.TempDir(), "data", "sigils.db")
+	path := filepath.Join(t.TempDir(), "data", "certfolds.db")
 	db, err := store.Open(path + "?_pragma=busy_timeout(10000)")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
@@ -1564,7 +1564,7 @@ func TestAuthenticatedRequestsRecordLastSeenAtMostOncePerInterval(t *testing.T) 
 	}
 }
 
-// A client enrolled again, as `sigils token create --replace` lets an install
+// A client enrolled again, as `certfolds token create --replace` lets an install
 // do, has a new identity and no last_seen. Its first request records
 // last_seen at once, though the old identity was seen within the interval,
 // and its claim replaces that of the old identity.

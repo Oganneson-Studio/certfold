@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/ca"
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/ca"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
 )
 
 // wwwSpec is a certificate that initialRuntimeConfig admits.
@@ -101,7 +101,7 @@ func TestCertificateEditsThatCannotApplyLeaveTheFile(t *testing.T) {
 			name:   "file awaiting a restart",
 			onDisk: strings.Replace(initialRuntimeConfig, `listen: ":8443"`, `listen: ":9443"`, 1),
 			edit:   func(ctx context.Context, r *serverConfigRuntime) error { return r.AddCertificate(ctx, wwwSpec) },
-			want:   "cannot hot reload changes to server.listen; restart sigils to apply them",
+			want:   "cannot hot reload changes to server.listen; restart certfolds to apply them",
 		},
 		{
 			name: "caller gone",

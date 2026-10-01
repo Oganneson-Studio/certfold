@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/pkg/proto"
+	"github.com/Oganneson-Studio/certfold/pkg/proto"
 )
 
 // lifetimePEM returns a self-signed certificate valid from notBefore to
@@ -37,11 +37,11 @@ func lifetimePEM(t *testing.T, notBefore, notAfter time.Time) string {
 
 // TestStatusReportsRenewAt covers RenewAt in the status: a certificate is due
 // for renewal with a third of its lifetime left, or half of it for a lifetime
-// under 10 days, and RenewAt is zero for a certificate sigilc cannot parse.
+// under 10 days, and RenewAt is zero for a certificate certfoldc cannot parse.
 func TestStatusReportsRenewAt(t *testing.T) {
 	// A certificate keeps whole seconds.
 	notAfter := time.Now().Add(20 * 24 * time.Hour).Truncate(time.Second)
-	cfg := buildTestCfg(t, "https://sigil.example.test")
+	cfg := buildTestCfg(t, "https://certfold.example.test")
 	seedStore(t, cfg.Client.DataDir,
 		&proto.CertBundle{Name: "ninety-days", Fingerprint: "sha256:AA", FullchainPEM: lifetimePEM(t, notAfter.Add(-90*24*time.Hour), notAfter)},
 		&proto.CertBundle{Name: "six-days", Fingerprint: "sha256:BB", FullchainPEM: lifetimePEM(t, notAfter.Add(-6*24*time.Hour), notAfter)},

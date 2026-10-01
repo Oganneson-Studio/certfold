@@ -29,8 +29,8 @@ import (
 	"github.com/go-acme/lego/v4/providers/dns/tencentcloud"
 	"github.com/go-acme/lego/v4/registration"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/store"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/store"
 )
 
 // Bounds on one issuance. lego's API takes no context, so timeouts are what
@@ -46,7 +46,7 @@ import (
 // uses them too, and each run of its program is bounded by dnsHookTimeout
 // (dns_exec.go).
 //
-// lego does not let Sigil bound everything:
+// lego does not let Certfold bound everything:
 //   - lego builds the gcloud provider's configuration itself, so it keeps
 //     lego's defaults (180 s propagation, 5 s polling, read from
 //     GCE_PROPAGATION_TIMEOUT and GCE_POLLING_INTERVAL), and like route53
@@ -113,7 +113,7 @@ type Issuer struct {
 // NewIssuer creates an Issuer backed by the persistent ACME account store.
 // When ctx ends, the programs of exec DNS providers still running are killed
 // along with the processes they started. It must end with the daemon, not
-// with the scheduler or a request: sigils ends it when shutdown gives up on
+// with the scheduler or a request: certfolds ends it when shutdown gives up on
 // the issuances still running, so that those finishing in time can still
 // clean up their DNS records.
 func NewIssuer(ctx context.Context, accounts *store.AccountRepo) *Issuer {
@@ -131,7 +131,7 @@ func NewIssuer(ctx context.Context, accounts *store.AccountRepo) *Issuer {
 // ctx is used only for the account store. lego's API takes no context, so
 // cancelling ctx does not interrupt a running ACME exchange; the timeouts
 // described at the top of this file bound it instead. The programs of exec
-// DNS providers end with the ctx of NewIssuer, not this one. sigils waits for
+// DNS providers end with the ctx of NewIssuer, not this one. certfolds waits for
 // the scheduler's in-flight Issue during shutdown for a bounded time only
 // (server.Run), and abandons it past that.
 func (i *Issuer) Issue(ctx context.Context, cfg *config.ServerConfig, spec config.CertificateSpec, replacing []byte) (*Result, error) {

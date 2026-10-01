@@ -7,11 +7,11 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
-	"github.com/Oganneson-Studio/sigil/internal/tui/shared"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/tui/shared"
 )
 
-// TestViewDrawsOnlyNarrowGlyphs checks every view of the sigilc TUI for a
+// TestViewDrawsOnlyNarrowGlyphs checks every view of the certfoldc TUI for a
 // character that some consoles draw two cells wide (see shared.WideGlyph). At
 // 40 columns the help cuts its keys with an ellipsis.
 func TestViewDrawsOnlyNarrowGlyphs(t *testing.T) {
@@ -30,9 +30,9 @@ func TestViewDrawsOnlyNarrowGlyphs(t *testing.T) {
 		"main with all keys":   func(t *testing.T, f *fakeBackend) Model { return press(t, newModel(t, f), "?") },
 		"events":               func(t *testing.T, f *fakeBackend) Model { return press(t, newModel(t, f), "e") },
 		"events with all keys": func(t *testing.T, f *fakeBackend) Model { return press(t, press(t, newModel(t, f), "e"), "?") },
-		"sigilc not answering": func(t *testing.T, f *fakeBackend) Model {
+		"certfoldc not answering": func(t *testing.T, f *fakeBackend) Model {
 			m := newModel(t, f)
-			f.stateErr = errors.New("ipc request: sigilc stopped")
+			f.stateErr = errors.New("ipc request: certfoldc stopped")
 			return press(t, m, "r")
 		},
 		"fetch running": func(t *testing.T, f *fakeBackend) Model {

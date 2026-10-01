@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/config"
 )
 
 // TestRepairMetadataDoesNotFollowASymlinkSwappedIn covers the moment between
@@ -21,7 +21,7 @@ import (
 // that can write the output's directory, typically the one configured as
 // owner, can replace the file with a symbolic link in that moment; it owns
 // the output, so it can also change its mode to make reconcile take this
-// path. The repair must not reach the file the link points to: sigilc runs as
+// path. The repair must not reach the file the link points to: certfoldc runs as
 // root, and a chmod through the path would give that file the output's mode,
 // 0644 for a certificate.
 func TestRepairMetadataDoesNotFollowASymlinkSwappedIn(t *testing.T) {
@@ -68,7 +68,7 @@ func TestRepairMetadataDoesNotFollowASymlinkSwappedIn(t *testing.T) {
 // TestReconcileReplacesFIFO covers a FIFO at an output path, which an account
 // that can write the output's directory may put there. Opening it to compare
 // its content would wait for a writer, with pullMu held, and stop every round
-// of sigilc; it is replaced by the output instead.
+// of certfoldc; it is replaced by the output instead.
 func TestReconcileReplacesFIFO(t *testing.T) {
 	b := makeBundle(t)
 	spec := config.OutputSpec{Format: "pem-cert", Path: filepath.Join(t.TempDir(), "cert.pem")}

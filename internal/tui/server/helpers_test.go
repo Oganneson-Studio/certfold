@@ -13,15 +13,15 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
-	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
 )
 
 // testToken stands in for an enrollment token. Real ones hold the mini-CA
 // certificate, so they are about as long.
 var testToken = strings.Repeat("eyJzZXJ2ZXJfdXJs", 66)
 
-const testServerURL = "https://sigil.example.com:8443"
+const testServerURL = "https://certfold.example.com:8443"
 
 // fakeBackend serves lists and events from memory and records the calls
 // that change state.

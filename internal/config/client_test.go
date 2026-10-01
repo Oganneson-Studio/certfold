@@ -61,7 +61,7 @@ func mustSelfSigned(cn string) (certPEM, keyPEM string) {
 const validClientYAML = `
 client:
   name: web-1
-  server_url: "https://sigil.example.com:8443"
+  server_url: "https://certfold.example.com:8443"
 `
 
 func withIdentity(base string) string {
@@ -93,7 +93,7 @@ func TestParseClient_Valid(t *testing.T) {
 	if cfg.Client.Name != "web-1" {
 		t.Errorf("name: got %q", cfg.Client.Name)
 	}
-	if cfg.Client.ServerURL != "https://sigil.example.com:8443" {
+	if cfg.Client.ServerURL != "https://certfold.example.com:8443" {
 		t.Errorf("server_url: got %q", cfg.Client.ServerURL)
 	}
 }
@@ -117,13 +117,13 @@ func TestParseClient_DataDir(t *testing.T) {
 		t.Errorf("default data_dir: got %q, want %q", cfg.Client.DataDir, DefaultClientDataDir())
 	}
 
-	src := strings.Replace(validClientYAML, `server_url: "https://sigil.example.com:8443"`, `server_url: "https://sigil.example.com:8443"
-  data_dir: "`+absPath("/srv/sigilc")+`"`, 1)
+	src := strings.Replace(validClientYAML, `server_url: "https://certfold.example.com:8443"`, `server_url: "https://certfold.example.com:8443"
+  data_dir: "`+absPath("/srv/certfoldc")+`"`, 1)
 	cfg, err = ParseClient([]byte(src))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Client.DataDir != absPath("/srv/sigilc") {
+	if cfg.Client.DataDir != absPath("/srv/certfoldc") {
 		t.Errorf("explicit data_dir: got %q", cfg.Client.DataDir)
 	}
 }
@@ -135,7 +135,7 @@ func TestParseClient_DataDir(t *testing.T) {
 func TestParseClient_EnvInterpolation(t *testing.T) {
 	t.Setenv("SRV_URL", "https://env.example.com:8443")
 	src := strings.Replace(validClientYAML,
-		`server_url: "https://sigil.example.com:8443"`,
+		`server_url: "https://certfold.example.com:8443"`,
 		`server_url: "${SRV_URL}"`, 1)
 	cfg, err := ParseClient([]byte(src))
 	if err != nil {
@@ -447,7 +447,7 @@ func TestParseClient_ValidationErrors(t *testing.T) {
 			want:   "client.name: must be set",
 		},
 		{
-			// The name is the CN of the client certificate, which sigils
+			// The name is the CN of the client certificate, which certfolds
 			// issues only for names under the rule.
 			name:   "name outside the rule",
 			mutate: func(s string) string { return strings.Replace(s, "name: web-1", "name: Web_1", 1) },
@@ -456,21 +456,21 @@ func TestParseClient_ValidationErrors(t *testing.T) {
 		{
 			name: "missing server_url",
 			mutate: func(s string) string {
-				return strings.Replace(s, `server_url: "https://sigil.example.com:8443"`, "", 1)
+				return strings.Replace(s, `server_url: "https://certfold.example.com:8443"`, "", 1)
 			},
 			want: "client.server_url",
 		},
 		{
 			name: "server_url must be https",
 			mutate: func(s string) string {
-				return strings.Replace(s, "https://sigil.example.com:8443", "http://sigil.example.com:8443", 1)
+				return strings.Replace(s, "https://certfold.example.com:8443", "http://certfold.example.com:8443", 1)
 			},
 			want: "https",
 		},
 		{
 			name: "identity renewal window too short",
 			mutate: func(s string) string {
-				return strings.Replace(s, `server_url: "https://sigil.example.com:8443"`, `server_url: "https://sigil.example.com:8443"
+				return strings.Replace(s, `server_url: "https://certfold.example.com:8443"`, `server_url: "https://certfold.example.com:8443"
   identity_renew_before: "30m"`, 1)
 			},
 			want: "identity_renew_before",
@@ -478,7 +478,7 @@ func TestParseClient_ValidationErrors(t *testing.T) {
 		{
 			name: "identity renewal window too long",
 			mutate: func(s string) string {
-				return strings.Replace(s, `server_url: "https://sigil.example.com:8443"`, `server_url: "https://sigil.example.com:8443"
+				return strings.Replace(s, `server_url: "https://certfold.example.com:8443"`, `server_url: "https://certfold.example.com:8443"
   identity_renew_before: "2160h"`, 1)
 			},
 			want: "identity_renew_before",
@@ -520,7 +520,7 @@ func TestParseClient_RemovedKeysRejected(t *testing.T) {
 	} {
 		key, _, _ := strings.Cut(line, ":")
 		t.Run(key, func(t *testing.T) {
-			src := strings.Replace(validClientYAML, `server_url: "https://sigil.example.com:8443"`, `server_url: "https://sigil.example.com:8443"
+			src := strings.Replace(validClientYAML, `server_url: "https://certfold.example.com:8443"`, `server_url: "https://certfold.example.com:8443"
   `+line, 1)
 			_, err := ParseClient([]byte(src))
 			if err == nil || !strings.Contains(err.Error(), "field "+key+" not found") {

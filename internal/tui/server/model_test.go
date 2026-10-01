@@ -6,7 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
 )
 
 // newTestModel returns a Model loaded from a fakeBackend (no IPC).

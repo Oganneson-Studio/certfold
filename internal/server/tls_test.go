@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/ca"
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/logging"
-	"github.com/Oganneson-Studio/sigil/internal/renewal"
+	"github.com/Oganneson-Studio/certfold/internal/ca"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/renewal"
 )
 
 // assertTLSEvents checks that ring holds one event for each entry of want, as

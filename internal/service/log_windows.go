@@ -9,7 +9,7 @@ import (
 
 	"golang.org/x/sys/windows/svc/eventlog"
 
-	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
 )
 
 // maxEventBytes bounds the text of an event: ReportEvent rejects a string of

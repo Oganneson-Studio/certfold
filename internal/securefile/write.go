@@ -35,18 +35,18 @@ func EnsurePrivateDirectory(path string) error {
 	return secureDirectory(path)
 }
 
-// CheckDirectory returns an error when accounts sigil does not trust could
+// CheckDirectory returns an error when accounts certfold does not trust could
 // put files in the existing directory at path, replace or remove the files in
 // it, or change who may. It changes nothing: the directory may be one like
-// C:\ProgramData, whose permissions are not sigil's to change. A directory
-// that does not exist passes, as sigil creates the directories it needs
+// C:\ProgramData, whose permissions are not certfold's to change. A directory
+// that does not exist passes, as certfold creates the directories it needs
 // private.
 //
 // On Windows the owner must be SYSTEM, Administrators or, when the process
 // runs without Administrators enabled, its user, and no other account may
 // write to the directory, delete it or its files, or change its DACL or
 // owner. Any account may create a folder in C:\ProgramData and owns what it
-// creates. On Unix it checks nothing: the directories sigil uses there are
+// creates. On Unix it checks nothing: the directories certfold uses there are
 // under /etc and /var/lib, which only root may write.
 func CheckDirectory(path string) error {
 	return checkDirectory(path)
@@ -63,7 +63,7 @@ func CheckPrivateDirectory(path string) error {
 
 // directoryError reports every problem that the checks found with the
 // directory at path, and the commands that fix them, one to a line. An
-// owner that sigil does not trust may have put anything in it, which the
+// owner that certfold does not trust may have put anything in it, which the
 // commands would keep: removing it comes first then.
 func directoryError(path string, problems []string, untrustedOwner bool, commands []string) error {
 	advice := "Check the files in it, then run:"
@@ -91,7 +91,7 @@ func WriteFile(path string, data []byte) error {
 		}
 	}
 
-	tmp, err := CreateTemp(dir, ".sigil-private-*")
+	tmp, err := CreateTemp(dir, ".certfold-private-*")
 	if err != nil {
 		return fmt.Errorf("create temporary file for %s: %w", path, withoutTempName(err))
 	}

@@ -1,4 +1,4 @@
-// Package client provides the Bubble Tea TUI for the sigilc client daemon.
+// Package client provides the Bubble Tea TUI for the certfoldc client daemon.
 package client
 
 import (
@@ -13,12 +13,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
-	"github.com/Oganneson-Studio/sigil/internal/logging"
-	"github.com/Oganneson-Studio/sigil/internal/tui/shared"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/tui/shared"
 )
 
-// Backend is the part of the sigilc IPC API the TUI uses. *ipc.Client
+// Backend is the part of the certfoldc IPC API the TUI uses. *ipc.Client
 // implements it.
 type Backend interface {
 	GetClientState(ctx context.Context) (*ipc.ClientState, error)
@@ -52,7 +52,7 @@ var (
 
 // legend explains the table under the full help.
 const legend = "Not After turns yellow once the certificate is due for renewal by the ratio rule: " +
-	"a third of its lifetime left, or half of a lifetime under 10 days. sigils renews later " +
+	"a third of its lifetime left, or half of a lifetime under 10 days. certfolds renews later " +
 	"when its CA suggests a later window (ARI), so yellow is a reminder, not an error.\n" +
 	"Pending: the on_change program has yet to succeed since the certificate or one of its outputs changed."
 
@@ -99,7 +99,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	}
 }
 
-// Model is the root Bubble Tea model for the sigilc TUI. It reads the state
+// Model is the root Bubble Tea model for the certfoldc TUI. It reads the state
 // and the events of the daemon through a Backend every refreshInterval.
 type Model struct {
 	backend Backend
@@ -350,14 +350,14 @@ func (m Model) render() string {
 func (m Model) header() string {
 	s := m.state
 	if s == nil {
-		return shared.TitleStyle.Width(m.width).Render("sigilc")
+		return shared.TitleStyle.Width(m.width).Render("certfoldc")
 	}
 	online := shared.ErrorDot.String() + " offline"
 	switch {
 	case m.stale:
-		// Whether sigils answers sigilc is not known without an answer from
-		// sigilc; the error line says why there is none.
-		online = shared.ErrorDot.String() + " unknown, sigilc is not answering"
+		// Whether certfolds answers certfoldc is not known without an answer from
+		// certfoldc; the error line says why there is none.
+		online = shared.ErrorDot.String() + " unknown, certfoldc is not answering"
 	case s.Online:
 		online = shared.HealthyDot.String() + " online"
 	}
@@ -366,7 +366,7 @@ func (m Model) header() string {
 		lastPull = s.LastPullAt.Local().Format("2006-01-02 15:04:05")
 	}
 	lines := []string{
-		shared.TitleStyle.Width(m.width).Render("sigilc  " + s.Name),
+		shared.TitleStyle.Width(m.width).Render("certfoldc  " + s.Name),
 		fmt.Sprintf(" Server:     %s  %s", s.ServerURL, online),
 		" Last pull:  " + lastPull,
 	}
@@ -404,13 +404,13 @@ func (m Model) certTable(now time.Time, rows int) string {
 			width, c.Name, notAfter, c.Outputs, yesNo(c.OnChange), yesNo(c.HookPending)))
 	}
 	if more := len(certs) - len(shown); more > 0 {
-		lines = append(lines, fmt.Sprintf("+%d more; sigilc status --json lists them all", more))
+		lines = append(lines, fmt.Sprintf("+%d more; certfoldc status --json lists them all", more))
 	}
 	return blockStyle.Render(strings.Join(lines, "\n"))
 }
 
 // due reports whether a certificate is due for renewal by the ratio rule.
-// One that sigilc cannot parse has no RenewAt and is not.
+// One that certfoldc cannot parse has no RenewAt and is not.
 func due(c ipc.ClientCertState, now time.Time) bool {
 	return !c.RenewAt.IsZero() && !now.Before(c.RenewAt)
 }

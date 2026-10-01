@@ -37,8 +37,8 @@ import (
 	"github.com/go-acme/lego/v4/registration"
 	"github.com/miekg/dns"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/store"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -52,7 +52,7 @@ import (
 // SetDNSResolvers changes lego's process-wide resolvers and nothing can
 // restore them, so the check runs in a child process.
 func TestSetDNSResolvers(t *testing.T) {
-	const childEnv = "SIGIL_TEST_SET_DNS_RESOLVERS"
+	const childEnv = "CERTFOLD_TEST_SET_DNS_RESOLVERS"
 	if os.Getenv(childEnv) == "" {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestSetDNSResolvers$", "-test.v", "-test.timeout=1m")
 		cmd.Env = append(os.Environ(), childEnv+"=1")
@@ -64,7 +64,7 @@ func TestSetDNSResolvers(t *testing.T) {
 		return
 	}
 
-	const zone = "zone.sigil.test."
+	const zone = "zone.certfold.test."
 	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +163,7 @@ func TestBuildDNSProvider_SupportedTypes(t *testing.T) {
 		"project_id":     "my-proj",
 		"private_key_id": "0",
 		"private_key":    string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})),
-		"client_email":   "sigil@my-proj.iam.gserviceaccount.com",
+		"client_email":   "certfold@my-proj.iam.gserviceaccount.com",
 		"client_id":      "0",
 		"token_uri":      "https://oauth2.googleapis.com/token",
 	})
@@ -251,7 +251,7 @@ func TestBuildDNSProvider_SupportedTypes(t *testing.T) {
 
 func TestBuildDNSProviderBoundsPropagationWait(t *testing.T) {
 	// lego reads these defaults from the environment without an upper limit.
-	// Sigil's explicit bounds must win.
+	// Certfold's explicit bounds must win.
 	for _, prefix := range []string{"CLOUDFLARE_", "ALICLOUD_", "TENCENTCLOUD_", "AWS_"} {
 		t.Setenv(prefix+"PROPAGATION_TIMEOUT", "999999")
 		t.Setenv(prefix+"POLLING_INTERVAL", "999999")

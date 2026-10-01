@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/store"
+	"github.com/Oganneson-Studio/certfold/internal/store"
 )
 
 // An issued certificate is stored together with its issuance status or not at
@@ -17,7 +17,7 @@ import (
 // the stored callback does not run.
 func TestCertificateIsNotStoredWithoutItsStatus(t *testing.T) {
 	// A directory that store.Open creates: it refuses one that is not private.
-	path := filepath.Join(t.TempDir(), "data", "sigils.db")
+	path := filepath.Join(t.TempDir(), "data", "certfolds.db")
 	db, err := store.Open(path)
 	if err != nil {
 		t.Fatalf("open db: %v", err)

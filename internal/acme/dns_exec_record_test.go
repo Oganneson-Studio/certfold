@@ -71,7 +71,7 @@ func TestExecProviderRejectsUnsafeRecordName(t *testing.T) {
 // Like TestSetDNSResolvers it runs in a child process: the resolvers lego uses
 // are process-wide.
 func TestExecProviderRejectsUnsafeCNAMETarget(t *testing.T) {
-	const childEnv = "SIGIL_TEST_UNSAFE_CNAME"
+	const childEnv = "CERTFOLD_TEST_UNSAFE_CNAME"
 	if os.Getenv(childEnv) == "" {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestExecProviderRejectsUnsafeCNAMETarget$", "-test.v", "-test.timeout=1m")
 		cmd.Env = append(os.Environ(), childEnv+"=1")
@@ -125,7 +125,7 @@ func TestExecProviderRejectsUnsafeCNAMETarget(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(testHookDirEnv, dir)
 	p := hookProvider(t, "record")
-	// hookProvider turns CNAME support off; sigils runs with lego's default.
+	// hookProvider turns CNAME support off; certfolds runs with lego's default.
 	t.Setenv("LEGO_DISABLE_CNAME_SUPPORT", "")
 
 	if err := p.Present("safe.example.test", "token", "token.thumbprint"); err != nil {

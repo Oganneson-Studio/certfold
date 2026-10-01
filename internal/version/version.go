@@ -4,7 +4,7 @@ package version
 import "runtime/debug"
 
 // Version and Commit identify the build. A release build may set them with
-// -ldflags "-X github.com/Oganneson-Studio/sigil/internal/version.Version=...".
+// -ldflags "-X github.com/Oganneson-Studio/certfold/internal/version.Version=...".
 // Otherwise they are what the go command recorded in the binary: the version
 // of the main module, which go build derives from the Git checkout (a
 // pseudo-version that ends in +dirty when the checkout had uncommitted

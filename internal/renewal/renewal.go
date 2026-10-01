@@ -1,8 +1,8 @@
 // Package renewal decides when a certificate is due for renewal. The
 // scheduler, the server's own TLS certificate and the certificate status of
-// sigilc use it; the IPC listing of certificates takes its times from the
+// certfoldc use it; the IPC listing of certificates takes its times from the
 // scheduler, through Renewer.RenewalPlan. It imports only the standard
-// library, so that any package, sigilc's included, can use it without linking
+// library, so that any package, certfoldc's included, can use it without linking
 // the ACME client.
 package renewal
 

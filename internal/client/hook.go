@@ -8,8 +8,8 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/logging"
-	"github.com/Oganneson-Studio/sigil/internal/proc"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/proc"
 )
 
 // Bounds on one run of an on_change program. They are variables only so tests
@@ -31,8 +31,8 @@ var (
 //     client.yaml; the server's responses, the certificate name included, are
 //     only used to look up that configuration and never choose the program,
 //     its arguments or where it runs.
-//   - The program inherits the environment of sigilc with nothing added, gets
-//     an empty stdin, and runs in the working directory of sigilc: / or
+//   - The program inherits the environment of certfoldc with nothing added, gets
+//     an empty stdin, and runs in the working directory of certfoldc: / or
 //     System32 when it runs as a service.
 //   - hookTimeout (2 minutes) bounds one run; when it expires the program is
 //     killed along with the processes it started. Once it has exited or been
@@ -55,7 +55,7 @@ var (
 //
 // Errors and logs follow the exec DNS provider:
 //   - The error names only the certificate and the exit status or the
-//     timeout, plus argv[0] when the program cannot be started. sigilc status
+//     timeout, plus argv[0] when the program cannot be started. certfoldc status
 //     shows it as the last error.
 //   - argv[1:] and the program's output never appear in the error: the
 //     arguments may hold credentials, and the output may repeat them.

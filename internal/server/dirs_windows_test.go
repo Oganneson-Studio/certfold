@@ -15,7 +15,7 @@ import (
 )
 
 // TestRunRefusesConfigurationDirectoryOthersMayWrite covers the directory of
-// server.yaml, which names the programs sigils runs as LocalSystem and where
+// server.yaml, which names the programs certfolds runs as LocalSystem and where
 // it keeps its keys. Under C:\ProgramData any account may create a folder,
 // owns it, and may give itself write access; one that Users may write to must
 // stop the daemon before it reads server.yaml: this one does not parse.

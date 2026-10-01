@@ -30,20 +30,20 @@ func TestSetupRoutesDefaultAndStandardLoggers(t *testing.T) {
 		t.Fatalf("Setup returned %+v", logs)
 	}
 
-	slog.Info("sigils started", "version", "test")
+	slog.Info("certfolds started", "version", "test")
 	log.Printf("http: TLS handshake error from %s", "192.0.2.1:1234")
 
 	events := logs.Events.Since(0)
 	if len(events) != 2 {
 		t.Fatalf("ring holds %d events, want 2: %+v", len(events), events)
 	}
-	if e := events[0]; e.Level != "INFO" || e.Message != "sigils started" || e.Attrs != "version=test" {
+	if e := events[0]; e.Level != "INFO" || e.Message != "certfolds started" || e.Attrs != "version=test" {
 		t.Errorf("event 1 = %+v", e)
 	}
 	if e := events[1]; e.Level != "INFO" || e.Message != "http: TLS handshake error from 192.0.2.1:1234" || e.Attrs != "" {
 		t.Errorf("event 2 = %+v", e)
 	}
-	for _, want := range []string{`msg="sigils started" version=test`, `msg="http: TLS handshake error from 192.0.2.1:1234"`} {
+	for _, want := range []string{`msg="certfolds started" version=test`, `msg="http: TLS handshake error from 192.0.2.1:1234"`} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("service log lacks %s: %s", want, buf.String())
 		}

@@ -15,13 +15,13 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/logging"
-	"github.com/Oganneson-Studio/sigil/pkg/proto"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
+	"github.com/Oganneson-Studio/certfold/pkg/proto"
 )
 
 // captureEvents makes the default logger, for the duration of t, add every
-// record to the returned Ring, as the events of sigilc, and write it to the
+// record to the returned Ring, as the events of certfoldc, and write it to the
 // returned buffer through a slog.TextHandler, as the service log on Linux.
 // The buffer is not safe for concurrent use: read it only once nothing logs.
 func captureEvents(t *testing.T) (*logging.Ring, *bytes.Buffer) {
@@ -220,7 +220,7 @@ func TestStoreChangesAreLoggedOnceWritten(t *testing.T) {
 // fails: the reconcile logs no "on_change succeeded" for it.
 func TestFailedProgramIsNotLoggedAsSucceeded(t *testing.T) {
 	bundle := newTestBundle(t, "api-prod")
-	cfg := buildTestCfg(t, "https://sigil.example.test")
+	cfg := buildTestCfg(t, "https://certfold.example.test")
 	fullchainOutput(cfg, t.TempDir(), "api-prod", "/usr/sbin/reload")
 	seedStore(t, cfg.Client.DataDir, bundle)
 	c := newTestClient(t, cfg)
@@ -243,7 +243,7 @@ func TestFailedProgramIsNotLoggedAsSucceeded(t *testing.T) {
 // TestRejectedReloadIsNotLogged covers a reload that changes a setting only a
 // restart applies: Reload fails, and logs nothing.
 func TestRejectedReloadIsNotLogged(t *testing.T) {
-	cfg := buildTestCfg(t, "https://sigil.example.test")
+	cfg := buildTestCfg(t, "https://certfold.example.test")
 	c := newTestClient(t, cfg)
 	ring, _ := captureEvents(t)
 
@@ -263,7 +263,7 @@ func TestRejectedReloadIsNotLogged(t *testing.T) {
 // output, so it logs no "outputs rewritten" and runs no on_change program.
 func TestMetadataRepairIsNotLoggedAsRewrite(t *testing.T) {
 	bundle := newTestBundle(t, "api-prod")
-	cfg := buildTestCfg(t, "https://sigil.example.test")
+	cfg := buildTestCfg(t, "https://certfold.example.test")
 	outPath := fullchainOutput(cfg, t.TempDir(), "api-prod", "/usr/sbin/reload")
 	seedStore(t, cfg.Client.DataDir, bundle)
 	c := newTestClient(t, cfg)
@@ -429,7 +429,7 @@ func TestReloadDuringOutageKeepsLastError(t *testing.T) {
 // writes and the program it runs.
 func TestReloadIsLogged(t *testing.T) {
 	bundle := newTestBundle(t, "api-prod")
-	cfg := buildTestCfg(t, "https://sigil.example.test")
+	cfg := buildTestCfg(t, "https://certfold.example.test")
 	seedStore(t, cfg.Client.DataDir, bundle)
 	c := newTestClient(t, cfg)
 	c.hook = (&fakeHook{}).run
@@ -454,7 +454,7 @@ func TestReloadIsLogged(t *testing.T) {
 // TestCorruptStoreIsLogged covers a certs.json that is not valid JSON: New
 // starts with an empty store, and logs the path and the error.
 func TestCorruptStoreIsLogged(t *testing.T) {
-	cfg := buildTestCfg(t, "https://sigil.example.test")
+	cfg := buildTestCfg(t, "https://certfold.example.test")
 	if err := os.WriteFile(filepath.Join(cfg.Client.DataDir, storeFileName), []byte(`{"certs":`), 0o600); err != nil {
 		t.Fatal(err)
 	}

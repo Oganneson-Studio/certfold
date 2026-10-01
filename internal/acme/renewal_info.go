@@ -14,7 +14,7 @@ import (
 	"github.com/go-acme/lego/v4/certificate"
 	"github.com/go-acme/lego/v4/lego"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/config"
 )
 
 // ErrNoRenewalInfo reports that a CA offers no renewal information (RFC

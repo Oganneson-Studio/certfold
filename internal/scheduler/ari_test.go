@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/acme"
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
-	"github.com/Oganneson-Studio/sigil/internal/store"
+	"github.com/Oganneson-Studio/certfold/internal/acme"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/store"
 )
 
 // testClock is a clock that tests set while the renewal info goroutine reads

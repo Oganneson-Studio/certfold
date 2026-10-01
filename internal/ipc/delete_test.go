@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/logging"
-	"github.com/Oganneson-Studio/sigil/internal/store"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/store"
 )
 
 // captureEvents makes the default logger add every record to the returned

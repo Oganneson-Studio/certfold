@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
 )
 
 func TestRefreshErrorShownUntilARefreshSucceeds(t *testing.T) {

@@ -39,64 +39,64 @@ func TestReadClientFieldAgreesWithLoadClient(t *testing.T) {
 	tests := []struct {
 		name  string
 		yaml  string // the client section of client.yaml
-		value string // value of SIGIL_TEST_VALUE
+		value string // value of CERTFOLD_TEST_VALUE
 		want  []string
 	}{
 		{
 			name: "plain values, no socket",
-			yaml: "client:\n  name: web-1\n  server_url: \"https://sigil.example.com:8443\"\n",
-			want: []string{"web-1", "https://sigil.example.com:8443", ""},
+			yaml: "client:\n  name: web-1\n  server_url: \"https://certfold.example.com:8443\"\n",
+			want: []string{"web-1", "https://certfold.example.com:8443", ""},
 		},
 		{
 			name:  "comment marker inside a plain value",
-			yaml:  "client:\n  name: web-1\n  server_url: https://sigil.example.com\n  ipc_socket: ${SIGIL_TEST_VALUE}\n",
-			value: absPath("/run/sigil/a.sock #x"),
-			want:  []string{"web-1", "https://sigil.example.com", absPath("/run/sigil/a.sock #x")},
+			yaml:  "client:\n  name: web-1\n  server_url: https://certfold.example.com\n  ipc_socket: ${CERTFOLD_TEST_VALUE}\n",
+			value: absPath("/run/certfold/a.sock #x"),
+			want:  []string{"web-1", "https://certfold.example.com", absPath("/run/certfold/a.sock #x")},
 		},
 		{
 			name:  "backslashes inside a double-quoted value",
-			yaml:  "client:\n  name: web-1\n  server_url: https://sigil.example.com\n  ipc_socket: \"${SIGIL_TEST_VALUE}\"\n",
+			yaml:  "client:\n  name: web-1\n  server_url: https://certfold.example.com\n  ipc_socket: \"${CERTFOLD_TEST_VALUE}\"\n",
 			value: absPath(`/run/\\.\pipe\custom`),
-			want:  []string{"web-1", "https://sigil.example.com", absPath(`/run/\\.\pipe\custom`)},
+			want:  []string{"web-1", "https://certfold.example.com", absPath(`/run/\\.\pipe\custom`)},
 		},
 		{
 			name:  "name and server URL from variables",
-			yaml:  "client:\n  name: web-${SIGIL_TEST_VALUE}\n  server_url: \"https://sigil-${SIGIL_TEST_VALUE}.example.com:${SIGIL_TEST_UNSET_PORT:-8443}\"\n",
+			yaml:  "client:\n  name: web-${CERTFOLD_TEST_VALUE}\n  server_url: \"https://certfold-${CERTFOLD_TEST_VALUE}.example.com:${CERTFOLD_TEST_UNSET_PORT:-8443}\"\n",
 			value: "2",
-			want:  []string{"web-2", "https://sigil-2.example.com:8443", ""},
+			want:  []string{"web-2", "https://certfold-2.example.com:8443", ""},
 		},
 		{
 			name: "default of an unset variable",
-			yaml: "client:\n  name: web-1\n  server_url: https://sigil.example.com\n  ipc_socket: \"${SIGIL_TEST_UNSET_SOCKET:-" + absPath("/run/sigil/d.sock") + "}\"\n",
-			want: []string{"web-1", "https://sigil.example.com", absPath("/run/sigil/d.sock")},
+			yaml: "client:\n  name: web-1\n  server_url: https://certfold.example.com\n  ipc_socket: \"${CERTFOLD_TEST_UNSET_SOCKET:-" + absPath("/run/certfold/d.sock") + "}\"\n",
+			want: []string{"web-1", "https://certfold.example.com", absPath("/run/certfold/d.sock")},
 		},
 		{
 			name: "escaped dollar",
-			yaml: "client:\n  name: web-1\n  server_url: https://sigil.example.com\n  ipc_socket: \"" + absPath("/run/$$sigil.sock") + "\"\n",
-			want: []string{"web-1", "https://sigil.example.com", absPath("/run/$sigil.sock")},
+			yaml: "client:\n  name: web-1\n  server_url: https://certfold.example.com\n  ipc_socket: \"" + absPath("/run/$$certfold.sock") + "\"\n",
+			want: []string{"web-1", "https://certfold.example.com", absPath("/run/$certfold.sock")},
 		},
 		{
 			name:  "alias of an anchored value with a variable",
-			yaml:  "client:\n  name: web-1\n  server_url: https://sigil.example.com\n  data_dir: &d " + absPath("/run/sigil-${SIGIL_TEST_VALUE}") + "\n  ipc_socket: *d\n",
+			yaml:  "client:\n  name: web-1\n  server_url: https://certfold.example.com\n  data_dir: &d " + absPath("/run/certfold-${CERTFOLD_TEST_VALUE}") + "\n  ipc_socket: *d\n",
 			value: "3",
-			want:  []string{"web-1", "https://sigil.example.com", absPath("/run/sigil-3")},
+			want:  []string{"web-1", "https://certfold.example.com", absPath("/run/certfold-3")},
 		},
 		{
 			name:  "merge key",
-			yaml:  "client:\n  <<: {name: \"web-${SIGIL_TEST_VALUE}\", server_url: \"https://sigil.example.com\"}\n  ipc_socket: " + absPath("/run/sigil/m.sock") + "\n",
+			yaml:  "client:\n  <<: {name: \"web-${CERTFOLD_TEST_VALUE}\", server_url: \"https://certfold.example.com\"}\n  ipc_socket: " + absPath("/run/certfold/m.sock") + "\n",
 			value: "4",
-			want:  []string{"web-4", "https://sigil.example.com", absPath("/run/sigil/m.sock")},
+			want:  []string{"web-4", "https://certfold.example.com", absPath("/run/certfold/m.sock")},
 		},
 		{
 			name:  "anchored merge key, overridden by the mapping",
-			yaml:  "client:\n  <<: &base {name: web-1, server_url: \"https://${SIGIL_TEST_VALUE}.example.com\"}\n  name: web-5\n",
-			value: "sigil",
-			want:  []string{"web-5", "https://sigil.example.com", ""},
+			yaml:  "client:\n  <<: &base {name: web-1, server_url: \"https://${CERTFOLD_TEST_VALUE}.example.com\"}\n  name: web-5\n",
+			value: "certfold",
+			want:  []string{"web-5", "https://certfold.example.com", ""},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("SIGIL_TEST_VALUE", tt.value)
+			t.Setenv("CERTFOLD_TEST_VALUE", tt.value)
 			path := writeClientYAML(t, tt.yaml)
 
 			cfg, err := LoadClient(path)
@@ -118,39 +118,39 @@ func TestReadClientFieldAgreesWithLoadClient(t *testing.T) {
 // other than the one read, the name too when only the socket is read.
 func TestReadClientFieldDoesNotRequireOtherVariables(t *testing.T) {
 	path := writeClientYAML(t, `client:
-  name: ${SIGIL_TEST_UNSET_NAME}
-  server_url: https://sigil.example.com:8443
-  ipc_socket: `+absPath("/run/sigil/custom.sock")+`
-  data_dir: ${SIGIL_TEST_UNSET_DATA_DIR}
+  name: ${CERTFOLD_TEST_UNSET_NAME}
+  server_url: https://certfold.example.com:8443
+  ipc_socket: `+absPath("/run/certfold/custom.sock")+`
+  data_dir: ${CERTFOLD_TEST_UNSET_DATA_DIR}
 certificates:
   api:
     outputs:
       - format: pkcs12
         path: `+absPath("/etc/ssl/api.p12")+`
-        password: ${SIGIL_TEST_UNSET_P12_PASSWORD}
+        password: ${CERTFOLD_TEST_UNSET_P12_PASSWORD}
 `)
 	got, err := ReadClientField(path, "ipc_socket")
 	if err != nil {
 		t.Fatalf("ReadClientField: %v", err)
 	}
-	if want := absPath("/run/sigil/custom.sock"); got != want {
+	if want := absPath("/run/certfold/custom.sock"); got != want {
 		t.Errorf("ReadClientField = %q, want %s", got, want)
 	}
-	if _, err := LoadClient(path); err == nil || !strings.Contains(err.Error(), "SIGIL_TEST_UNSET_") {
+	if _, err := LoadClient(path); err == nil || !strings.Contains(err.Error(), "CERTFOLD_TEST_UNSET_") {
 		t.Fatalf("LoadClient should still require the other variables, got %v", err)
 	}
 }
 
 func TestReadClientFieldRejectsUnsetVariable(t *testing.T) {
 	for _, tt := range []struct{ key, yaml string }{
-		{"name", "client:\n  name: ${SIGIL_TEST_UNSET}\n  server_url: https://sigil.example.com\n"},
-		{"server_url", "client:\n  name: web-1\n  server_url: ${SIGIL_TEST_UNSET}\n"},
-		{"ipc_socket", validClientYAML + "  ipc_socket: ${SIGIL_TEST_UNSET}\n"},
+		{"name", "client:\n  name: ${CERTFOLD_TEST_UNSET}\n  server_url: https://certfold.example.com\n"},
+		{"server_url", "client:\n  name: web-1\n  server_url: ${CERTFOLD_TEST_UNSET}\n"},
+		{"ipc_socket", validClientYAML + "  ipc_socket: ${CERTFOLD_TEST_UNSET}\n"},
 	} {
 		t.Run(tt.key, func(t *testing.T) {
 			_, err := ReadClientField(writeClientYAML(t, tt.yaml), tt.key)
-			if err == nil || !strings.Contains(err.Error(), "client."+tt.key) || !strings.Contains(err.Error(), "SIGIL_TEST_UNSET") {
-				t.Fatalf("ReadClientField error = %v, want one about SIGIL_TEST_UNSET in client.%s", err, tt.key)
+			if err == nil || !strings.Contains(err.Error(), "client."+tt.key) || !strings.Contains(err.Error(), "CERTFOLD_TEST_UNSET") {
+				t.Fatalf("ReadClientField error = %v, want one about CERTFOLD_TEST_UNSET in client.%s", err, tt.key)
 			}
 		})
 	}

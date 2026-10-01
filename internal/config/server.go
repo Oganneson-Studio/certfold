@@ -30,7 +30,7 @@ type ServerSection struct {
 	TLSCertFile string `yaml:"tls_cert_file,omitempty"`
 	TLSKeyFile  string `yaml:"tls_key_file,omitempty"`
 	// PublicURL is the externally reachable base URL clients use to reach this
-	// server (e.g. https://sigil.example.com:8443). Required when the listen
+	// server (e.g. https://certfold.example.com:8443). Required when the listen
 	// address is not a resolvable hostname (e.g. ":8443").
 	PublicURL string `yaml:"public_url,omitempty"`
 	// IPCSocket optionally overrides the default IPC endpoint
@@ -69,7 +69,7 @@ type DNSProvider struct {
 	Config               map[string]any `yaml:",inline"`
 }
 
-// CertificateSpec is a certificate that sigils issues. When it is renewed is
+// CertificateSpec is a certificate that certfolds issues. When it is renewed is
 // not configured: the scheduler renews a certificate when a share of its
 // lifetime is left.
 type CertificateSpec struct {
@@ -94,7 +94,7 @@ var validKeyTypes = map[string]bool{
 	"ec384":   true,
 }
 
-// dnsProviderKeys maps the closed set of DNS provider types Sigil supports
+// dnsProviderKeys maps the closed set of DNS provider types Certfold supports
 // to the keys each takes besides its typed fields: those buildDNSProvider in
 // internal/acme reads. Each type except exec corresponds to a lego provider
 // package; exec runs the program given by command and takes typed fields
@@ -136,7 +136,7 @@ func ParseServer(raw []byte) (*ServerConfig, error) {
 
 // ReadServerField reads the value of key in the server section of the
 // server.yaml at path: CLI commands locate the daemon with ipc_socket, and
-// service install unpacks the sigilc binaries under data_dir. Unlike
+// service install unpacks the certfoldc binaries under data_dir. Unlike
 // LoadServer it expands ${VAR} only in this value and does not validate the
 // file, so the DNS credentials other sections reference need not be set in
 // the caller's environment, and a mistake elsewhere in the file, the other
@@ -440,10 +440,10 @@ func (c *ServerConfig) PublicBaseURL() string {
 }
 
 // ValidatePublicURL reports whether s can be server.public_url: an https URL
-// with a host, without the characters unquotable reports. sigils appends the
+// with a host, without the characters unquotable reports. certfolds appends the
 // paths of its endpoints to it, so it takes no user information, query or
 // fragment, and a port it has must be one from 1 to 65535. Enrollment tokens
-// carry the public URL to sigilc, which checks the URL of a token under the
+// carry the public URL to certfoldc, which checks the URL of a token under the
 // same rule before it writes the URL to client.yaml and prints it.
 func ValidatePublicURL(s string) error {
 	u, err := url.Parse(s)
@@ -482,7 +482,7 @@ func unquotable(r rune) bool {
 // and neither that of a service nor that of the CLI is the directory of the
 // configuration. On Windows a path is absolute only with a drive letter, as
 // C:\ProgramData has, or with two leading separators, as a share such as
-// \\fileserver\sigil and the named pipe \\.\pipe\sigil-server have: \dir is
+// \\fileserver\certfold and the named pipe \\.\pipe\certfold-server have: \dir is
 // on the current drive.
 func checkAbsolute(path string) error {
 	if !filepath.IsAbs(path) {

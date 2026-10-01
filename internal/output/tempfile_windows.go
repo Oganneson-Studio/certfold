@@ -5,15 +5,15 @@ package output
 import (
 	"os"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/securefile"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/securefile"
 )
 
 // createTemp creates the temporary file for an output in dir. os.Chmod(0600)
 // cannot restrict access on Windows, so a format that carries the private key
 // is created by securefile.CreateTemp, whose protected DACL grants only
 // SYSTEM, Administrators, the current user when it runs without Administrators
-// enabled, and, for reading, spec.Owner: the owner consumes the key and sigilc
+// enabled, and, for reading, spec.Owner: the owner consumes the key and certfoldc
 // does every write. Other formats inherit the directory's ACL, and ignore
 // spec.Owner.
 //
@@ -23,16 +23,16 @@ import (
 // give the account that consumes the key more than read access.
 func createTemp(dir string, spec config.OutputSpec) (*os.File, error) {
 	if !carriesKey(spec.Format) {
-		return os.CreateTemp(dir, ".sigil-tmp-*")
+		return os.CreateTemp(dir, ".certfold-tmp-*")
 	}
 	if spec.Owner == "" {
-		return securefile.CreateTemp(dir, ".sigil-tmp-*")
+		return securefile.CreateTemp(dir, ".certfold-tmp-*")
 	}
 	owner, err := lookupAccount(spec.Owner)
 	if err != nil {
 		return nil, err
 	}
-	return securefile.CreateTemp(dir, ".sigil-tmp-*", owner)
+	return securefile.CreateTemp(dir, ".certfold-tmp-*", owner)
 }
 
 // applyMetadata does nothing on Windows. Chmod only sets or clears the

@@ -30,9 +30,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/enroll"
-	"github.com/Oganneson-Studio/sigil/pkg/proto"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/enroll"
+	"github.com/Oganneson-Studio/certfold/pkg/proto"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -110,7 +110,7 @@ func (authority *testIdentityCA) serverTLSCertificate(t *testing.T, now time.Tim
 	}
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(100),
-		Subject:      pkix.Name{CommonName: "sigils"},
+		Subject:      pkix.Name{CommonName: "certfolds"},
 		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
 		NotBefore:    now.Add(-time.Minute),
 		NotAfter:     now.Add(24 * time.Hour),
@@ -125,7 +125,7 @@ func (authority *testIdentityCA) serverTLSCertificate(t *testing.T, now time.Tim
 }
 
 // newMTLSServer starts a TLS server for handler that requires a client
-// certificate from authority, as sigils does, until the test ends.
+// certificate from authority, as certfolds does, until the test ends.
 func newMTLSServer(t *testing.T, authority *testIdentityCA, now time.Time, handler http.Handler) *httptest.Server {
 	t.Helper()
 	ts := httptest.NewUnstartedServer(handler)
@@ -324,8 +324,8 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// fakeServer simulates the sigils HTTP API for client tests. GET /v1/sync
-// works as on sigils: it answers 200 at once unless If-None-Match equals the
+// fakeServer simulates the certfolds HTTP API for client tests. GET /v1/sync
+// works as on certfolds: it answers 200 at once unless If-None-Match equals the
 // current ETag, and otherwise waits until setView changes the view, maxWait
 // passes (then it answers 304) or the client goes away.
 type fakeServer struct {
@@ -726,7 +726,7 @@ func TestRenewIdentityPersistsBeforeRuntimeSwitch(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldCert := authority.issue(t, "web-1", &oldKey.PublicKey, now, now.Add(24*time.Hour), 2)
-	cfg := buildTestCfg(t, "https://sigil.example.test")
+	cfg := buildTestCfg(t, "https://certfold.example.test")
 	cfg.Client.IdentityRenewBefore = 30 * 24 * time.Hour
 	cfg.Identity = config.IdentitySection{
 		CACert:     authority.certPEM,
@@ -841,7 +841,7 @@ func renewalTransport(issue func(publicKey any) (string, error)) http.RoundTripp
 func TestRenewalAcceptsIdentityFromServerAhead(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	authority := newTestIdentityCA(t, now)
-	cfg := buildTestCfg(t, "https://sigil.example.test")
+	cfg := buildTestCfg(t, "https://certfold.example.test")
 	cfg.Client.IdentityRenewBefore = 30 * 24 * time.Hour
 	withIdentity(t, cfg, authority, now, now.Add(24*time.Hour))
 	c, err := New(cfg, WithIdentitySaver(func(string, string, string) error { return nil }))
@@ -873,7 +873,7 @@ func TestRenewalAcceptsIdentityFromServerAhead(t *testing.T) {
 }
 
 // TestRenewalKeepsCurrentIdentityWhenRenewedOneIsRefused covers renewed
-// identities that sigils would not accept, and one that did not reach
+// identities that certfolds would not accept, and one that did not reach
 // client.yaml: the running identity must stay as it was, and only a renewed
 // identity that passes the checks may be saved.
 func TestRenewalKeepsCurrentIdentityWhenRenewedOneIsRefused(t *testing.T) {
@@ -913,7 +913,7 @@ func TestRenewalKeepsCurrentIdentityWhenRenewedOneIsRefused(t *testing.T) {
 		}, saveErr: errors.New("disk full"), wantSave: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := buildTestCfg(t, "https://sigil.example.test")
+			cfg := buildTestCfg(t, "https://certfold.example.test")
 			cfg.Client.IdentityRenewBefore = 30 * 24 * time.Hour
 			withIdentity(t, cfg, authority, now, now.Add(24*time.Hour))
 			current := cfg.Identity
@@ -947,7 +947,7 @@ func TestRenewalKeepsCurrentIdentityWhenRenewedOneIsRefused(t *testing.T) {
 	}
 }
 
-// TestFetchNamedCertificateForcesOnlyThatBundle covers sigilc fetch --cert:
+// TestFetchNamedCertificateForcesOnlyThatBundle covers certfoldc fetch --cert:
 // it downloads the named certificate again, and only it, but unchanged
 // material neither rewrites outputs nor runs on_change.
 func TestFetchNamedCertificateForcesOnlyThatBundle(t *testing.T) {
@@ -1092,7 +1092,7 @@ func TestOutputsHoldOnlyCertificatesAndKey(t *testing.T) {
 }
 
 // TestAnswersAreBounded covers a server that sends a view or a bundle longer
-// than maxResponseBytes: sigilc stops reading it and reports the answer,
+// than maxResponseBytes: certfoldc stops reading it and reports the answer,
 // rather than reading on for as long as the server sends. The documents are
 // valid JSON, padded with whitespace between their tokens.
 func TestAnswersAreBounded(t *testing.T) {
@@ -1199,7 +1199,7 @@ func TestReconcileFailureSkipsHook(t *testing.T) {
 // on_change run it records.
 func TestHookPendingWriteIsRetried(t *testing.T) {
 	bundle := newTestBundle(t, "api-prod")
-	cfg := buildTestCfg(t, "https://sigil.example.test")
+	cfg := buildTestCfg(t, "https://certfold.example.test")
 	fullchainOutput(cfg, t.TempDir(), "api-prod", "/usr/sbin/reload")
 	seedStore(t, cfg.Client.DataDir, bundle)
 	c := newTestClient(t, cfg)
@@ -1307,7 +1307,7 @@ func TestStoreIsPrivate(t *testing.T) {
 		checkPrivate(t, filepath.Join(cfg.Client.DataDir, storeFileName))
 	})
 	t.Run("existing", func(t *testing.T) {
-		cfg := buildTestCfg(t, "https://sigil.example.test")
+		cfg := buildTestCfg(t, "https://certfold.example.test")
 		cfg.Client.DataDir = usersReadableDir(t)
 		path := filepath.Join(cfg.Client.DataDir, storeFileName)
 		if err := os.WriteFile(path, []byte(`{"certs":{}}`), 0o644); err != nil {
@@ -1325,7 +1325,7 @@ func TestStoreIsPrivate(t *testing.T) {
 // read: New fails rather than start from an empty store, which would lose
 // the pending on_change runs recorded in it.
 func TestUnreadableStoreFailsNew(t *testing.T) {
-	cfg := buildTestCfg(t, "https://sigil.example.test")
+	cfg := buildTestCfg(t, "https://certfold.example.test")
 	// A directory where certs.json belongs cannot be read as a file.
 	if err := os.Mkdir(filepath.Join(cfg.Client.DataDir, storeFileName), 0o700); err != nil {
 		t.Fatal(err)
@@ -1406,7 +1406,7 @@ func TestRunRestoresOutputsBeforeFirstAnswer(t *testing.T) {
 	waitFor(t, "the output restored from the store", func() bool { return fileContent(outPath) == bundle.FullchainPEM })
 }
 
-// TestRunRemovesLeftoverTemps covers the temporary files that a sigilc
+// TestRunRemovesLeftoverTemps covers the temporary files that a certfoldc
 // stopped while it wrote an output or the store leaves behind: Run removes
 // them before its first reconcile, and nothing else.
 func TestRunRemovesLeftoverTemps(t *testing.T) {
@@ -1421,8 +1421,8 @@ func TestRunRemovesLeftoverTemps(t *testing.T) {
 	outPath := fullchainOutput(cfg, outDir, "api-prod")
 	seedStore(t, cfg.Client.DataDir, bundle)
 	leftovers := []string{
-		filepath.Join(outDir, ".sigil-tmp-123"),
-		filepath.Join(cfg.Client.DataDir, ".sigil-private-456"),
+		filepath.Join(outDir, ".certfold-tmp-123"),
+		filepath.Join(cfg.Client.DataDir, ".certfold-private-456"),
 	}
 	kept := filepath.Join(outDir, "other.pem")
 	for _, path := range append(leftovers, kept) {
@@ -1492,7 +1492,7 @@ func TestStoppingRunKillsHook(t *testing.T) {
 // outlive the daemon.
 func TestHooksAfterRunEndsAreCancelled(t *testing.T) {
 	bundle := newTestBundle(t, "api-prod")
-	cfg := buildTestCfg(t, "https://sigil.example.test")
+	cfg := buildTestCfg(t, "https://certfold.example.test")
 	seedStore(t, cfg.Client.DataDir, bundle)
 	c := newTestClient(t, cfg)
 	ran := false
@@ -1746,7 +1746,7 @@ func TestHookFailureBacksOffUntilItSucceeds(t *testing.T) {
 	}
 }
 
-// TestReloadReconcilesAndRestartsSync covers sigilc reload: the outputs of the
+// TestReloadReconcilesAndRestartsSync covers certfoldc reload: the outputs of the
 // new configuration exist when Reload returns, and the loop pulls the whole
 // view at once, whether it was waiting for an answer or backing off.
 func TestReloadReconcilesAndRestartsSync(t *testing.T) {
@@ -1813,7 +1813,7 @@ func TestReloadReconcilesAndRestartsSync(t *testing.T) {
 	})
 }
 
-// TestFetchWakesLoopFromBackoff covers sigilc fetch while the loop backs off
+// TestFetchWakesLoopFromBackoff covers certfoldc fetch while the loop backs off
 // from a failed round: once the fetch succeeds, the loop waits for a change
 // again at once, not when its backoff ends.
 func TestFetchWakesLoopFromBackoff(t *testing.T) {
@@ -2218,7 +2218,7 @@ func TestReloadAppliesRuntimeConfig(t *testing.T) {
 // the error goes to the status.
 func TestReloadKeepsReconcileErrorsInStatus(t *testing.T) {
 	bundle := newTestBundle(t, "api-prod")
-	cfg := buildTestCfg(t, "https://sigil.example.test")
+	cfg := buildTestCfg(t, "https://certfold.example.test")
 	seedStore(t, cfg.Client.DataDir, bundle)
 	c := newTestClient(t, cfg)
 	// A file where the key's directory belongs fails that output.
@@ -2253,7 +2253,7 @@ func TestReloadRejectsRestartOnlyChanges(t *testing.T) {
 		{field: "client.data_dir", change: func(s *config.ClientSection) { s.DataDir = filepath.Join(s.DataDir, "moved") }},
 	} {
 		t.Run(tc.field, func(t *testing.T) {
-			cfg := buildTestCfg(t, "https://sigil.example.com")
+			cfg := buildTestCfg(t, "https://certfold.example.com")
 			c := newTestClient(t, cfg)
 			updated := *cfg
 			updated.Client.ServerURL = "https://new.example.com"
@@ -2268,11 +2268,11 @@ func TestReloadRejectsRestartOnlyChanges(t *testing.T) {
 	}
 }
 
-// TestReloadDuringRenewalKeepsTheRenewedIdentity covers sigilc reload while
+// TestReloadDuringRenewalKeepsTheRenewedIdentity covers certfoldc reload while
 // an identity renewal waits for the server. The renewal writes the renewed
 // identity to client.yaml, then switches to it; a reload that read
 // client.yaml before would apply the identity the renewal replaced, which
-// sigils refuses once the renewed one was presented, until sigilc restarts.
+// certfolds refuses once the renewed one was presented, until certfoldc restarts.
 func TestReloadDuringRenewalKeepsTheRenewedIdentity(t *testing.T) {
 	now := time.Now()
 	authority := newTestIdentityCA(t, now)
@@ -2355,7 +2355,7 @@ func TestReloadDuringRenewalKeepsTheRenewedIdentity(t *testing.T) {
 	running := c.cfg.Identity.ClientCert
 	c.cfgMu.RUnlock()
 	if running != saved {
-		t.Fatal("after a reload during a renewal, sigilc runs with the identity the renewal replaced")
+		t.Fatal("after a reload during a renewal, certfoldc runs with the identity the renewal replaced")
 	}
 }
 

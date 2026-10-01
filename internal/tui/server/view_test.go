@@ -5,7 +5,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/Oganneson-Studio/sigil/internal/tui/shared"
+	"github.com/Oganneson-Studio/certfold/internal/tui/shared"
 )
 
 // Every view holds only characters that a classic Windows console on an

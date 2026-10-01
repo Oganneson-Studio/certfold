@@ -7,14 +7,14 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
 )
 
 func newTestBackend() *fakeBackend {
 	return &fakeBackend{
 		state: ipc.ClientState{
 			Name:      "web-1",
-			ServerURL: "https://sigil.example.com",
+			ServerURL: "https://certfold.example.com",
 			Online:    true,
 			Certs: []ipc.ClientCertState{
 				{Name: "api-prod", NotAfter: time.Now().Add(60 * 24 * time.Hour), Outputs: 3},

@@ -1,6 +1,6 @@
-// Package proc runs the programs that sigils and sigilc start from their
+// Package proc runs the programs that certfolds and certfoldc start from their
 // configuration: those of the exec DNS provider and of on_change. It imports
-// only the standard library and, on Windows, golang.org/x/sys, so that sigilc
+// only the standard library and, on Windows, golang.org/x/sys, so that certfoldc
 // can use it without linking the ACME client.
 package proc
 

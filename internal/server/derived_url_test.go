@@ -7,18 +7,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/ca"
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/enroll"
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
-	"github.com/Oganneson-Studio/sigil/internal/store"
+	"github.com/Oganneson-Studio/certfold/internal/ca"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/enroll"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/store"
 )
 
 // Without public_url a token carries the URL derived from server.listen, and
-// sigilc refuses one that could not be server.public_url. createToken
+// certfoldc refuses one that could not be server.public_url. createToken
 // refuses such a URL before it stores a token no client could redeem, and
 // says what to set.
-func TestCreateTokenRefusesADerivedURLSigilcWouldRefuse(t *testing.T) {
+func TestCreateTokenRefusesADerivedURLCertfoldcWouldRefuse(t *testing.T) {
 	db, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)

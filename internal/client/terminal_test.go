@@ -120,7 +120,7 @@ func TestErrorsKeepOnlyTheNewlinesOfJoin(t *testing.T) {
 // reach a terminal through the IPC API all the same.
 func TestReloadErrorIsPrintable(t *testing.T) {
 	now := time.Now()
-	cfg := buildTestCfg(t, "https://sigil.example.test")
+	cfg := buildTestCfg(t, "https://certfold.example.test")
 	withIdentity(t, cfg, newTestIdentityCA(t, now), now, now.Add(90*24*time.Hour))
 	c := newTestClient(t, cfg)
 
@@ -167,10 +167,10 @@ func TestViewSkipsInvalidCertificateNames(t *testing.T) {
 	}
 }
 
-// The store keeps the fingerprint of a bundle, and sigilc status --json
+// The store keeps the fingerprint of a bundle, and certfoldc status --json
 // prints it: encoding/json escapes C0 there, but passes DEL and C1 through,
 // and some terminals take U+009B for CSI. A bundle whose fingerprint is not
-// of the form sigils sends is refused as a bad bundle.
+// of the form certfolds sends is refused as a bad bundle.
 func TestBundleWithMalformedFingerprintIsRefused(t *testing.T) {
 	bundle := newTestBundle(t, "api-prod")
 	bundle.Fingerprint = "sha256:\u009b2J"
@@ -182,7 +182,7 @@ func TestBundleWithMalformedFingerprintIsRefused(t *testing.T) {
 	err := c.Fetch(context.Background(), "")
 	for _, cert := range c.Status().Certs {
 		if strings.ContainsFunc(cert.Fingerprint, unicode.IsControl) {
-			t.Fatalf("status fingerprint of %s = %q, which sigilc status --json prints as it is", cert.Name, cert.Fingerprint)
+			t.Fatalf("status fingerprint of %s = %q, which certfoldc status --json prints as it is", cert.Name, cert.Fingerprint)
 		}
 	}
 	if err == nil || !strings.Contains(err.Error(), `bundle "api-prod": server sent fingerprint "sha256:\u009b2J"`) {

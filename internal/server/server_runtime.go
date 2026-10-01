@@ -10,7 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/config"
 )
 
 type configPublisher interface {
@@ -176,14 +176,14 @@ func validateHotReload(previous, next *config.ServerConfig) error {
 	if previous.Server.TLSKeyFile != next.Server.TLSKeyFile {
 		immutable = append(immutable, "server.tls_key_file")
 	}
-	// lego keeps the DNS resolvers in a process-wide variable that sigils sets
+	// lego keeps the DNS resolvers in a process-wide variable that certfolds sets
 	// once at startup; changing it under running issuances would be a race.
 	if !slices.Equal(previous.ACME.DNSResolvers, next.ACME.DNSResolvers) {
 		immutable = append(immutable, "acme.dns_resolvers")
 	}
 	if len(immutable) > 0 {
 		return fmt.Errorf(
-			"cannot hot reload changes to %s; restart sigils to apply them",
+			"cannot hot reload changes to %s; restart certfolds to apply them",
 			strings.Join(immutable, ", "),
 		)
 	}

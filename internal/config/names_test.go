@@ -6,8 +6,8 @@ import (
 	"unicode"
 )
 
-// Every name in server.yaml follows the rule of client names. sigils sends
-// the names of certificates to sigilc, and prints those of CAs and DNS
+// Every name in server.yaml follows the rule of client names. certfolds sends
+// the names of certificates to certfoldc, and prints those of CAs and DNS
 // providers in cert list, cert show and its TUI, so the rule leaves no room
 // for the control characters of an escape sequence. These are YAML escapes:
 // raw ones would fail the YAML parser before the check.

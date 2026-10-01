@@ -10,7 +10,7 @@ import (
 // come before the first change it makes:
 //   - $ErrorActionPreference = 'Stop' makes a failed cmdlet, such as a
 //     download that gets a 404, end the script. Without it the error ends
-//     only its own statement, and the script goes on: it runs the sigilc.exe
+//     only its own statement, and the script goes on: it runs the certfoldc.exe
 //     an earlier install left, or, when there is none, gets past each check
 //     of a $LASTEXITCODE that an earlier command of the session left at 0.
 //   - The elevation check, since the steps after it fail halfway without

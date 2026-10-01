@@ -29,10 +29,10 @@ func mustBuildServiceConfig(t *testing.T, cfg Config) *ksvc.Config {
 
 func TestBuildServiceConfig_Server(t *testing.T) {
 	cfg := mustBuildServiceConfig(t, Config{Role: RoleServer})
-	if cfg.Name != "sigils" {
-		t.Errorf("Name: got %q, want %q", cfg.Name, "sigils")
+	if cfg.Name != "certfolds" {
+		t.Errorf("Name: got %q, want %q", cfg.Name, "certfolds")
 	}
-	if cfg.DisplayName != "Sigil Server" {
+	if cfg.DisplayName != "Certfold Server" {
 		t.Errorf("DisplayName: got %q", cfg.DisplayName)
 	}
 	if len(cfg.Arguments) == 0 || cfg.Arguments[0] != "serve" {
@@ -60,10 +60,10 @@ func TestBuildServiceConfig_WindowsRestartsOnFailure(t *testing.T) {
 
 func TestBuildServiceConfig_Client(t *testing.T) {
 	cfg := mustBuildServiceConfig(t, Config{Role: RoleClient})
-	if cfg.Name != "sigilc" {
-		t.Errorf("Name: got %q, want %q", cfg.Name, "sigilc")
+	if cfg.Name != "certfoldc" {
+		t.Errorf("Name: got %q, want %q", cfg.Name, "certfoldc")
 	}
-	if cfg.DisplayName != "Sigil Client" {
+	if cfg.DisplayName != "Certfold Client" {
 		t.Errorf("DisplayName: got %q", cfg.DisplayName)
 	}
 }
@@ -77,7 +77,7 @@ func TestBuildServiceConfig_ExplicitConfigPath(t *testing.T) {
 }
 
 // TestBuildServiceConfigRegistersAbsoluteConfigPath covers
-// `sigils --config server.yaml service install` run from the directory that
+// `certfolds --config server.yaml service install` run from the directory that
 // holds server.yaml. The service manager starts the daemon in another working
 // directory (/ under systemd, System32 under the SCM), so a relative path
 // registered as is names a file the daemon cannot find: it fails at start and
@@ -117,13 +117,13 @@ func TestIsBinaryName(t *testing.T) {
 		name string
 		want bool
 	}{
-		{"sigilc-linux-amd64", true},
-		{"sigilc-darwin-arm64", true},
-		{"sigilc-windows-amd64.exe", true},
+		{"certfoldc-linux-amd64", true},
+		{"certfoldc-darwin-arm64", true},
+		{"certfoldc-windows-amd64.exe", true},
 		{"README", false},
-		{"sigilc", false}, // no dash after "sigilc"
+		{"certfoldc", false}, // no dash after "certfoldc"
 		{"", false},
-		{"sigils-linux-amd64", false},
+		{"certfolds-linux-amd64", false},
 	}
 	for _, c := range cases {
 		if got := isBinaryName(c.name); got != c.want {
@@ -162,10 +162,10 @@ func TestUnpackClients_EmptyFS(t *testing.T) {
 func TestUnpackClients_WithBinaries(t *testing.T) {
 	content := []byte("fake-binary-content")
 	fsys := fstest.MapFS{
-		"sigilc-linux-amd64":       &fstest.MapFile{Data: content},
-		"sigilc-darwin-arm64":      &fstest.MapFile{Data: content},
-		"sigilc-windows-amd64.exe": &fstest.MapFile{Data: content},
-		"README":                   &fstest.MapFile{Data: []byte("skip me")},
+		"certfoldc-linux-amd64":       &fstest.MapFile{Data: content},
+		"certfoldc-darwin-arm64":      &fstest.MapFile{Data: content},
+		"certfoldc-windows-amd64.exe": &fstest.MapFile{Data: content},
+		"README":                      &fstest.MapFile{Data: []byte("skip me")},
 	}
 	// A data_dir that UnpackClients creates: it refuses one that is not
 	// private, as the temporary directory may not be.
@@ -180,7 +180,7 @@ func TestUnpackClients_WithBinaries(t *testing.T) {
 	}
 
 	// Verify each binary exists on disk with the right content.
-	for _, name := range []string{"sigilc-linux-amd64", "sigilc-darwin-arm64", "sigilc-windows-amd64.exe"} {
+	for _, name := range []string{"certfoldc-linux-amd64", "certfoldc-darwin-arm64", "certfoldc-windows-amd64.exe"} {
 		got, err := os.ReadFile(filepath.Join(dir, "binaries", name))
 		if err != nil {
 			t.Errorf("missing file %s: %v", name, err)
@@ -199,7 +199,7 @@ func TestUnpackClients_WithBinaries(t *testing.T) {
 
 func TestUnpackClients_CreatesDestDir(t *testing.T) {
 	fsys := fstest.MapFS{
-		"sigilc-linux-amd64": &fstest.MapFile{Data: []byte("x")},
+		"certfoldc-linux-amd64": &fstest.MapFile{Data: []byte("x")},
 	}
 	dir := filepath.Join(t.TempDir(), "deep", "nested")
 	_, err := UnpackClients(fsys, dir, &bytes.Buffer{})
@@ -217,7 +217,7 @@ func TestUnpackClients_AtomicWrite(t *testing.T) {
 	// exactly what was written.
 	data := bytes.Repeat([]byte{0xDE, 0xAD, 0xBE, 0xEF}, 256)
 	fsys := fstest.MapFS{
-		"sigilc-linux-amd64": &fstest.MapFile{Data: data},
+		"certfoldc-linux-amd64": &fstest.MapFile{Data: data},
 	}
 	// A data_dir that UnpackClients creates: it refuses one that is not
 	// private, as the temporary directory may not be.
@@ -226,7 +226,7 @@ func TestUnpackClients_AtomicWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := os.ReadFile(filepath.Join(dir, "binaries", "sigilc-linux-amd64"))
+	got, err := os.ReadFile(filepath.Join(dir, "binaries", "certfoldc-linux-amd64"))
 	if err != nil {
 		t.Fatal(err)
 	}

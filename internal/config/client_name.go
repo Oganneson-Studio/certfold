@@ -12,7 +12,7 @@ func ValidateClientName(name string) error {
 }
 
 // ValidateCertificateName reports whether name is a valid certificate name,
-// under the rule of client names. sigils sends the name of a certificate to
+// under the rule of client names. certfolds sends the name of a certificate to
 // every subscriber, which prints it to terminals and matches it exactly
 // against the certificates of client.yaml: the rule leaves no room for the
 // control characters of an escape sequence, nor for a second spelling.

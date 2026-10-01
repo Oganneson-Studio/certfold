@@ -44,7 +44,7 @@ type e2eStack struct {
 	// distinct host paths; each run keeps its files in its own runDir in it.
 	mountDir string
 	runDir   string
-	// user is the --user of the sigils and sigilc containers under Docker on
+	// user is the --user of the certfolds and certfoldc containers under Docker on
 	// Linux: the uid and gid of the harness, so that it can remove the files
 	// they write in runDir. It is empty under WSLC, which needs no --user.
 	user string
@@ -67,7 +67,7 @@ type e2eStack struct {
 	publicTLS *deployment
 }
 
-// deployment is one sigils server and the sigilc client enrolled with it.
+// deployment is one certfolds server and the certfoldc client enrolled with it.
 // Its files live in hostDir, which its containers see as containerDir, except
 // the client's outputs, which stay in the client container.
 type deployment struct {
@@ -102,15 +102,15 @@ type certificate struct {
 const testCertOutputs = "/cert-output/test-cert"
 
 // serverDataDir is server.data_dir in a server container. It is not in the
-// bind mount either: sigils refuses a data_dir whose mode lets other users
-// in, and WSLC reports 0777. sigils creates it private in /var/lib/sigils,
+// bind mount either: certfolds refuses a data_dir whose mode lets other users
+// in, and WSLC reports 0777. certfolds creates it private in /var/lib/certfolds,
 // which the image makes writable to the user of the container.
-const serverDataDir = "/var/lib/sigils/data"
+const serverDataDir = "/var/lib/certfolds/data"
 
 var stack *e2eStack
 
 func detectContainerRuntime() (containerRuntime, error) {
-	if configured := strings.TrimSpace(os.Getenv("SIGIL_CONTAINER_CLI")); configured != "" {
+	if configured := strings.TrimSpace(os.Getenv("CERTFOLD_CONTAINER_CLI")); configured != "" {
 		path, err := exec.LookPath(configured)
 		if err != nil {
 			return containerRuntime{}, fmt.Errorf("find %s: %w", configured, err)
@@ -139,7 +139,7 @@ func detectContainerRuntime() (containerRuntime, error) {
 			return containerRuntime{path: path, name: "docker"}, nil
 		}
 	}
-	return containerRuntime{}, fmt.Errorf("WSLC is required on Windows; set SIGIL_CONTAINER_CLI explicitly on other platforms")
+	return containerRuntime{}, fmt.Errorf("WSLC is required on Windows; set CERTFOLD_CONTAINER_CLI explicitly on other platforms")
 }
 
 func runtimeName(path string) string {
@@ -155,7 +155,7 @@ func newE2EStack(rt containerRuntime) (*e2eStack, error) {
 	if err != nil {
 		return nil, err
 	}
-	mountDir := filepath.Join(os.TempDir(), "sigil-wslc-e2e")
+	mountDir := filepath.Join(os.TempDir(), "certfold-wslc-e2e")
 	if err := os.MkdirAll(mountDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -173,12 +173,12 @@ func newE2EStack(rt containerRuntime) (*e2eStack, error) {
 		rootDir:               rootDir,
 		mountDir:              mountDir,
 		runDir:                runDir,
-		network:               "sigil-e2e-" + suffix,
-		serverImage:           "sigil-e2e-sigils:" + suffix,
-		clientImage:           "sigil-e2e-sigilc:" + suffix,
-		pebbleImage:           "sigil-e2e-pebble:" + suffix,
-		pebbleContainer:       "sigil-e2e-pebble-" + suffix,
-		challtestsrvContainer: "sigil-e2e-challtestsrv-" + suffix,
+		network:               "certfold-e2e-" + suffix,
+		serverImage:           "certfold-e2e-certfolds:" + suffix,
+		clientImage:           "certfold-e2e-certfoldc:" + suffix,
+		pebbleImage:           "certfold-e2e-pebble:" + suffix,
+		pebbleContainer:       "certfold-e2e-pebble-" + suffix,
+		challtestsrvContainer: "certfold-e2e-challtestsrv-" + suffix,
 	}
 	if rt.name == "docker" && runtime.GOOS == "linux" {
 		s.user = fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
@@ -188,13 +188,13 @@ func newE2EStack(rt containerRuntime) (*e2eStack, error) {
 		return fail(err)
 	}
 	s.pebblePort, s.pebbleAdminPort, s.challtestsrvPort = ports[2], ports[3], ports[4]
-	if s.miniCA, err = s.newDeployment("minica", "sigils", "web-1", suffix, ports[0]); err != nil {
+	if s.miniCA, err = s.newDeployment("minica", "certfolds", "web-1", suffix, ports[0]); err != nil {
 		return fail(err)
 	}
 	// No client subscribes to test-cert-2. It makes the first tick of the
 	// mini-CA server issue two certificates at once for a new ACME account.
-	s.miniCA.certs = append(s.miniCA.certs, certificate{name: "test-cert-2", domain: "second.sigils.example.com"})
-	if s.publicTLS, err = s.newDeployment("public", "sigils-public", "web-public", suffix, ports[1]); err != nil {
+	s.miniCA.certs = append(s.miniCA.certs, certificate{name: "test-cert-2", domain: "second.certfolds.example.com"})
+	if s.publicTLS, err = s.newDeployment("public", "certfolds-public", "web-public", suffix, ports[1]); err != nil {
 		return fail(err)
 	}
 	if err := s.writeFixtures(); err != nil {
@@ -209,8 +209,8 @@ func (s *e2eStack) newDeployment(dir, alias, clientName, suffix string, port int
 		containerDir:    s.containerPath(dir),
 		alias:           alias,
 		clientName:      clientName,
-		serverContainer: "sigil-e2e-" + alias + "-" + suffix,
-		clientContainer: "sigil-e2e-" + clientName + "-" + suffix,
+		serverContainer: "certfold-e2e-" + alias + "-" + suffix,
+		clientContainer: "certfold-e2e-" + clientName + "-" + suffix,
 		serverPort:      port,
 		certs:           []certificate{{name: "test-cert", domain: alias + ".example.com"}},
 	}
@@ -228,13 +228,13 @@ func (s *e2eStack) start() error {
 	if out, err := s.run("network", "create", s.network); err != nil {
 		return fmt.Errorf("create network: %w\n%s", err, out)
 	}
-	fmt.Printf("E2E: building sigils with %s\n", s.runtime.name)
-	if out, err := s.runInRoot("build", "-f", "test/e2e/Dockerfile.sigils", "-t", s.serverImage, "."); err != nil {
-		return fmt.Errorf("build sigils: %w\n%s", err, out)
+	fmt.Printf("E2E: building certfolds with %s\n", s.runtime.name)
+	if out, err := s.runInRoot("build", "-f", "test/e2e/Dockerfile.certfolds", "-t", s.serverImage, "."); err != nil {
+		return fmt.Errorf("build certfolds: %w\n%s", err, out)
 	}
-	fmt.Printf("E2E: building sigilc with %s\n", s.runtime.name)
-	if out, err := s.runInRoot("build", "-f", "test/e2e/Dockerfile.sigilc", "-t", s.clientImage, "."); err != nil {
-		return fmt.Errorf("build sigilc: %w\n%s", err, out)
+	fmt.Printf("E2E: building certfoldc with %s\n", s.runtime.name)
+	if out, err := s.runInRoot("build", "-f", "test/e2e/Dockerfile.certfoldc", "-t", s.clientImage, "."); err != nil {
+		return fmt.Errorf("build certfoldc: %w\n%s", err, out)
 	}
 	fmt.Printf("E2E: building pebble with %s\n", s.runtime.name)
 	if out, err := s.runInRoot("build", "-f", "test/e2e/Dockerfile.pebble", "-t", s.pebbleImage, "."); err != nil {
@@ -310,7 +310,7 @@ func (s *e2eStack) startServer(d *deployment) error {
 		"--network", s.network,
 		"--network-alias", d.alias,
 		"-p", fmt.Sprintf("127.0.0.1:%d:18443", d.serverPort),
-		"-e", "SIGILS_CONFIG=" + d.containerPath("server.yaml"),
+		"-e", "CERTFOLDS_CONFIG=" + d.containerPath("server.yaml"),
 		// lego trusts pebble's certificate through this root, the way a
 		// server trusts any private ACME CA.
 		"-e", "LEGO_CA_CERTIFICATES=" + s.containerPath("pebble", "root.pem"),
@@ -329,7 +329,7 @@ func (s *e2eStack) startServer(d *deployment) error {
 	return s.waitForIssuance(d)
 }
 
-// certState is the part of an entry of `sigils --json cert list` that the
+// certState is the part of an entry of `certfolds --json cert list` that the
 // tests read.
 type certState struct {
 	Name        string    `json:"name"`
@@ -350,7 +350,7 @@ func (s *e2eStack) waitForIssuance(d *deployment) error {
 	var last string
 	for time.Now().Before(deadline) {
 		// The command fails until the server's IPC endpoint is up.
-		out, err := s.exec(d.serverContainer, "sigils", "--json", "cert", "list")
+		out, err := s.exec(d.serverContainer, "certfolds", "--json", "cert", "list")
 		last = out
 		if err == nil {
 			var certs []certState
@@ -378,13 +378,13 @@ func (s *e2eStack) waitForIssuance(d *deployment) error {
 }
 
 // runClient starts the client container of d. A bootstrap container idles so
-// tests can run sigilc enroll in it; otherwise the container runs the daemon.
+// tests can run certfoldc enroll in it; otherwise the container runs the daemon.
 func (s *e2eStack) runClient(d *deployment, bootstrap bool) error {
 	args := []string{
 		"run", "-d",
 		"--name", d.clientContainer,
 		"--network", s.network,
-		"-e", "SIGILC_CONFIG=" + d.containerPath("client-data", "client.yaml"),
+		"-e", "CERTFOLDC_CONFIG=" + d.containerPath("client-data", "client.yaml"),
 		"-v", bindMount(s.mountDir, "/e2e", false),
 	}
 	if d.publicRoot != nil {
@@ -528,7 +528,7 @@ func writePublicTLS(dir, host string) (*x509.Certificate, *ecdsa.PrivateKey, err
 	now := time.Now().UTC()
 	root, rootKey, err := issueCertificate(&x509.Certificate{
 		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "Sigil E2E Public Root"},
+		Subject:               pkix.Name{CommonName: "Certfold E2E Public Root"},
 		NotBefore:             now.Add(-time.Hour),
 		NotAfter:              now.Add(24 * time.Hour),
 		KeyUsage:              x509.KeyUsageCertSign,
@@ -765,7 +765,7 @@ func (s *e2eStack) exec(container string, args ...string) (string, error) {
 }
 
 // startClientDaemon replaces the bootstrap client container of d with one
-// that runs sigilc serve against the enrolled identity.
+// that runs certfoldc serve against the enrolled identity.
 func (s *e2eStack) startClientDaemon(d *deployment) error {
 	if out, err := s.removeContainer(d.clientContainer); err != nil {
 		return fmt.Errorf("remove bootstrap client: %w\n%s", err, out)

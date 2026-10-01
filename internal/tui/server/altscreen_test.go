@@ -7,6 +7,6 @@ import "testing"
 // last frame in the scrollback of the terminal.
 func TestViewUsesTheAlternateScreen(t *testing.T) {
 	if !newTestModel(t).View().AltScreen {
-		t.Error("the view of the sigils TUI is not on the alternate screen")
+		t.Error("the view of the certfolds TUI is not on the alternate screen")
 	}
 }

@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-// A database that a newer sigils migrated past currentSchemaVersion is
+// A database that a newer certfolds migrated past currentSchemaVersion is
 // refused, not used as if it had this binary's schema.
 func TestOpenRefusesNewerSchema(t *testing.T) {
-	path := filepath.Join(privateDirectory(t), "sigils.db")
+	path := filepath.Join(privateDirectory(t), "certfolds.db")
 	db, err := Open(path)
 	if err != nil {
 		t.Fatalf("first Open: %v", err)

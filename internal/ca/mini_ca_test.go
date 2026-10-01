@@ -159,7 +159,7 @@ func TestBootstrap_ProtectsCAStorage(t *testing.T) {
 func TestBootstrap_RootCAProperties(t *testing.T) {
 	m := bootstrapInTemp(t)
 
-	if m.cert.Subject.CommonName != "Sigil Root CA" {
+	if m.cert.Subject.CommonName != "Certfold Root CA" {
 		t.Errorf("CN: got %q", m.cert.Subject.CommonName)
 	}
 	if !m.cert.IsCA {
@@ -277,7 +277,7 @@ func TestSign_IgnoresCSRSubjectAltNames(t *testing.T) {
 	}
 	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
 		Subject:        pkix.Name{CommonName: "requested-name"},
-		DNSNames:       []string{"sigils", "api.example.com"},
+		DNSNames:       []string{"certfolds", "api.example.com"},
 		IPAddresses:    []net.IP{net.ParseIP("127.0.0.1")},
 		EmailAddresses: []string{"ops@example.com"},
 		URIs:           []*url.URL{uri},
@@ -542,7 +542,7 @@ func TestSign_ConcurrentSerialsPersistLatest(t *testing.T) {
 
 func TestIssueServerCert_SAN(t *testing.T) {
 	m := bootstrapInTemp(t)
-	certPEM, _, err := m.IssueServerCert([]string{"localhost", "sigil.example.com", "192.168.1.1"})
+	certPEM, _, err := m.IssueServerCert([]string{"localhost", "certfold.example.com", "192.168.1.1"})
 	if err != nil {
 		t.Fatalf("IssueServerCert: %v", err)
 	}
@@ -575,8 +575,8 @@ func TestIssueServerCert_SAN(t *testing.T) {
 	if !hasDNS("localhost") {
 		t.Error("SAN missing DNS:localhost")
 	}
-	if !hasDNS("sigil.example.com") {
-		t.Error("SAN missing DNS:sigil.example.com")
+	if !hasDNS("certfold.example.com") {
+		t.Error("SAN missing DNS:certfold.example.com")
 	}
 	if !hasIP("192.168.1.1") {
 		t.Error("SAN missing IP:192.168.1.1")
@@ -638,7 +638,7 @@ func TestIssueServerCert_VerifiableByCA(t *testing.T) {
 // server certificate is a CA or may sign certificates, a client certificate
 // is for client authentication only, and the server certificate for server
 // authentication only. A client certificate that could sign, or authenticate
-// a server, would let any enrolled client stand in for sigils.
+// a server, would let any enrolled client stand in for certfolds.
 func TestIssuedCertificatesCannotSign(t *testing.T) {
 	m := bootstrapInTemp(t)
 	clientDER, err := m.Sign(makeCSR(t, "web-1"), "web-1")

@@ -12,7 +12,7 @@ import (
 // loosened in the meantime. New files are created 0600, so only a reopen
 // shows that Open protects the files it finds.
 func TestOpenTightensLoosenedFilesOnReopen(t *testing.T) {
-	path := filepath.Join(privateDirectory(t), "sigils.db")
+	path := filepath.Join(privateDirectory(t), "certfolds.db")
 	db, err := Open(path)
 	if err != nil {
 		t.Fatalf("first Open: %v", err)

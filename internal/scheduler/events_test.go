@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/acme"
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/acme"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
 )
 
 // captureEvents makes the default logger keep the records of the rest of the

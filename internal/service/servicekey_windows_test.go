@@ -19,7 +19,7 @@ import (
 // which takes nothing from the key above, as the service key would take read
 // access for Users from Services.
 func TestProtectRegistryKey(t *testing.T) {
-	sub := fmt.Sprintf(`Software\SigilServiceKeyTest-%d`, time.Now().UnixNano())
+	sub := fmt.Sprintf(`Software\CertfoldServiceKeyTest-%d`, time.Now().UnixNano())
 	key, _, err := registry.CreateKey(registry.CURRENT_USER, sub, registry.ALL_ACCESS)
 	if err != nil {
 		t.Fatal(err)

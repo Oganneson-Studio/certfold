@@ -1,4 +1,4 @@
-// Package shared provides common lipgloss styles for all Sigil TUI components.
+// Package shared provides common lipgloss styles for all Certfold TUI components.
 package shared
 
 import "charm.land/lipgloss/v2"

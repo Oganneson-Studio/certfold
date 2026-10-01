@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/securefile"
+	"github.com/Oganneson-Studio/certfold/internal/securefile"
 )
 
 const (
@@ -33,7 +33,7 @@ const (
 	leafValidDays = 90
 )
 
-// MiniCA is the Sigil internal certificate authority used for mTLS client
+// MiniCA is the Certfold internal certificate authority used for mTLS client
 // certificate issuance. All public methods are goroutine-safe.
 type MiniCA struct {
 	cert *x509.Certificate
@@ -49,7 +49,7 @@ type MiniCA struct {
 // one does, it fails and leaves that one alone. Returns the loaded or newly
 // created *MiniCA.
 //
-// It refuses a dataDir/ca/ that accounts sigils does not trust may write to,
+// It refuses a dataDir/ca/ that accounts certfolds does not trust may write to,
 // before it tightens the directory: one of them may have put a key of its
 // own there.
 func Bootstrap(dataDir string) (*MiniCA, error) {
@@ -202,7 +202,7 @@ func (m *MiniCA) IssueServerCert(hosts []string) (certPEM, keyPEM []byte, err er
 	}
 	tpl := &x509.Certificate{
 		SerialNumber: big.NewInt(serial),
-		Subject:      pkix.Name{CommonName: "sigils"},
+		Subject:      pkix.Name{CommonName: "certfolds"},
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
@@ -292,7 +292,7 @@ func generateRootCA() (certDER []byte, key *ecdsa.PrivateKey, err error) {
 	}
 	tpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "Sigil Root CA"},
+		Subject:               pkix.Name{CommonName: "Certfold Root CA"},
 		NotBefore:             time.Now().Add(-time.Minute),
 		NotAfter:              time.Now().Add(caValidYears * 365 * 24 * time.Hour),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,

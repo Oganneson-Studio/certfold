@@ -10,17 +10,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
 )
 
 // testSocket returns an IPC endpoint no daemon listens on.
 func testSocket(t *testing.T) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		return fmt.Sprintf(`\\.\pipe\sigil-service-test-%d-%d`, os.Getpid(), time.Now().UnixNano())
+		return fmt.Sprintf(`\\.\pipe\certfold-service-test-%d-%d`, os.Getpid(), time.Now().UnixNano())
 	}
 	// Unix socket paths are length-limited; keep this one short.
-	dir, err := os.MkdirTemp("", "sigil")
+	dir, err := os.MkdirTemp("", "certfold")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func testSocket(t *testing.T) string {
 func TestRunningStatusProbesTheDaemon(t *testing.T) {
 	socket := testSocket(t)
 	got := runningStatus(RoleClient, socket)
-	if !strings.HasPrefix(got, "Running (not answering on "+socket+": ") || !strings.HasSuffix(got, "; see "+serviceLog("sigilc")+")") {
+	if !strings.HasPrefix(got, "Running (not answering on "+socket+": ") || !strings.HasSuffix(got, "; see "+serviceLog("certfoldc")+")") {
 		t.Errorf("status without a daemon = %q, want not answering on %s", got, socket)
 	}
 

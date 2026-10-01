@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/renewal"
-	"github.com/Oganneson-Studio/sigil/pkg/proto"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/renewal"
+	"github.com/Oganneson-Studio/certfold/pkg/proto"
 )
 
 // statusFingerprints maps the name of each certificate status lists to its
@@ -42,7 +42,7 @@ func bundleNotAfter(t *testing.T, bundle *proto.CertBundle) time.Time {
 	return leaf.NotAfter
 }
 
-// TestStatusDescribesTheLeafTheOutputsHold covers a fullchain that sigils
+// TestStatusDescribesTheLeafTheOutputsHold covers a fullchain that certfolds
 // sent with another block before the leaf. The outputs hold the first
 // CERTIFICATE block, and the status and the event "certificate updated" must
 // describe that certificate, not report no not_after and no renew_at.
@@ -74,7 +74,7 @@ func TestStatusDescribesTheLeafTheOutputsHold(t *testing.T) {
 }
 
 func TestStatusDescribesStoredCertificates(t *testing.T) {
-	cfg := buildTestCfg(t, "https://sigil.example.test")
+	cfg := buildTestCfg(t, "https://certfold.example.test")
 	dir := t.TempDir()
 	// a has two outputs and an on_change program, c one output; client.yaml
 	// configures nothing for b and d.
@@ -130,7 +130,7 @@ func TestStatusDescribesStoredCertificates(t *testing.T) {
 // reload holds pullMu, which it keeps while on_change programs run for up to
 // 2 minutes each: Status answers at once.
 func TestStatusDoesNotWaitForPullMu(t *testing.T) {
-	c := newTestClient(t, buildTestCfg(t, "https://sigil.example.test"))
+	c := newTestClient(t, buildTestCfg(t, "https://certfold.example.test"))
 	c.pullMu.Lock()
 	defer c.pullMu.Unlock()
 
@@ -151,7 +151,7 @@ func TestStatusDoesNotWaitForPullMu(t *testing.T) {
 // round of the loop.
 func TestStatusFollowsReloadAtOnce(t *testing.T) {
 	bundle := newTestBundle(t, "api-prod")
-	cfg := buildTestCfg(t, "https://sigil.example.test")
+	cfg := buildTestCfg(t, "https://certfold.example.test")
 	seedStore(t, cfg.Client.DataDir, bundle)
 	c := newTestClient(t, cfg)
 	c.hook = (&fakeHook{}).run

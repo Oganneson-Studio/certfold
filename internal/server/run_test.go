@@ -24,19 +24,19 @@ import (
 
 	"github.com/go-acme/lego/v4/challenge/dns01"
 
-	"github.com/Oganneson-Studio/sigil/internal/ca"
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
-	"github.com/Oganneson-Studio/sigil/internal/securefile"
-	"github.com/Oganneson-Studio/sigil/internal/store"
+	"github.com/Oganneson-Studio/certfold/internal/ca"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/securefile"
+	"github.com/Oganneson-Studio/certfold/internal/store"
 )
 
 func testIPCSocket(t *testing.T) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		return fmt.Sprintf(`\\.\pipe\sigil-server-test-%d-%d`, os.Getpid(), time.Now().UnixNano())
+		return fmt.Sprintf(`\\.\pipe\certfold-server-test-%d-%d`, os.Getpid(), time.Now().UnixNano())
 	}
 	// Unix socket paths are length-limited; keep this one short.
-	dir, err := os.MkdirTemp("", "sigil")
+	dir, err := os.MkdirTemp("", "certfold")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func enrollClient(t *testing.T, miniCA *ca.MiniCA, dataDir, name string) tls.Cer
 	if err != nil {
 		t.Fatal(err)
 	}
-	db, err := store.Open(filepath.Join(dataDir, "sigils.db"))
+	db, err := store.Open(filepath.Join(dataDir, "certfolds.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestRunAnswersWaitingSyncAtShutdown(t *testing.T) {
 //
 // Nothing can restore that variable, so the check runs in a child process.
 func TestRunSetsConfiguredDNSResolvers(t *testing.T) {
-	const childEnv = "SIGIL_TEST_RUN_DNS_RESOLVERS"
+	const childEnv = "CERTFOLD_TEST_RUN_DNS_RESOLVERS"
 	if os.Getenv(childEnv) == "" {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestRunSetsConfiguredDNSResolvers$", "-test.v", "-test.timeout=1m")
 		cmd.Env = append(os.Environ(), childEnv+"=1")
@@ -290,7 +290,7 @@ func TestRunSetsConfiguredDNSResolvers(t *testing.T) {
 	// resolvers.
 	lookup := make(chan error, 1)
 	go func() {
-		_, err := dns01.FindZoneByFqdn("probe.sigil.test.")
+		_, err := dns01.FindZoneByFqdn("probe.certfold.test.")
 		lookup <- err
 	}()
 	if err := resolver.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
@@ -301,7 +301,7 @@ func TestRunSetsConfiguredDNSResolvers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("no DNS query reached the configured resolver: %v", err)
 	}
-	if !bytes.Contains(query[:n], []byte("\x05probe\x05sigil\x04test\x00")) {
+	if !bytes.Contains(query[:n], []byte("\x05probe\x05certfold\x04test\x00")) {
 		t.Fatalf("DNS query %x does not ask for the probe name", query[:n])
 	}
 	// Echo the query back as a REFUSED answer so the lookup ends at once.

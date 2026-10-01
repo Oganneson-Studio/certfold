@@ -1,6 +1,6 @@
 //go:build e2e
 
-// Package e2e exercises the complete Sigil enrollment and certificate
+// Package e2e exercises the complete Certfold enrollment and certificate
 // distribution path. On Windows it uses WSLC directly; no Compose service or
 // fixed container IP addresses are required.
 package e2e
@@ -30,7 +30,7 @@ func TestMain(m *testing.M) {
 	rt, err := detectContainerRuntime()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "SKIP: %v\n", err)
-		if runtime.GOOS == "windows" || os.Getenv("SIGIL_E2E_REQUIRED") == "1" {
+		if runtime.GOOS == "windows" || os.Getenv("CERTFOLD_E2E_REQUIRED") == "1" {
 			os.Exit(1)
 		}
 		os.Exit(0)
@@ -71,7 +71,7 @@ func TestEnrollFetchRenewAndRevoke(t *testing.T) {
 	var issued *x509.Certificate
 	step("enroll and fetch", func(t *testing.T) {
 		issued = enrollAndFetch(t, d)
-		status := mustExec(t, d.clientContainer, "sigilc", "status")
+		status := mustExec(t, d.clientContainer, "certfoldc", "status")
 		if !strings.Contains(status, "Certificates : 1") {
 			t.Fatalf("client status did not report fetched certificate:\n%s", status)
 		}
@@ -88,7 +88,7 @@ func TestEnrollFetchRenewAndRevoke(t *testing.T) {
 
 	step("last seen", func(t *testing.T) {
 		// The mTLS client check records it for the client's requests.
-		out := mustExec(t, d.serverContainer, "sigils", "--json", "client", "show", d.clientName)
+		out := mustExec(t, d.serverContainer, "certfolds", "--json", "client", "show", d.clientName)
 		var client struct {
 			LastSeen *time.Time `json:"last_seen"`
 		}
@@ -102,7 +102,7 @@ func TestEnrollFetchRenewAndRevoke(t *testing.T) {
 
 	step("fetch again", func(t *testing.T) {
 		before := mustExec(t, d.clientContainer, "cat", fullchain)
-		mustExec(t, d.clientContainer, "sigilc", "fetch")
+		mustExec(t, d.clientContainer, "certfoldc", "fetch")
 		if after := mustExec(t, d.clientContainer, "cat", fullchain); after != before {
 			t.Fatal("fetch changed fullchain.pem although the certificate did not change")
 		}
@@ -113,7 +113,7 @@ func TestEnrollFetchRenewAndRevoke(t *testing.T) {
 
 	step("fetch restores deleted output", func(t *testing.T) {
 		mustExec(t, d.clientContainer, "rm", fullchain)
-		mustExec(t, d.clientContainer, "sigilc", "fetch")
+		mustExec(t, d.clientContainer, "certfoldc", "fetch")
 		if leaf := verifyOutput(t, d); leaf.SerialNumber.Cmp(issued.SerialNumber) != 0 {
 			t.Fatalf("restored fullchain.pem holds serial %s, want %s", leaf.SerialNumber, issued.SerialNumber)
 		}
@@ -124,7 +124,7 @@ func TestEnrollFetchRenewAndRevoke(t *testing.T) {
 
 	step("fetch restores changed output", func(t *testing.T) {
 		mustExec(t, d.clientContainer, "sh", "-c", `printf garbage > "$1"`, "sh", testCertOutputs+"/key.pem")
-		mustExec(t, d.clientContainer, "sigilc", "fetch")
+		mustExec(t, d.clientContainer, "certfoldc", "fetch")
 		verifyOutput(t, d)
 		if runs := hookRuns(t, d); len(runs) != 3 {
 			t.Fatalf("on_change ran %d times, want 3", len(runs))
@@ -144,7 +144,7 @@ func TestEnrollFetchRenewAndRevoke(t *testing.T) {
 		for ; len(runs) < 4; runs = hookRuns(t, d) {
 			if time.Since(start) > 70*time.Second {
 				_, err := stack.exec(d.clientContainer, "test", "-e", fullchain)
-				status, _ := stack.exec(d.clientContainer, "sigilc", "status")
+				status, _ := stack.exec(d.clientContainer, "certfoldc", "status")
 				t.Fatalf("on_change ran %d times within 70s of deleting fullchain.pem, want 4; fullchain.pem restored: %t\nclient status:\n%s\nclient logs:\n%s",
 					len(runs), err == nil, status, stack.logs(d.clientContainer))
 			}
@@ -163,7 +163,7 @@ func TestEnrollFetchRenewAndRevoke(t *testing.T) {
 			cert := doc["certificates"].(map[string]any)["test-cert"].(map[string]any)
 			cert["outputs"] = append(cert["outputs"].([]any), map[string]any{"format": "der", "path": der})
 		})
-		mustExec(t, d.clientContainer, "sigilc", "reload")
+		mustExec(t, d.clientContainer, "certfoldc", "reload")
 		// Reload reconciles the outputs before it returns.
 		if _, err := stack.exec(d.clientContainer, "test", "-s", der); err != nil {
 			t.Fatalf("reload returned before it wrote %s", der)
@@ -180,7 +180,7 @@ func TestEnrollFetchRenewAndRevoke(t *testing.T) {
 	// seconds.
 	step("sync delivers renewal", func(t *testing.T) {
 		fingerprint := certFingerprint(t, d)
-		mustExec(t, d.serverContainer, "sigils", "cert", "renew", "test-cert")
+		mustExec(t, d.serverContainer, "certfolds", "cert", "renew", "test-cert")
 		start := time.Now()
 		// The client has no periodic pull and this step runs no fetch, so
 		// only GET /v1/sync can deliver the renewal. on_change runs once all
@@ -188,13 +188,13 @@ func TestEnrollFetchRenewAndRevoke(t *testing.T) {
 		runs := hookRuns(t, d)
 		for ; len(runs) < 6; runs = hookRuns(t, d) {
 			if time.Since(start) > 15*time.Second {
-				status, _ := stack.exec(d.clientContainer, "sigilc", "status", "--json")
+				status, _ := stack.exec(d.clientContainer, "certfoldc", "status", "--json")
 				t.Fatalf("on_change ran %d times within 15s of the renewal, want 6; the server lists fingerprint %s\nclient status:\n%s\nclient logs:\n%s",
 					len(runs), certFingerprint(t, d), status, stack.logs(d.clientContainer))
 			}
 			time.Sleep(200 * time.Millisecond)
 		}
-		t.Logf("sync delivered the renewal %s after sigils cert renew returned", time.Since(start).Round(100*time.Millisecond))
+		t.Logf("sync delivered the renewal %s after certfolds cert renew returned", time.Since(start).Round(100*time.Millisecond))
 		if len(runs) != 6 {
 			t.Fatalf("on_change ran %d times, want 6", len(runs))
 		}
@@ -250,10 +250,10 @@ func TestEnrollFetchRenewAndRevoke(t *testing.T) {
 		if err := os.WriteFile(path, raw, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		mustExec(t, d.serverContainer, "sigils", "reload")
+		mustExec(t, d.serverContainer, "certfolds", "reload")
 		start := time.Now()
 		for {
-			out := mustExec(t, d.clientContainer, "sigilc", "status", "--json")
+			out := mustExec(t, d.clientContainer, "certfoldc", "status", "--json")
 			var status struct {
 				Certs []struct {
 					Name string `json:"name"`
@@ -281,8 +281,8 @@ func TestEnrollFetchRenewAndRevoke(t *testing.T) {
 	})
 
 	step("revoke", func(t *testing.T) {
-		mustExec(t, d.serverContainer, "sigils", "client", "remove", d.clientName)
-		out, err := stack.exec(d.clientContainer, "sigilc", "fetch", "--cert", "test-cert")
+		mustExec(t, d.serverContainer, "certfolds", "client", "remove", d.clientName)
+		out, err := stack.exec(d.clientContainer, "certfoldc", "fetch", "--cert", "test-cert")
 		if err == nil {
 			t.Fatalf("revoked client still fetched certificates:\n%s", out)
 		}
@@ -352,7 +352,7 @@ func TestARIDirectedRenewal(t *testing.T) {
 	}
 
 	// A reload has the server ask again at once.
-	mustExec(t, d.serverContainer, "sigils", "reload")
+	mustExec(t, d.serverContainer, "certfolds", "reload")
 	start := time.Now()
 	renewed := testCertState(t, d)
 	for ; renewed.Fingerprint == before.Fingerprint || renewed.Fingerprint == ""; renewed = testCertState(t, d) {
@@ -383,7 +383,7 @@ func TestARIDirectedRenewal(t *testing.T) {
 
 	start = time.Now()
 	for {
-		out := mustExec(t, d.clientContainer, "sigilc", "status", "--json")
+		out := mustExec(t, d.clientContainer, "certfoldc", "status", "--json")
 		var status struct {
 			Certs []struct{ Name, Fingerprint string } `json:"certs"`
 		}
@@ -410,7 +410,7 @@ func TestARIDirectedRenewal(t *testing.T) {
 // testCertState returns what the server of d lists for test-cert.
 func testCertState(t *testing.T, d *deployment) certState {
 	t.Helper()
-	out := mustExec(t, d.serverContainer, "sigils", "--json", "cert", "list")
+	out := mustExec(t, d.serverContainer, "certfolds", "--json", "cert", "list")
 	var certs []certState
 	if err := json.Unmarshal([]byte(out), &certs); err != nil {
 		t.Fatalf("parse cert list: %v\n%s", err, out)
@@ -511,10 +511,10 @@ func TestPublicTLSCertificateReload(t *testing.T) {
 		t.Fatalf("server TLS certificate reloaded events: %+v, want one at INFO with not_after", reloads)
 	}
 	// The client trusts the new certificate through the same root.
-	mustExec(t, d.clientContainer, "sigilc", "fetch")
+	mustExec(t, d.clientContainer, "certfoldc", "fetch")
 }
 
-// daemonEvent is an entry of `sigils --json events` or `sigilc events --json`.
+// daemonEvent is an entry of `certfolds --json events` or `certfoldc events --json`.
 type daemonEvent struct {
 	Level   string `json:"level"`
 	Message string `json:"message"`
@@ -524,14 +524,14 @@ type daemonEvent struct {
 // serverEvents returns the events that the server of d keeps, oldest first.
 func serverEvents(t *testing.T, d *deployment) []daemonEvent {
 	t.Helper()
-	return daemonEvents(t, d.serverContainer, "sigils", "--json", "events")
+	return daemonEvents(t, d.serverContainer, "certfolds", "--json", "events")
 }
 
 // clientEvents returns the events that the client daemon of d keeps, oldest
 // first.
 func clientEvents(t *testing.T, d *deployment) []daemonEvent {
 	t.Helper()
-	return daemonEvents(t, d.clientContainer, "sigilc", "events", "--json")
+	return daemonEvents(t, d.clientContainer, "certfoldc", "events", "--json")
 }
 
 // daemonEvents runs command, the events command of a daemon, in container and
@@ -585,7 +585,7 @@ func TestIssuanceUsesDNSResolvers(t *testing.T) {
 func enrollAndFetch(t *testing.T, d *deployment) *x509.Certificate {
 	t.Helper()
 	token := createToken(t, d, d.clientName, "10m")
-	out := mustExec(t, d.clientContainer, "sigilc", "enroll", "--token", token)
+	out := mustExec(t, d.clientContainer, "certfoldc", "enroll", "--token", token)
 	if !strings.Contains(out, fmt.Sprintf("enrolled as %q", d.clientName)) {
 		t.Fatalf("unexpected enroll output:\n%s", out)
 	}
@@ -595,7 +595,7 @@ func enrollAndFetch(t *testing.T, d *deployment) *x509.Certificate {
 	}
 	waitForClientDaemon(t, d)
 	// The fetch returns once the outputs are written.
-	mustExec(t, d.clientContainer, "sigilc", "fetch", "--cert", "test-cert")
+	mustExec(t, d.clientContainer, "certfoldc", "fetch", "--cert", "test-cert")
 	return verifyOutput(t, d)
 }
 
@@ -651,7 +651,7 @@ func verifyOutput(t *testing.T, d *deployment) *x509.Certificate {
 // lists.
 func certFingerprint(t *testing.T, d *deployment) string {
 	t.Helper()
-	out := mustExec(t, d.serverContainer, "sigils", "--json", "cert", "list")
+	out := mustExec(t, d.serverContainer, "certfolds", "--json", "cert", "list")
 	var certs []certState
 	if err := json.Unmarshal([]byte(out), &certs); err != nil {
 		t.Fatalf("parse cert list: %v\n%s", err, out)
@@ -709,7 +709,7 @@ func TestExpiredTokenIsRejected(t *testing.T) {
 func TestRevokedTokenIsRejected(t *testing.T) {
 	d := stack.miniCA
 	token := createToken(t, d, "revoke-test", "10m")
-	list := mustExec(t, d.serverContainer, "sigils", "token", "list")
+	list := mustExec(t, d.serverContainer, "certfolds", "token", "list")
 	var tokenID string
 	for _, line := range strings.Split(list, "\n") {
 		if strings.Contains(line, "revoke-test") {
@@ -723,11 +723,11 @@ func TestRevokedTokenIsRejected(t *testing.T) {
 	if tokenID == "" {
 		t.Fatalf("revoke-test token not found:\n%s", list)
 	}
-	mustExec(t, d.serverContainer, "sigils", "token", "revoke", tokenID)
+	mustExec(t, d.serverContainer, "certfolds", "token", "revoke", tokenID)
 	assertEnrollmentRejected(t, d, token, "revoked.yaml")
 }
 
-// TestRemovingMissingClientOrTokenFails checks that sigils fails with the
+// TestRemovingMissingClientOrTokenFails checks that certfolds fails with the
 // reason of the daemon for a client name or token ID that does not exist,
 // such as a mistyped one, instead of reporting a removal that did not happen.
 func TestRemovingMissingClientOrTokenFails(t *testing.T) {
@@ -739,16 +739,16 @@ func TestRemovingMissingClientOrTokenFails(t *testing.T) {
 		{[]string{"client", "remove", "no-such-client"}, `server returned 404: client "no-such-client" is not enrolled`},
 		{[]string{"token", "revoke", missingToken}, `server returned 404: enrollment token "` + missingToken + `" does not exist`},
 	} {
-		out, err := stack.exec(stack.miniCA.serverContainer, append([]string{"sigils"}, tc.args...)...)
+		out, err := stack.exec(stack.miniCA.serverContainer, append([]string{"certfolds"}, tc.args...)...)
 		if err == nil || !strings.Contains(out, tc.want) {
-			t.Errorf("sigils %s: error %v, output:\n%s\nwant it to fail with %s", strings.Join(tc.args, " "), err, out, tc.want)
+			t.Errorf("certfolds %s: error %v, output:\n%s\nwant it to fail with %s", strings.Join(tc.args, " "), err, out, tc.want)
 		}
 	}
 }
 
 func TestInstallScriptUsesNetworkAlias(t *testing.T) {
 	sh := getInstallScript(t, "/install.sh")
-	if !strings.Contains(sh, `SERVER_URL="https://sigils:18443"`) {
+	if !strings.Contains(sh, `SERVER_URL="https://certfolds:18443"`) {
 		t.Fatalf("install.sh does not use configured public URL:\n%s", sh)
 	}
 	if strings.Contains(sh, "172.30.0.") {
@@ -759,7 +759,7 @@ func TestInstallScriptUsesNetworkAlias(t *testing.T) {
 	// argument of the command that runs it, or the script asks for it.
 	ps1 := getInstallScript(t, "/install.ps1")
 	for _, want := range []string{
-		`$ServerURL = 'https://sigils:18443'`,
+		`$ServerURL = 'https://certfolds:18443'`,
 		`param([string]$Token, [switch]$Upgrade)`,
 	} {
 		if !strings.Contains(ps1, want) {
@@ -792,7 +792,7 @@ func getInstallScript(t *testing.T, path string) string {
 func createToken(t *testing.T, d *deployment, name, ttl string) string {
 	t.Helper()
 	out := mustExec(t, d.serverContainer,
-		"sigils", "token", "create", "--name", name, "--expires", ttl,
+		"certfolds", "token", "create", "--name", name, "--expires", ttl,
 	)
 	for _, line := range strings.Split(out, "\n") {
 		if strings.HasPrefix(line, "Token: ") {
@@ -808,7 +808,7 @@ func createToken(t *testing.T, d *deployment, name, ttl string) string {
 func assertEnrollmentRejected(t *testing.T, d *deployment, token, configName string) {
 	t.Helper()
 	out, err := stack.exec(d.clientContainer,
-		"sigilc", "--config", d.containerPath("client-data", configName), "enroll", "--token", token,
+		"certfoldc", "--config", d.containerPath("client-data", configName), "enroll", "--token", token,
 	)
 	if err == nil {
 		t.Fatalf("expected enrollment rejection, got success:\n%s", out)
@@ -832,13 +832,13 @@ func waitForClientDaemon(t *testing.T, d *deployment) {
 	deadline := time.Now().Add(30 * time.Second)
 	var lastOutput string
 	for time.Now().Before(deadline) {
-		out, err := stack.exec(d.clientContainer, "sigilc", "status")
+		out, err := stack.exec(d.clientContainer, "certfoldc", "status")
 		lastOutput = out
 		if err == nil && strings.Contains(out, "Client       : "+d.clientName) {
 			return
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	t.Fatalf("sigilc daemon did not become ready:\n%s\ncontainer logs:\n%s",
+	t.Fatalf("certfoldc daemon did not become ready:\n%s\ncontainer logs:\n%s",
 		lastOutput, stack.logs(d.clientContainer))
 }

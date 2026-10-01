@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/config"
 )
 
 // Guard for merging D (config.FileMode reads mode in octal) together with A
@@ -19,7 +19,7 @@ import (
 func TestSaveIdentityKeepsOutputModes(t *testing.T) {
 	for _, text := range []string{"0640", "0o640"} {
 		path := filepath.Join(t.TempDir(), "client.yaml")
-		raw := "client:\n  name: web-1\n  server_url: https://sigil.example.com:8443\n" +
+		raw := "client:\n  name: web-1\n  server_url: https://certfold.example.com:8443\n" +
 			"certificates:\n  web:\n    outputs:\n      - format: pem-key\n        path: " + absPath("/etc/ssl/web.key") + "\n        mode: " + text + "\n"
 		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 			t.Fatal(err)

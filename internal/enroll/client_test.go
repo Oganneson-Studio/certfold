@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/pkg/proto"
+	"github.com/Oganneson-Studio/certfold/pkg/proto"
 )
 
 // testCA is a throwaway certificate authority. httptest.NewTLSServer shares
@@ -84,7 +84,7 @@ func (authority *testCA) clientCert(name string, pub any, edit func(*x509.Certif
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), nil
 }
 
-// issuedBy answers an enrollment as sigils does, with a certificate for web-1
+// issuedBy answers an enrollment as certfolds does, with a certificate for web-1
 // and the key of the request that authority issues, after edit, unless nil,
 // changes it.
 func issuedBy(authority *testCA, edit func(*x509.Certificate)) func(*x509.CertificateRequest) (string, error) {
@@ -93,7 +93,7 @@ func issuedBy(authority *testCA, edit func(*x509.Certificate)) func(*x509.Certif
 	}
 }
 
-// postEnroll runs PostEnroll as sigilc enroll does, on the token that
+// postEnroll runs PostEnroll as certfoldc enroll does, on the token that
 // DecodeToken reads from tokenStr.
 func postEnroll(t *testing.T, tokenStr string, csrDER []byte) (string, error) {
 	t.Helper()
@@ -117,7 +117,7 @@ func startEnrollServer(t *testing.T, issuer *testCA, issue func(*x509.Certificat
 	now := time.Now()
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(2),
-		Subject:      pkix.Name{CommonName: "sigils"},
+		Subject:      pkix.Name{CommonName: "certfolds"},
 		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
 		NotBefore:    now.Add(-time.Minute),
 		NotAfter:     now.Add(time.Hour),
@@ -192,7 +192,7 @@ func TestPostEnrollTrustsSystemRoots(t *testing.T) {
 }
 
 // TestPostEnrollChecksTheIssuedCertificate checks the certificate that the
-// server answers as sigilc checks a renewed identity: it must be for the
+// server answers as certfoldc checks a renewed identity: it must be for the
 // token's client name, chain to the token's CA for client authentication,
 // and hold the key of the request. The CA of the server's TLS certificate,
 // which the system roots trust, does not count.
@@ -306,7 +306,7 @@ func TestPostEnrollDoesNotFollowRedirects(t *testing.T) {
 	now := time.Now()
 	der, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
 		SerialNumber: big.NewInt(3),
-		Subject:      pkix.Name{CommonName: "sigils"},
+		Subject:      pkix.Name{CommonName: "certfolds"},
 		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
 		NotBefore:    now.Add(-time.Minute),
 		NotAfter:     now.Add(time.Hour),

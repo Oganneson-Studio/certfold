@@ -12,13 +12,13 @@ import (
 
 	ksvc "github.com/kardianos/service"
 
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
-	"github.com/Oganneson-Studio/sigil/internal/securefile"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/securefile"
 )
 
 // Daemon is the application logic that the system service runs.
 // Start must return promptly; the actual work runs in a goroutine.
-// Stop returns once the daemon has stopped: sigilc stops at once, and sigils
+// Stop returns once the daemon has stopped: certfoldc stops at once, and certfolds
 // within 30 seconds, abandoning issuances still running (server.Run).
 type Daemon interface {
 	Start(s ksvc.Service) error
@@ -104,7 +104,7 @@ func buildServiceConfig(cfg Config) (*ksvc.Config, error) {
 // one whose configuration does not load, is restarted every 5 seconds without
 // end: without StartLimit settings, systemd's default limit of 5 starts in 10
 // seconds is never reached. KillMode=mixed sends the stop's SIGTERM to the
-// daemon alone, not to the whole control group: the programs sigils runs for
+// daemon alone, not to the whole control group: the programs certfolds runs for
 // exec DNS providers keep running while it waits for issuances at shutdown,
 // and are killed with SIGKILL once it exits. An earlier install keeps its
 // unit: kardianos refuses to install over an existing service, so the
@@ -130,12 +130,12 @@ WantedBy=multi-user.target
 func roleAttrs(r Role) (name, displayName, desc, defaultConfig string) {
 	switch r {
 	case RoleServer:
-		return "sigils", "Sigil Server",
-			"Sigil certificate management server (ACME issuer + distributor)",
+		return "certfolds", "Certfold Server",
+			"Certfold certificate management server (ACME issuer + distributor)",
 			defaultServerConfigPath()
 	default: // RoleClient
-		return "sigilc", "Sigil Client",
-			"Sigil certificate client (pulls and writes certificates to disk)",
+		return "certfoldc", "Certfold Client",
+			"Certfold certificate client (pulls and writes certificates to disk)",
 			defaultClientConfigPath()
 	}
 }
@@ -292,7 +292,7 @@ func (n *noopDaemon) Stop(_ ksvc.Service) error  { return nil }
 // operations where no real serve logic is needed.
 func NoopDaemon() Daemon { return &noopDaemon{} }
 
-// UnpackClients copies sigilc binaries from fsys into dataDir/binaries/.
+// UnpackClients copies certfoldc binaries from fsys into dataDir/binaries/.
 // Returns (n, nil) where n is the number of binaries written.
 // If fsys contains no matching files the function prints a warning and returns (0, nil).
 func UnpackClients(fsys fs.FS, dataDir string, w io.Writer) (int, error) {
@@ -324,7 +324,7 @@ func UnpackClients(fsys fs.FS, dataDir string, w io.Writer) (int, error) {
 		if e.IsDir() {
 			continue
 		}
-		// Only copy files that look like sigilc binaries; skip README etc.
+		// Only copy files that look like certfoldc binaries; skip README etc.
 		if !isBinaryName(e.Name()) {
 			continue
 		}
@@ -343,16 +343,16 @@ func UnpackClients(fsys fs.FS, dataDir string, w io.Writer) (int, error) {
 	}
 
 	if count == 0 {
-		fmt.Fprintf(w, "warning: this sigils bundles no sigilc binaries; for the install scripts to download them, "+
-			"put them into %s as sigilc-<os>-<arch>, with .exe for windows\n", destDir)
+		fmt.Fprintf(w, "warning: this certfolds bundles no certfoldc binaries; for the install scripts to download them, "+
+			"put them into %s as certfoldc-<os>-<arch>, with .exe for windows\n", destDir)
 	}
 	return count, nil
 }
 
-// isBinaryName reports whether name looks like a sigilc binary
-// (starts with "sigilc-" to exclude README and similar files).
+// isBinaryName reports whether name looks like a certfoldc binary
+// (starts with "certfoldc-" to exclude README and similar files).
 func isBinaryName(name string) bool {
-	return len(name) > 7 && name[:7] == "sigilc-"
+	return len(name) > 7 && name[:7] == "certfoldc-"
 }
 
 func writeFile(src fs.File, dest string) error {
@@ -360,7 +360,7 @@ func writeFile(src fs.File, dest string) error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(dest), ".sigil-tmp-*")
+	tmp, err := os.CreateTemp(filepath.Dir(dest), ".certfold-tmp-*")
 	if err != nil {
 		return err
 	}

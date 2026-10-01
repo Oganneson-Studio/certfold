@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/ca"
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/enroll"
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
-	"github.com/Oganneson-Studio/sigil/internal/store"
+	"github.com/Oganneson-Studio/certfold/internal/ca"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/enroll"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/store"
 )
 
 // TestCreateTokenRequiresReplaceForANamePendingEnrollment covers tokens
@@ -34,7 +34,7 @@ func TestCreateTokenRequiresReplaceForANamePendingEnrollment(t *testing.T) {
 		t.Fatal(err)
 	}
 	enrollSrv := enroll.NewServer(db, miniCA)
-	cfg := &config.ServerConfig{Server: config.ServerSection{PublicURL: "https://sigil.example.com"}}
+	cfg := &config.ServerConfig{Server: config.ServerSection{PublicURL: "https://certfold.example.com"}}
 	ctx := context.Background()
 
 	first, err := createToken(ctx, enrollSrv, db, cfg, ipc.CreateTokenRequest{Name: "web-1", TTL: time.Hour})

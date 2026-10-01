@@ -81,10 +81,10 @@ func checkSocketOwner(info fs.FileInfo, euid int) error {
 	return nil
 }
 
-// DefaultServerSocket returns the default sigils IPC socket path.
-func DefaultServerSocket() string { return "/var/run/sigil/sigils.sock" }
+// DefaultServerSocket returns the default certfolds IPC socket path.
+func DefaultServerSocket() string { return "/var/run/certfold/certfolds.sock" }
 
-// DefaultClientSocket returns the default sigilc IPC socket path.
+// DefaultClientSocket returns the default certfoldc IPC socket path.
 func DefaultClientSocket() string {
-	return "/var/run/sigil/sigilc.sock"
+	return "/var/run/certfold/certfoldc.sock"
 }

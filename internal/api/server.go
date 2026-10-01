@@ -9,11 +9,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/Oganneson-Studio/sigil/internal/ca"
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/enroll"
-	"github.com/Oganneson-Studio/sigil/internal/logging"
-	"github.com/Oganneson-Studio/sigil/internal/store"
+	"github.com/Oganneson-Studio/certfold/internal/ca"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/enroll"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/store"
 )
 
 const maxAPIRequestBody = 1 << 20
@@ -52,7 +52,7 @@ func New(deps Deps, getCertificate func(*tls.ClientHelloInfo) (*tls.Certificate,
 		ClientCAs:      pool,
 		GetCertificate: getCertificate,
 		// For the install scripts: Windows PowerShell 5.1 offers at most TLS
-		// 1.2 on older Windows. sigilc itself requires TLS 1.3.
+		// 1.2 on older Windows. certfoldc itself requires TLS 1.3.
 		MinVersion: tls.VersionTLS12,
 	}
 
@@ -74,7 +74,7 @@ func buildRouter(h *handlers) http.Handler {
 	// Public — no auth.
 	r.Get("/install.sh", h.installSh)
 	r.Get("/install.ps1", h.installPs1)
-	r.Get("/download/sigilc", h.downloadSigilc)
+	r.Get("/download/certfoldc", h.downloadCertfoldc)
 
 	// Enroll — token auth, must NOT have mTLS client cert.
 	r.With(limitRequestBody(maxAPIRequestBody)).Post("/v1/enroll", h.enroll)

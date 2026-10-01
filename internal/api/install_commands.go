@@ -2,7 +2,7 @@ package api
 
 import "fmt"
 
-// InstallCommands returns the one-line commands that download sigilc from
+// InstallCommands returns the one-line commands that download certfoldc from
 // the server at serverURL, enroll it with token and start its service: sh
 // for a Linux or macOS shell, run by a user who may sudo, and ps1 for an
 // elevated Windows PowerShell 5.1 or 7. Both quote serverURL and token with

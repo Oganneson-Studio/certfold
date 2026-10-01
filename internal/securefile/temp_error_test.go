@@ -31,10 +31,10 @@ func TestWriteFileErrorOfFailedReplaceIsStable(t *testing.T) {
 	if texts[0] != texts[1] {
 		t.Fatalf("the same failure reads differently:\n%s\n%s", texts[0], texts[1])
 	}
-	if strings.Contains(texts[0], ".sigil-private-") || !strings.HasPrefix(texts[0], "replace "+path+": ") {
+	if strings.Contains(texts[0], ".certfold-private-") || !strings.HasPrefix(texts[0], "replace "+path+": ") {
 		t.Fatalf("error = %s, want it to name %s and no temporary file", texts[0], path)
 	}
-	if left, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".sigil-private-*")); err != nil || len(left) != 0 {
+	if left, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".certfold-private-*")); err != nil || len(left) != 0 {
 		t.Fatalf("temporary files left: %v, %v", left, err)
 	}
 }
@@ -44,13 +44,13 @@ func TestWriteFileErrorOfFailedReplaceIsStable(t *testing.T) {
 // its cause kept; other errors are kept whole.
 func TestWithoutTempName(t *testing.T) {
 	cause := syscall.ENOSPC
-	other := errors.New("no unused temporary file name in /var/lib/sigil")
+	other := errors.New("no unused temporary file name in /var/lib/certfold")
 	for _, tc := range []struct {
 		err  error
 		want error
 	}{
-		{&os.PathError{Op: "write", Path: "/var/lib/sigil/.sigil-private-1", Err: cause}, cause},
-		{&os.LinkError{Op: "rename", Old: "/var/lib/sigil/.sigil-private-1", New: "/var/lib/sigil/certs.json", Err: cause}, cause},
+		{&os.PathError{Op: "write", Path: "/var/lib/certfold/.certfold-private-1", Err: cause}, cause},
+		{&os.LinkError{Op: "rename", Old: "/var/lib/certfold/.certfold-private-1", New: "/var/lib/certfold/certs.json", Err: cause}, cause},
 		{other, other},
 	} {
 		if got := withoutTempName(tc.err); got != tc.want {

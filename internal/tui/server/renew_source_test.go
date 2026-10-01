@@ -8,7 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
 )
 
 // The Certificates tab says what set Renew At, in the table and in the

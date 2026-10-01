@@ -8,8 +8,8 @@ import "runtime"
 func DefaultClientDataDir() string {
 	switch runtime.GOOS {
 	case "darwin":
-		return "/usr/local/var/sigilc"
+		return "/usr/local/var/certfoldc"
 	default: // linux
-		return "/var/lib/sigilc"
+		return "/var/lib/certfoldc"
 	}
 }

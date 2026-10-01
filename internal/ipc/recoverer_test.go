@@ -10,7 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/Oganneson-Studio/sigil/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
 )
 
 func TestRouterLogsPanicsAsEvents(t *testing.T) {

@@ -4,9 +4,9 @@ import (
 	"errors"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/logging"
-	"github.com/Oganneson-Studio/sigil/internal/store"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/store"
 )
 
 // This file defines the request and response bodies of the IPC API. The read
@@ -59,7 +59,7 @@ type AddCertificateRequest struct {
 }
 
 // ConfigChangeResponse is returned by POST /ipc/v1/config/certificates and
-// DELETE /ipc/v1/config/certificates/{name} once sigils has changed
+// DELETE /ipc/v1/config/certificates/{name} once certfolds has changed
 // server.yaml and applied it. ConfigPath is the file it changed.
 type ConfigChangeResponse struct {
 	ConfigPath string `json:"config_path"`
@@ -113,9 +113,9 @@ type CreateTokenResponse struct {
 	PublicURLConfigured bool      `json:"public_url_configured"`
 }
 
-// ClientState is the runtime status returned by a sigilc daemon. Certs lists
+// ClientState is the runtime status returned by a certfoldc daemon. Certs lists
 // the certificates in its store in name order, and is never null. LastPullAt
-// is zero, and absent from the JSON, until sigils has answered a sync.
+// is zero, and absent from the JSON, until certfolds has answered a sync.
 type ClientState struct {
 	Name       string            `json:"name"`
 	ServerURL  string            `json:"server_url"`
@@ -125,9 +125,9 @@ type ClientState struct {
 	Certs      []ClientCertState `json:"certs"`
 }
 
-// ClientCertState is a certificate in the store of sigilc. RenewAt is when
+// ClientCertState is a certificate in the store of certfoldc. RenewAt is when
 // it is due for renewal under the ratio rule of internal/renewal, and zero,
-// like NotAfter, when sigilc cannot parse it; sigils renews it later when its
+// like NotAfter, when certfoldc cannot parse it; certfolds renews it later when its
 // CA suggests a later renewal window through ARI. Outputs is the number of
 // outputs client.yaml configures for it, and OnChange reports whether
 // client.yaml configures an on_change program for it. HookPending reports
@@ -154,7 +154,7 @@ type EventsPage struct {
 }
 
 // FetchClientRequest is the body of POST /ipc/v1/client/fetch. The fetch is a
-// full pull: sigilc downloads the certificates whose fingerprints changed,
+// full pull: certfoldc downloads the certificates whose fingerprints changed,
 // reconciles every output and runs the pending on_change programs before it
 // answers. A non-empty name also downloads that certificate again; its
 // outputs are rewritten only if they differ from it.

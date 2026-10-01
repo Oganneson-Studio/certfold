@@ -7,7 +7,7 @@ import (
 )
 
 // TestRunKillsTheProcessesWhenThisProcessExits covers a process that exits
-// during a run without ending it, as sigils does when shutdown gives up on an
+// during a run without ending it, as certfolds does when shutdown gives up on an
 // issuance: on Windows the job kills the program and what it started. Unix
 // has no such guarantee.
 func TestRunKillsTheProcessesWhenThisProcessExits(t *testing.T) {

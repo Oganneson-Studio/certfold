@@ -12,8 +12,8 @@ import (
 
 	"github.com/go-acme/lego/v4/challenge/dns01"
 
-	"github.com/Oganneson-Studio/sigil/internal/logging"
-	"github.com/Oganneson-Studio/sigil/internal/proc"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/proc"
 )
 
 // Bounds on one run of an exec provider's program. They are variables only so
@@ -36,7 +36,7 @@ var (
 // the challenge record name after following CNAMEs, with a trailing dot, and
 // value is the TXT record content. A record name that is not a host name is
 // refused without running the program. The program inherits the environment
-// of sigils and must exit 0 on success.
+// of certfolds and must exit 0 on success.
 //
 // Unlike lego's exec provider it bounds each run, takes an argv instead of a
 // single program path, and does not implement Sequential, so lego does not

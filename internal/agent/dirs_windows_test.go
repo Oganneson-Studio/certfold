@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/Oganneson-Studio/sigil/internal/securefile"
+	"github.com/Oganneson-Studio/certfold/internal/securefile"
 )
 
 // TestRunRefusesDirectoriesOthersMayWrite covers the directory of client.yaml,

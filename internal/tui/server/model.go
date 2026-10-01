@@ -16,12 +16,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
-	"github.com/Oganneson-Studio/sigil/internal/logging"
-	"github.com/Oganneson-Studio/sigil/internal/tui/shared"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/tui/shared"
 )
 
-// Backend is the part of the sigils IPC API that the TUI uses.
+// Backend is the part of the certfolds IPC API that the TUI uses.
 type Backend interface {
 	ListCerts(ctx context.Context) ([]*ipc.CertificateInfo, error)
 	RenewCert(ctx context.Context, name string) error
@@ -61,7 +61,7 @@ var tabNames = [numTabs]string{
 	"5 Events",
 }
 
-// Model is the root Bubble Tea model for the sigils TUI.
+// Model is the root Bubble Tea model for the certfolds TUI.
 type Model struct {
 	backend Backend
 	keys    keyMap
@@ -129,7 +129,7 @@ type createdMsg struct {
 	err   error
 }
 
-// New returns a Model that shows and changes the state of the sigils daemon
+// New returns a Model that shows and changes the state of the certfolds daemon
 // behind backend.
 func New(backend Backend) Model {
 	return Model{
@@ -445,12 +445,12 @@ func (m *Model) handleTabKey(msg tea.KeyPressMsg) {
 		switch {
 		case m.tab == tabCertificates && key.Matches(msg, k.Renew):
 			name := row[0]
-			m.ask("renew", "Renew certificate "+strconv.Quote(name)+" now? sigils orders a new certificate from the CA.",
+			m.ask("renew", "Renew certificate "+strconv.Quote(name)+" now? certfolds orders a new certificate from the CA.",
 				func(ctx context.Context) error {
 					err := b.RenewCert(ctx, name)
 					if errors.Is(err, context.DeadlineExceeded) {
 						// The IPC client gave up waiting; the daemon did not.
-						return fmt.Errorf("%w; the renewal may still finish in the daemon: see `sigils events` or `sigils cert show %s`", err, name)
+						return fmt.Errorf("%w; the renewal may still finish in the daemon: see `certfolds events` or `certfolds cert show %s`", err, name)
 					}
 					return err
 				})
@@ -529,7 +529,7 @@ func (m Model) selectedCert() *ipc.CertificateInfo {
 }
 
 // timeLayout is the layout of a time of day in the details, the layout of
-// sigils cert show: the offset from UTC as a number, since Windows lacks the
+// certfolds cert show: the offset from UTC as a number, since Windows lacks the
 // abbreviations of most zones.
 const timeLayout = "2006-01-02 15:04:05 -07:00"
 

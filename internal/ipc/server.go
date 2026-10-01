@@ -8,9 +8,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/logging"
-	"github.com/Oganneson-Studio/sigil/internal/store"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/store"
 )
 
 // maxRequestBody bounds every IPC request body. The legitimate ones are small
@@ -24,11 +24,11 @@ type ServerDeps struct {
 	Certificates *CertificateControlDeps
 	Tokens       *TokenControlDeps
 	Client       *ClientControlDeps
-	// Events holds the recent events of the daemon, sigils or sigilc.
+	// Events holds the recent events of the daemon, certfolds or certfoldc.
 	Events *logging.Ring
 }
 
-// ServerControlDeps exposes runtime operations implemented by sigils.
+// ServerControlDeps exposes runtime operations implemented by certfolds.
 type ServerControlDeps struct {
 	Reload func(context.Context) error
 	// ConfigPath is the server.yaml the daemon runs, which AddCertificate
@@ -39,7 +39,7 @@ type ServerControlDeps struct {
 }
 
 // CertificateControlDeps exposes runtime certificate operations implemented
-// by the sigils daemon.
+// by the certfolds daemon.
 type CertificateControlDeps struct {
 	Renew func(context.Context, string) error
 	// Current returns the running configuration.
@@ -53,13 +53,13 @@ type CertificateControlDeps struct {
 }
 
 // TokenControlDeps exposes enrollment-token operations implemented by the
-// sigils daemon.
+// certfolds daemon.
 type TokenControlDeps struct {
 	Create func(ctx context.Context, req CreateTokenRequest) (CreateTokenResponse, error)
 }
 
-// ClientControlDeps exposes the operations supported by a sigilc daemon.
-// It is optional because the same IPC package is also used by sigils.
+// ClientControlDeps exposes the operations supported by a certfoldc daemon.
+// It is optional because the same IPC package is also used by certfolds.
 type ClientControlDeps struct {
 	State  func(context.Context) (ClientState, error)
 	Fetch  func(context.Context, string) error

@@ -1,0 +1,16 @@
+FROM golang:1.26-alpine AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/certfolds ./cmd/certfolds
+
+FROM alpine:3.20
+RUN apk add --no-cache curl ca-certificates
+# Under Docker on Linux the e2e runs the container as the host's user, who
+# must be able to create the IPC socket in its default directory and
+# server.data_dir in /var/lib/certfolds, which certfolds creates private.
+RUN mkdir -p /var/run/certfold /var/lib/certfolds && chmod 1777 /var/run/certfold /var/lib/certfolds
+COPY --from=builder /out/certfolds /usr/local/bin/certfolds
+EXPOSE 18443
+ENTRYPOINT ["certfolds", "serve"]

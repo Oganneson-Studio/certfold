@@ -14,17 +14,17 @@ import (
 
 	legolog "github.com/go-acme/lego/v4/log"
 
-	"github.com/Oganneson-Studio/sigil/internal/acme"
-	"github.com/Oganneson-Studio/sigil/internal/api"
-	"github.com/Oganneson-Studio/sigil/internal/ca"
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/enroll"
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
-	"github.com/Oganneson-Studio/sigil/internal/logging"
-	"github.com/Oganneson-Studio/sigil/internal/scheduler"
-	"github.com/Oganneson-Studio/sigil/internal/securefile"
-	"github.com/Oganneson-Studio/sigil/internal/store"
-	"github.com/Oganneson-Studio/sigil/internal/version"
+	"github.com/Oganneson-Studio/certfold/internal/acme"
+	"github.com/Oganneson-Studio/certfold/internal/api"
+	"github.com/Oganneson-Studio/certfold/internal/ca"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/enroll"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/logging"
+	"github.com/Oganneson-Studio/certfold/internal/scheduler"
+	"github.com/Oganneson-Studio/certfold/internal/securefile"
+	"github.com/Oganneson-Studio/certfold/internal/store"
+	"github.com/Oganneson-Studio/certfold/internal/version"
 )
 
 // shutdownTimeout bounds how long in-flight HTTPS and IPC requests may delay
@@ -44,7 +44,7 @@ const maxTokenLifetime = 7 * 24 * time.Hour
 // still run. Tests shorten it.
 var issuanceStopTimeout = 30 * time.Second
 
-// Run loads server.yaml from configPath and runs the sigils daemon until ctx
+// Run loads server.yaml from configPath and runs the certfolds daemon until ctx
 // is cancelled or the HTTPS or IPC server fails. Shutdown stops the HTTPS and
 // IPC servers, waits for the renewal scheduler for issuanceStopTimeout at
 // most, and closes the store last.
@@ -53,7 +53,7 @@ var issuanceStopTimeout = 30 * time.Second
 // its events, and the errors of the HTTPS and IPC servers go to its sink
 // alone.
 func Run(ctx context.Context, configPath string, logs logging.Logs) error {
-	// server.yaml names the programs sigils runs and where it keeps its keys.
+	// server.yaml names the programs certfolds runs and where it keeps its keys.
 	if err := securefile.CheckDirectory(filepath.Dir(configPath)); err != nil {
 		return fmt.Errorf("configuration directory: %w", err)
 	}
@@ -62,7 +62,7 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	db, err := store.Open(filepath.Join(cfg.Server.DataDir, "sigils.db"))
+	db, err := store.Open(filepath.Join(cfg.Server.DataDir, "certfolds.db"))
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
@@ -96,7 +96,7 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 		return fmt.Errorf("ipc listen: %w", err)
 	}
 	// Before any other event, and before either server takes a request.
-	slog.Info("sigils started", "version", version.Version, "listen", cfg.Server.Listen, "public_url", cfg.Server.PublicURL)
+	slog.Info("certfolds started", "version", version.Version, "listen", cfg.Server.Listen, "public_url", cfg.Server.PublicURL)
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -188,7 +188,7 @@ func Run(ctx context.Context, configPath string, logs logging.Logs) error {
 	case err := <-ipcDone:
 		runErr = fmt.Errorf("serve ipc: %w", err)
 	}
-	slog.Info("sigils stopping")
+	slog.Info("certfolds stopping")
 
 	// Stop taking requests, then wait for background work, then close the
 	// store (deferred above). Cancelling before Shutdown answers the requests
@@ -247,7 +247,7 @@ func createToken(ctx context.Context, enrollSrv *enroll.Server, db *store.DB, cf
 		if host == "" || net.ParseIP(host).IsUnspecified() {
 			return ipc.CreateTokenResponse{}, fmt.Errorf("server.public_url must be set: server.listen %q names no host clients can reach", cfg.Server.Listen)
 		}
-		// The token carries the URL to sigilc, which refuses one that could
+		// The token carries the URL to certfoldc, which refuses one that could
 		// not be server.public_url: check it before the token is stored.
 		if err := config.ValidatePublicURL(serverURL); err != nil {
 			return ipc.CreateTokenResponse{}, fmt.Errorf("server.public_url must be set: the URL derived from server.listen %w", err)

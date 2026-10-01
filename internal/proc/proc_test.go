@@ -15,10 +15,10 @@ import (
 // The test binary doubles as the program that Run runs: when testModeEnv
 // names a mode, TestMain runs that program instead of the tests.
 const (
-	testModeEnv = "SIGIL_TEST_PROC"
+	testModeEnv = "CERTFOLD_TEST_PROC"
 	// testDirEnv is the directory of the heartbeat and stop files of the
 	// "child" mode.
-	testDirEnv = "SIGIL_TEST_PROC_DIR"
+	testDirEnv = "CERTFOLD_TEST_PROC_DIR"
 )
 
 func TestMain(m *testing.M) {

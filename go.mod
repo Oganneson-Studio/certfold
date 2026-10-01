@@ -1,4 +1,4 @@
-module github.com/Oganneson-Studio/sigil
+module github.com/Oganneson-Studio/certfold
 
 go 1.26.8
 

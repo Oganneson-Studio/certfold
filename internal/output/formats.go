@@ -14,7 +14,7 @@ import (
 
 	"software.sslmate.com/src/go-pkcs12"
 
-	"github.com/Oganneson-Studio/sigil/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/config"
 )
 
 // CertBundle contains the raw materials needed to produce any output format.
@@ -214,7 +214,7 @@ func stage(bundle *CertBundle, spec config.OutputSpec) (string, error) {
 // withoutTempName returns the cause of err, an error of an operation on a
 // temporary file, without the *os.PathError or *os.LinkError around it that
 // names the file: the name is random, so a failure that repeats would read
-// differently each time, and sigilc logs its last error again whenever the
+// differently each time, and certfoldc logs its last error again whenever the
 // text changes. The caller names the output instead. Other errors are
 // returned as they are.
 func withoutTempName(err error) error {

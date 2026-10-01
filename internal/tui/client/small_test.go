@@ -8,7 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
 )
 
 // TestViewFitsTheScreen covers more certificates than fit on the screen, with
@@ -35,14 +35,14 @@ func TestViewFitsTheScreen(t *testing.T) {
 				name := fmt.Sprintf("%d certificates at %dx%d with keys %q", n, size.Width, size.Height, keys)
 
 				lines := strings.Split(view, "\n")
-				if len(lines) > size.Height || !strings.Contains(lines[0], "sigilc  web-1") {
+				if len(lines) > size.Height || !strings.Contains(lines[0], "certfoldc  web-1") {
 					t.Errorf("%s: view of %d lines, the first %q", name, len(lines), lines[0])
 				}
 				if !strings.Contains(view, "Name     Not After") {
 					t.Errorf("%s: view lacks the column titles:\n%s", name, view)
 				}
 				shown := strings.Count(view, "cert-")
-				more := fmt.Sprintf("+%d more; sigilc status --json lists them all", n-shown)
+				more := fmt.Sprintf("+%d more; certfoldc status --json lists them all", n-shown)
 				if n > shown && !strings.Contains(view, more) || n == shown && strings.Contains(view, "more;") {
 					t.Errorf("%s: view shows %d certificates, and lacks %q or says more:\n%s", name, shown, more, view)
 				}

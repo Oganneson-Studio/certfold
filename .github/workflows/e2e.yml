@@ -33,5 +33,5 @@ jobs:
         # see: without -count=1 a changed tree can pass as (cached).
         run: go test -v -tags e2e -count=1 -timeout 10m ./...
         env:
-          SIGIL_CONTAINER_CLI: docker
-          SIGIL_E2E_REQUIRED: "1"
+          CERTFOLD_CONTAINER_CLI: docker
+          CERTFOLD_E2E_REQUIRED: "1"

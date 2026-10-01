@@ -110,18 +110,18 @@ func (c *Client) ListCerts(ctx context.Context) ([]*CertificateInfo, error) {
 	return out, c.do(ctx, http.MethodGet, "/ipc/v1/certs", nil, &out)
 }
 
-// RenewCert asks the running sigils daemon to issue and persist a certificate
+// RenewCert asks the running certfolds daemon to issue and persist a certificate
 // immediately, bypassing its normal expiry threshold and retry backoff.
 func (c *Client) RenewCert(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodPost, "/ipc/v1/certs/renew", RenewCertRequest{Name: name}, nil)
 }
 
-// ReloadServer asks sigils to validate and atomically apply server.yaml.
+// ReloadServer asks certfolds to validate and atomically apply server.yaml.
 func (c *Client) ReloadServer(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/ipc/v1/server/reload", struct{}{}, nil)
 }
 
-// AddCertificate asks sigils to add a certificate to server.yaml and apply
+// AddCertificate asks certfolds to add a certificate to server.yaml and apply
 // the result.
 func (c *Client) AddCertificate(ctx context.Context, req AddCertificateRequest) (*ConfigChangeResponse, error) {
 	var out ConfigChangeResponse
@@ -131,7 +131,7 @@ func (c *Client) AddCertificate(ctx context.Context, req AddCertificateRequest) 
 	return &out, nil
 }
 
-// RemoveCertificate asks sigils to remove a certificate from server.yaml and
+// RemoveCertificate asks certfolds to remove a certificate from server.yaml and
 // apply the result. The name is escaped in the path as DeleteClient escapes
 // one.
 func (c *Client) RemoveCertificate(ctx context.Context, name string) (*ConfigChangeResponse, error) {
@@ -171,7 +171,7 @@ func (c *Client) CreateToken(ctx context.Context, req CreateTokenRequest) (*Crea
 	// token ID, or with a bare token ID that can never be redeemed. It does
 	// not refuse the names that need a replacement either.
 	if out.Token == "" || out.TokenID == "" || out.ServerURL == "" {
-		return nil, errors.New("the running sigils daemon returned no usable token; it is older than this program, so restart the sigils service and try again")
+		return nil, errors.New("the running certfolds daemon returned no usable token; it is older than this program, so restart the certfolds service and try again")
 	}
 	return &out, nil
 }
@@ -188,13 +188,13 @@ func (c *Client) DeleteToken(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/ipc/v1/tokens/"+url.PathEscape(id), nil, nil)
 }
 
-// GetClientState returns the current sigilc runtime status.
+// GetClientState returns the current certfoldc runtime status.
 func (c *Client) GetClientState(ctx context.Context) (*ClientState, error) {
 	var out ClientState
 	return &out, c.do(ctx, http.MethodGet, "/ipc/v1/client/state", nil, &out)
 }
 
-// FetchClient asks sigilc to pull now, and returns once it has reconciled
+// FetchClient asks certfoldc to pull now, and returns once it has reconciled
 // the outputs and run the pending on_change programs. A non-empty name also
 // downloads that certificate again; its outputs are rewritten only if they
 // differ from it.
@@ -202,13 +202,13 @@ func (c *Client) FetchClient(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodPost, "/ipc/v1/client/fetch", FetchClientRequest{Name: name}, nil)
 }
 
-// ReloadClient asks sigilc to re-read and apply client.yaml.
+// ReloadClient asks certfoldc to re-read and apply client.yaml.
 func (c *Client) ReloadClient(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/ipc/v1/client/reload", struct{}{}, nil)
 }
 
 // Events returns the daemon's events with a Seq greater than after, oldest
-// first, and when the daemon started. Both sigils and sigilc serve them.
+// first, and when the daemon started. Both certfolds and certfoldc serve them.
 func (c *Client) Events(ctx context.Context, after uint64) (*EventsPage, error) {
 	var out EventsPage
 	if err := c.do(ctx, http.MethodGet, "/ipc/v1/events?after="+strconv.FormatUint(after, 10), nil, &out); err != nil {

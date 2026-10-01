@@ -13,9 +13,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Oganneson-Studio/sigil/internal/ca"
-	"github.com/Oganneson-Studio/sigil/internal/config"
-	"github.com/Oganneson-Studio/sigil/internal/store"
+	"github.com/Oganneson-Studio/certfold/internal/ca"
+	"github.com/Oganneson-Studio/certfold/internal/config"
+	"github.com/Oganneson-Studio/certfold/internal/store"
 )
 
 // Token is what an enrollment token carries: its string is this structure
@@ -163,7 +163,7 @@ func (s *Server) SignClientCert(ctx context.Context, csr *x509.CertificateReques
 
 // DecodeToken base64url-decodes and JSON-unmarshals a token string, and checks
 // the client name and the server URL it carries under the rules Create and
-// server.public_url follow. sigilc writes both to client.yaml and prints
+// server.public_url follow. certfoldc writes both to client.yaml and prints
 // them, so a token that another program made must not bring it control
 // characters.
 func DecodeToken(tokenStr string) (*Token, error) {

@@ -14,9 +14,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/Oganneson-Studio/sigil/internal/api"
-	"github.com/Oganneson-Studio/sigil/internal/ipc"
-	"github.com/Oganneson-Studio/sigil/internal/tui/shared"
+	"github.com/Oganneson-Studio/certfold/internal/api"
+	"github.com/Oganneson-Studio/certfold/internal/ipc"
+	"github.com/Oganneson-Studio/certfold/internal/tui/shared"
 )
 
 // dialogStyle frames the dialogs. Its width takes in the border, which the
@@ -170,7 +170,7 @@ func (f *tokenForm) view(width int) string {
 }
 
 // createdToken shows a new enrollment token and the commands that install
-// sigilc with it. The TUI keeps the token nowhere else, so closing the box
+// certfoldc with it. The TUI keeps the token nowhere else, so closing the box
 // drops it.
 type createdToken struct {
 	name  string
@@ -214,7 +214,7 @@ func (c *createdToken) resize(width, height int) {
 // thousand characters, which no window fits in one line.
 const copyHint = "The token and the commands are longer than the window, so they are cut into lines, " +
 	"and copying them brings the line breaks along. To copy a command in one piece, revoke this " +
-	"token and run `sigils token create`, which prints each command on one line."
+	"token and run `certfolds token create`, which prints each command on one line."
 
 func (c *createdToken) content(width int) string {
 	sh, ps1 := api.InstallCommands(c.token.ServerURL, c.token.Token)
