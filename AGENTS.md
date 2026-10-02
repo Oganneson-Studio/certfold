@@ -66,7 +66,7 @@ go test -v -tags e2e_cloud -count=1 -timeout 15m ./test/e2e
 
 - Issues real certificates from Let's Encrypt staging through the `cloudflare` provider for random names under `certfold.com` and `certfold.org`, with the default propagation check and default resolvers (the `e2e` suite skips the check and pins the resolvers). Details: [PLT-13](docs/agents/platforms.md).
 - The token needs DNS:Edit and Zone:Read on both zones. Without it the run fails; it never skips. Keep the token out of the repository and out of command lines that get logged.
-- Not run in CI (CI only vets the tag). Warm run on WSLC: ~45--55 s.
+- Not run in CI (CI only vets the tag). On Linux, set `CERTFOLD_CONTAINER_CLI=docker` as for `e2e`. Timings: WSLC warm ~45--55 s; Linux Docker ~85 s with a fresh image build (both verified 2026-10-03).
 
 ### Race detection
 
