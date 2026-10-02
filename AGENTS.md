@@ -11,8 +11,9 @@ long-poll delivery with per-round reconciliation, `on_change` hooks, parallel
 issuance, exec DNS provider, ARI-driven renewal (RFC 9773), HTTPS certificate
 hot reload, server and client TUI, slog logging with a 500-entry event ring,
 and `events` commands for both binaries. E2E tests (WSLC and Linux Docker)
-cover real Pebble issuance including ARI. Cloud DNS provider E2E is not yet
-done.
+cover real Pebble issuance including ARI. An opt-in suite (`e2e_cloud`) issues
+real certificates from Let's Encrypt staging through the Cloudflare provider;
+the other cloud DNS providers have no E2E.
 
 Pre-deploy audit completed 2026-10-01. Renamed from Sigil to Certfold on
 2026-10-01 because all Sigil-related domain names were taken. For the full
@@ -53,6 +54,19 @@ CERTFOLD_CONTAINER_CLI=docker CERTFOLD_E2E_REQUIRED=1 \
 - Always pass `-count=1`. E2E reads repository files via `wslc build`, which Go's test cache does not track; a stale cache can report `(cached)` on a changed tree.
 - Without `CERTFOLD_E2E_REQUIRED=1`, Linux silently exits 0 when no container runtime is found (false pass). Windows requires WSLC.
 - Warm-run timings: WSLC ~132--140 s; Linux Docker ~171 s (~189 s on first base-image pull). WSLC builds do not go through the host proxy; the first build after a dependency change may time out -- retry.
+
+### Cloud DNS E2E
+
+```sh
+# Load the token from a file so it stays out of shell history.
+export CERTFOLD_E2E_CLOUDFLARE_TOKEN="$(tr -d '\r\n' < <token-file>)"   # bash
+# $env:CERTFOLD_E2E_CLOUDFLARE_TOKEN = (Get-Content -Raw <token-file>).Trim()   # PowerShell
+go test -v -tags e2e_cloud -count=1 -timeout 15m ./test/e2e
+```
+
+- Issues real certificates from Let's Encrypt staging through the `cloudflare` provider for random names under `certfold.com` and `certfold.org`, with the default propagation check and default resolvers (the `e2e` suite skips the check and pins the resolvers). Details: [PLT-13](docs/agents/platforms.md).
+- The token needs DNS:Edit and Zone:Read on both zones. Without it the run fails; it never skips. Keep the token out of the repository and out of command lines that get logged.
+- Not run in CI (CI only vets the tag). Warm run on WSLC: ~45--55 s.
 
 ### Race detection
 
@@ -122,7 +136,7 @@ test/e2e/                  WSLC-first container-orchestrated E2E tests
 When you change X, also do Y:
 
 - **Adding a config field**: update the YAML schema, validation, and tests. Keep the four parse entry points (`ParseServer`, `ParseClient`, `ReadServerField`, `ReadClientField`) consistent. All path fields must require absolute paths after `${VAR}` expansion.
-- **Touching `skip_propagation_check` or `acme.dns_resolvers` wiring**: run E2E.
+- **Touching `skip_propagation_check`, `acme.dns_resolvers`, or other DNS-01 wiring in `internal/acme`**: run both the `e2e` and `e2e_cloud` suites.
 - **Changing install scripts**: keep S18 and INS-1 intact; add a static assertion to `internal/api/install_script_test.go` for any new invariant; re-run a real-machine install, reinstall and upgrade round on Linux (systemd) and Windows (PowerShell 5.1 and 7).
 - **Changing a Windows ACL code path**: Windows ACL code has elevated and non-elevated branches (S4, S5); test both.
 - **Schema migration**: migrations move forward only. An upgraded database cannot be opened by older binaries.

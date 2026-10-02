@@ -79,3 +79,14 @@ For security invariants S1--S20 see [AGENTS.md](../../AGENTS.md).
 ## Container runtime (PLT-12)
 
 - Do not run or depend on Docker Desktop. Use `wslc` directly for container-based verification.
+
+## Cloud DNS E2E (PLT-13)
+
+- `test/e2e/cloud_test.go`, tag `e2e_cloud`, own `TestMain`. Shared helpers live in `runtime_test.go` (tag `e2e || e2e_cloud`). Passing both tags at once does not compile (two `TestMain`s).
+- One `certfolds` container, no Pebble and no `certfoldc`. CA: Let's Encrypt staging. `LEGO_CA_CERTIFICATES` must stay unset: when it is set, lego trusts only those roots. `acme.email` must not be at `example.com`; Let's Encrypt refuses it.
+- The token reaches the container as `-e CERTFOLD_E2E_CLOUDFLARE_TOKEN` (name only, value from the test's environment) and `server.yaml` reads it through `${...}`, so it is in no file and on no command line.
+- Cases: one certificate with names in both zones (zone lookup per name); a base name plus its wildcard (two TXT values at one record name). Each run uses a random `e2e-<hex>` label so runs never share a challenge record. Afterwards the test lists the run's TXT records in both zones through the Cloudflare API and fails if any is left. It deletes nothing.
+- Each certificate takes ~20--40 s; the 3-minute deadline only bounds a broken run. A certificate still issuing at the deadline leaves its TXT records (cleanup stops the server before lego removes them); the leftover check lists them for deletion by hand.
+- An interrupted run (`-timeout` panic, Ctrl-C) skips cleanup and leaves the container running with the token in its environment, still retrying issuance against the real zones. Remove `certfold-e2e-cloud-*` containers and images by hand.
+- In a WSLC container, lego's default resolver is WSL's DNS tunnel `10.255.255.254:53`. lego logs "Checking DNS record propagation" whether or not the check is skipped, so the logs cannot show that the check ran.
+- There is no skip case. With Cloudflare, `skip_propagation_check: true` lost the race in one of two runs: Let's Encrypt validated ~4 s after the record was created and found no TXT record. The skip wiring stays guarded by the `e2e` suite, whose DNS server cannot answer the check.

@@ -5,7 +5,7 @@ English | [简体中文](../zh-CN/limitations.md)
 # Current limitations
 
 - With `--token` / `-Token`, the token appears in the process command line; see [One-line installation](installation.md#one-line-installation) for how to avoid this.
-- The container E2E issues certificates through the `exec` DNS provider; lego's built-in cloud DNS providers are not covered by an E2E.
+- The container E2E issues certificates through the `exec` DNS provider. Of lego's built-in cloud DNS providers, only `cloudflare` is covered, by a separate E2E suite that issues real certificates from Let's Encrypt staging; `aliyun`, `tencentcloud`, `route53`, and `gcloud` are not covered by an E2E.
 - Reconciliation does not compare Windows ACLs; see [Private key outputs on Windows](security.md#private-key-outputs-on-windows).
 - Output path deduplication compares paths after `filepath.Clean` (case-insensitively on Windows). It does not detect duplicates through symbolic or hard links; paths differing only in case on macOS APFS; or, on Windows, `\\?\` and `\\.\` prefixes, 8.3 short names, trailing dots and spaces, and mapped drive letters versus UNC paths.
 - Certificates whose lifetime does not exceed about twice the CA's NotBefore backdate (about 2 hours for Let's Encrypt, which backdates by 1 hour) are not supported: they arrive already past their renewal point and are caught by the arrival guard, which backs off instead of retrying immediately.

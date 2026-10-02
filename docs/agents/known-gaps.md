@@ -65,4 +65,4 @@ Items stay here until fixed; remove an item in the change that fixes it.
 
 ## E2E coverage gaps (GAP-26)
 
-**GAP-26** Cloud DNS providers have no E2E coverage. `skip_propagation_check` wiring is guarded only by the E2E "issuance succeeds" step. `acme.dns_resolvers` effectiveness is guarded only by `TestIssuanceUsesDNSResolvers`. Changes to either must include an E2E run.
+**GAP-26** Only Cloudflare has real-issuance E2E (`e2e_cloud`, opt-in, not in CI; see [PLT-13](platforms.md)). `aliyun`, `tencentcloud`, `route53`, and `gcloud` have none: `TestBuildDNSProvider_SupportedTypes` only checks that the provider builds, so it would not catch keys mapped to the wrong lego fields. `skip_propagation_check` wiring is guarded only by the `e2e` suite's "issuance succeeds" step; the default propagation check and default resolvers run only in `e2e_cloud`. `acme.dns_resolvers` effectiveness is guarded only by `TestIssuanceUsesDNSResolvers`. Changes to any of these must include runs of both suites.

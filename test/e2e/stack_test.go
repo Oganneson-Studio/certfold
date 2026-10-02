@@ -18,7 +18,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -27,11 +26,6 @@ import (
 
 const startupTimeout = 2 * time.Minute
 
-type containerRuntime struct {
-	path string
-	name string
-}
-
 type e2eStack struct {
 	runtime     containerRuntime
 	rootDir     string
@@ -39,9 +33,8 @@ type e2eStack struct {
 	serverImage string
 	clientImage string
 	pebbleImage string
-	// mountDir is the host directory every container mounts at /e2e. It is
-	// the same in every run, because a WSLC session can mount only 15
-	// distinct host paths; each run keeps its files in its own runDir in it.
+	// mountDir is the host directory every container mounts at /e2e; each
+	// run keeps its files in its own runDir in it (see newRunDir).
 	mountDir string
 	runDir   string
 	// user is the --user of the certfolds and certfoldc containers under Docker on
@@ -101,65 +94,14 @@ type certificate struct {
 // outputs wrong in every reconcile and set them again, in vain.
 const testCertOutputs = "/cert-output/test-cert"
 
-// serverDataDir is server.data_dir in a server container. It is not in the
-// bind mount either: certfolds refuses a data_dir whose mode lets other users
-// in, and WSLC reports 0777. certfolds creates it private in /var/lib/certfolds,
-// which the image makes writable to the user of the container.
-const serverDataDir = "/var/lib/certfolds/data"
-
 var stack *e2eStack
-
-func detectContainerRuntime() (containerRuntime, error) {
-	if configured := strings.TrimSpace(os.Getenv("CERTFOLD_CONTAINER_CLI")); configured != "" {
-		path, err := exec.LookPath(configured)
-		if err != nil {
-			return containerRuntime{}, fmt.Errorf("find %s: %w", configured, err)
-		}
-		name := runtimeName(path)
-		if runtime.GOOS == "windows" && name != "wslc" {
-			return containerRuntime{}, fmt.Errorf("Windows e2e requires WSLC, got %s", name)
-		}
-		return containerRuntime{path: path, name: name}, nil
-	}
-	if path, err := exec.LookPath("wslc"); err == nil {
-		return containerRuntime{path: path, name: "wslc"}, nil
-	}
-	if runtime.GOOS == "windows" {
-		programFiles := os.Getenv("ProgramFiles")
-		if programFiles == "" {
-			programFiles = `C:\Program Files`
-		}
-		path := filepath.Join(programFiles, "WSL", "wslc.exe")
-		if info, err := os.Stat(path); err == nil && !info.IsDir() {
-			return containerRuntime{path: path, name: "wslc"}, nil
-		}
-	}
-	if runtime.GOOS != "windows" {
-		if path, err := exec.LookPath("docker"); err == nil {
-			return containerRuntime{path: path, name: "docker"}, nil
-		}
-	}
-	return containerRuntime{}, fmt.Errorf("WSLC is required on Windows; set CERTFOLD_CONTAINER_CLI explicitly on other platforms")
-}
-
-func runtimeName(path string) string {
-	name := strings.TrimSuffix(strings.ToLower(filepath.Base(path)), filepath.Ext(path))
-	if strings.Contains(name, "wslc") {
-		return "wslc"
-	}
-	return name
-}
 
 func newE2EStack(rt containerRuntime) (*e2eStack, error) {
 	rootDir, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		return nil, err
 	}
-	mountDir := filepath.Join(os.TempDir(), "certfold-wslc-e2e")
-	if err := os.MkdirAll(mountDir, 0o700); err != nil {
-		return nil, err
-	}
-	runDir, err := os.MkdirTemp(mountDir, "run-")
+	mountDir, runDir, err := newRunDir()
 	if err != nil {
 		return nil, err
 	}
@@ -327,19 +269,6 @@ func (s *e2eStack) startServer(d *deployment) error {
 		return fmt.Errorf("wait for %s: %w\n%s", d.alias, err, s.logs(d.serverContainer))
 	}
 	return s.waitForIssuance(d)
-}
-
-// certState is the part of an entry of `certfolds --json cert list` that the
-// tests read.
-type certState struct {
-	Name        string    `json:"name"`
-	Fingerprint string    `json:"fingerprint"`
-	State       string    `json:"state"`
-	LastError   string    `json:"last_error"`
-	NotAfter    time.Time `json:"not_after"`
-	RenewAt     time.Time `json:"renew_at"`
-	RenewSource string    `json:"renew_source"`
-	IssuedAt    time.Time `json:"issued_at"`
 }
 
 // waitForIssuance waits until the server of d has issued all its
@@ -624,14 +553,6 @@ func availablePorts(n int) ([]int, error) {
 	return ports, nil
 }
 
-func bindMount(source, destination string, readOnly bool) string {
-	mount := filepath.Clean(source) + ":" + destination
-	if readOnly {
-		mount += ":ro"
-	}
-	return mount
-}
-
 func waitForHTTP(target string, transport *http.Transport, timeout time.Duration) error {
 	client := &http.Client{Timeout: 5 * time.Second, Transport: transport}
 	deadline := time.Now().Add(timeout)
@@ -749,16 +670,6 @@ func (s *e2eStack) runInRoot(args ...string) (string, error) {
 	return s.runtime.run(s.rootDir, args...)
 }
 
-func (r containerRuntime) run(dir string, args ...string) (string, error) {
-	cmd := exec.Command(r.path, args...)
-	cmd.Dir = dir
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
-	err := cmd.Run()
-	return output.String(), err
-}
-
 func (s *e2eStack) exec(container string, args ...string) (string, error) {
 	command := append([]string{"exec", container}, args...)
 	return s.run(command...)
@@ -774,10 +685,7 @@ func (s *e2eStack) startClientDaemon(d *deployment) error {
 }
 
 func (s *e2eStack) removeContainer(name string) (string, error) {
-	if s.runtime.name == "wslc" {
-		return s.run("remove", "-f", name)
-	}
-	return s.run("rm", "-f", name)
+	return s.runtime.removeContainer(s.rootDir, name)
 }
 
 func (s *e2eStack) removeNetwork() {

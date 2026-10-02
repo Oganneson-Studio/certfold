@@ -5,7 +5,7 @@
 # 已知限制
 
 - 使用 `--token` / `-Token` 时，令牌会出现在进程命令行中；如何避免此问题参阅[一键安装](installation.md#一键安装)。
-- 容器端到端测试通过 `exec` DNS 提供商签发证书；lego 的内置云 DNS 提供商未被端到端测试覆盖。
+- 容器端到端测试通过 `exec` DNS 提供商签发证书。lego 的内置云 DNS 提供商中只有 `cloudflare` 有覆盖，由另一套端到端测试从 Let's Encrypt staging 环境真实签发证书；`aliyun`、`tencentcloud`、`route53` 和 `gcloud` 未被端到端测试覆盖。
 - 对账不比较 Windows ACL；参阅 [Windows 上的私钥输出](security.md#windows-上的私钥输出)。
 - 输出路径去重在 `filepath.Clean` 后比较路径（Windows 上不区分大小写）。无法检测通过符号链接或硬链接产生的重复；macOS APFS 上仅大小写不同的路径；以及在 Windows 上，`\\?\` 和 `\\.\` 前缀、8.3 短名、尾随点和空格、映射盘符与 UNC 路径之间的差异。
 - 寿命不超过约两倍 CA NotBefore 回拨时长的证书（Let's Encrypt 回拨 1 小时，即约 2 小时以内的证书）不受支持：它们到达时已过续期时点，会被到货即到期防护捕获，防护会退避而非立即重试。
