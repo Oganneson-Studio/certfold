@@ -39,7 +39,7 @@ Each key is a provider name. See [DNS-01 validation](#dns-01-validation) for the
 |---|---|---|---|---|
 | `type` | yes | | yes | Provider type: `cloudflare`, `aliyun`, `tencentcloud`, `route53`, `gcloud`, or `exec`. |
 | `command` | yes for `exec`; rejected for other types | | yes | Argument list for `exec`; the first item must be an absolute path. |
-| `skip_propagation_check` | no | `false` | yes | Skip lego's check that the TXT record has reached the authoritative nameservers. |
+| `skip_propagation_check` | no | `false` | yes | Skip lego's check that the TXT record has reached the authoritative nameservers. Only for DNS servers that cannot answer that check. |
 | *(type-specific keys)* | varies | | yes | See the table in [DNS-01 validation](#dns-01-validation). Required keys per type: `cloudflare` needs `api_token` or both `auth_email` and `auth_key`; `aliyun` needs `access_key` and `access_secret`; `tencentcloud` needs `secret_id` and `secret_key`; `route53` needs both `access_key` and `secret_key` or neither (for IAM role); `gcloud` needs `project` or `service_account_file`. |
 
 ### certificates
@@ -146,7 +146,7 @@ Values must be strings. A bare number like `12345` is parsed as an integer by YA
 
 Other DNS-01 settings:
 
-- `skip_propagation_check: true` on a provider skips lego's check that the TXT record is visible on the zone's authoritative nameservers. Use it with DNS servers that cannot answer that check; lego still waits one 4-second polling interval.
+- `skip_propagation_check: true` on a provider skips lego's check that the TXT record is visible on the zone's authoritative nameservers. Use it only with DNS servers that cannot answer that check; lego then waits just one 4-second polling interval. With a provider whose nameservers can answer the check, such as Cloudflare, skipping it makes issuance fail intermittently: the CA may query before the record has reached all of the provider's nameservers, and the order fails with `No TXT record found`.
 - `acme.dns_resolvers` sets the resolvers lego uses for zone lookups, CNAME following, and the propagation check. It applies to the whole process, so changing it requires a restart. When it is empty, lego uses the system resolvers, and on Windows it falls back to Google Public DNS.
 - Certificates that share a domain are issued in parallel and use the same `_acme-challenge` record. A provider may reject the second record, and one certificate's cleanup removes the record for both, so one of them fails and is retried after its backoff. Avoid overlapping domains across certificates.
 - To use a private ACME CA, set `LEGO_CA_CERTIFICATES` for `certfolds` to the path of the CA's root certificate. lego panics if that file cannot be read.

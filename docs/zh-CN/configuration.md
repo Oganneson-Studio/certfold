@@ -39,7 +39,7 @@
 |---|---|---|---|---|
 | `type` | 是 | | 是 | 提供商类型：`cloudflare`、`aliyun`、`tencentcloud`、`route53`、`gcloud` 或 `exec`。 |
 | `command` | `exec` 类型必填；其他类型不允许 | | 是 | `exec` 的参数列表；第一项必须是绝对路径。 |
-| `skip_propagation_check` | 否 | `false` | 是 | 跳过 lego 对 TXT 记录是否已到达权威 DNS 服务器的检查。 |
+| `skip_propagation_check` | 否 | `false` | 是 | 跳过 lego 对 TXT 记录是否已到达权威 DNS 服务器的检查。仅用于无法响应该检查的 DNS 服务器。 |
 | *（特定类型的字段）* | 视类型而定 | | 是 | 参阅 [DNS-01 验证](#dns-01-验证)中的表格。各类型的必填字段：`cloudflare` 需要 `api_token` 或同时设置 `auth_email` 和 `auth_key`；`aliyun` 需要 `access_key` 和 `access_secret`；`tencentcloud` 需要 `secret_id` 和 `secret_key`；`route53` 需要同时设置 `access_key` 和 `secret_key`，或两者都不设置（使用 IAM 角色）；`gcloud` 需要 `project` 或 `service_account_file`。 |
 
 ### certificates
@@ -146,7 +146,7 @@ certificates:
 
 其他 DNS-01 设置：
 
-- 在提供商上设置 `skip_propagation_check: true` 会跳过 lego 对 TXT 记录是否在区域的权威 DNS 服务器上可见的检查。适用于无法响应该检查的 DNS 服务器；lego 仍会等待一个 4 秒的轮询间隔。
+- 在提供商上设置 `skip_propagation_check: true` 会跳过 lego 对 TXT 记录是否在区域的权威 DNS 服务器上可见的检查。仅适用于无法响应该检查的 DNS 服务器；跳过后 lego 只等待一个 4 秒的轮询间隔。如果提供商的权威 DNS 服务器能够响应该检查（例如 Cloudflare），跳过检查会导致签发间歇性失败：CA 可能在记录尚未到达该提供商全部权威 DNS 服务器时就发起查询，订单因 `No TXT record found` 而失败。
 - `acme.dns_resolvers` 设置 lego 用于区域查找、CNAME 跟踪和传播检查的解析器。此设置作用于整个进程，修改后需要重启。为空时，lego 使用系统解析器，在 Windows 上会回退到 Google Public DNS。
 - 共享同一域名的多张证书会并行签发，使用同一条 `_acme-challenge` 记录。提供商可能拒绝第二条记录，且一张证书的清理会同时删除另一张的记录，导致其中一张失败并在退避后重试。请避免不同证书之间的域名重叠。
 - 要使用私有 ACME CA，请将 `certfolds` 的 `LEGO_CA_CERTIFICATES` 设置为该 CA 根证书的路径。如果该文件无法读取，lego 会 panic。
