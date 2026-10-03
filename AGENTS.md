@@ -67,7 +67,7 @@ go test -v -tags e2e_cloud -count=1 -timeout 15m ./test/e2e
 
 - Issues real certificates from Let's Encrypt staging for random names under `certfold.com` and `certfold.org` through `cloudflare`, and under the delegated subzones `ali.certfold.org` (`aliyun`) and `tc.certfold.org` (`tencentcloud`), with the default propagation check and default resolvers (the `e2e` suite skips the check and pins the resolvers). Details: [PLT-13](docs/agents/platforms.md).
 - The Cloudflare token (DNS:Edit and Zone:Read on both zones) is required: without it the run fails. `aliyun` needs `CERTFOLD_E2E_ALIYUN_ACCESS_KEY` and `CERTFOLD_E2E_ALIYUN_ACCESS_SECRET`, `tencentcloud` needs `CERTFOLD_E2E_TENCENTCLOUD_SECRET_ID` and `CERTFOLD_E2E_TENCENTCLOUD_SECRET_KEY`; a provider with none of its variables set is skipped, one with only some set fails the run. Keep credentials out of the repository and out of command lines that get logged.
-- Not run in CI (CI only vets the tag). On Linux, set `CERTFOLD_CONTAINER_CLI=docker` as for `e2e`. Timings: WSLC warm ~45--55 s; Linux Docker ~85 s with a fresh image build (both verified 2026-10-03).
+- Not run in CI (CI only vets the tag). On Linux, set `CERTFOLD_CONTAINER_CLI=docker` as for `e2e`. Timings with all three providers: Linux Docker ~140 s including a fresh image build; WSLC warm ~50 s (verified 2026-10-03). When the host's proxy intercepts DNS, run it on Linux instead (PLT-13).
 
 ### Race detection
 
