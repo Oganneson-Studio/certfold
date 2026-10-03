@@ -101,6 +101,8 @@ Values in `server.yaml` and `client.yaml` can reference environment variables as
 - Mapping keys are never expanded.
 - Inside a flow collection, quote the reference, as in `["${HOST}"]`, because `{` is a flow indicator there.
 
+Keep credentials in these variables rather than in the YAML. For a daemon running as a service, set them in the service environment: see [Linux service environment variables](operations.md#linux-service-environment-variables) and [Windows service environment variables](operations.md#windows-service-environment-variables).
+
 ## DNS-01 validation
 
 Each certificate names a DNS provider from `dns_providers`. Besides lego's built-in providers, the `exec` type runs your own program to create and remove the challenge record:

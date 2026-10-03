@@ -35,7 +35,7 @@ Certfold 是面向服务器集群的集中式 ACME 证书签发与分发工具�
 
 ## 快速开始
 
-先构建 `certfolds` 和 `certfoldc`（参阅[构建与测试](docs/zh-CN/development.md)）。编写一个最小的 `/etc/certfold/server.yaml`：
+从 [Releases](https://github.com/Oganneson-Studio/certfold/releases) 下载 `certfolds` 和 `certfoldc`，或从源码构建（参阅[构建与测试](docs/zh-CN/development.md)）。编写一个最小的 `/etc/certfold/server.yaml`：
 
 ```yaml
 server:
@@ -69,6 +69,8 @@ certificates:
 certfolds --config /etc/certfold/server.yaml serve
 ```
 
+要改为作为系统服务运行，并在服务环境中设置 `CF_API_TOKEN`，参阅[作为服务运行](docs/zh-CN/operations.md#作为服务运行)。
+
 创建一个短期注册令牌：
 
 ```bash
@@ -80,6 +82,13 @@ certfolds --config /etc/certfold/server.yaml token create --name web-1 --expires
 ```bash
 certfoldc --config /etc/certfold/client.yaml enroll --token <token>
 certfoldc --config /etc/certfold/client.yaml serve
+```
+
+要以服务方式运行客户端，而不是在前台运行：
+
+```bash
+sudo certfoldc --config /etc/certfold/client.yaml service install
+sudo certfoldc service start
 ```
 
 参阅[客户端配置](docs/zh-CN/configuration.md#客户端配置)了解如何配置输出和 `on_change`。[一键安装](docs/zh-CN/installation.md#一键安装)可自动完成注册和服务配置，但需要 `<data_dir>/binaries/` 中有对应平台的二进制文件，并且服务端证书必须已被操作系统信任（参阅[生产环境 TLS](docs/zh-CN/installation.md#生产环境-tls)）。

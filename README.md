@@ -35,7 +35,7 @@ Certfold is a central ACME certificate issuer and distributor for server fleets.
 
 ## Quick start
 
-Build `certfolds` and `certfoldc` first (see [Build and test](docs/en/development.md)). Write a minimal `/etc/certfold/server.yaml`:
+Download `certfolds` and `certfoldc` from [Releases](https://github.com/Oganneson-Studio/certfold/releases), or build them from source (see [Build and test](docs/en/development.md)). Write a minimal `/etc/certfold/server.yaml`:
 
 ```yaml
 server:
@@ -69,6 +69,8 @@ Set `CF_API_TOKEN` in the server's environment, then start the server (on Linux,
 certfolds --config /etc/certfold/server.yaml serve
 ```
 
+To run it as a system service instead, with `CF_API_TOKEN` in the service environment, see [Running as a service](docs/en/operations.md#running-as-a-service).
+
 Create a short-lived enrollment token:
 
 ```bash
@@ -80,6 +82,13 @@ On web-1, enroll and start the client:
 ```bash
 certfoldc --config /etc/certfold/client.yaml enroll --token <token>
 certfoldc --config /etc/certfold/client.yaml serve
+```
+
+To run the client as a service instead of in the foreground:
+
+```bash
+sudo certfoldc --config /etc/certfold/client.yaml service install
+sudo certfoldc service start
 ```
 
 See [Client configuration](docs/en/configuration.md#client-configuration) for how to configure outputs and `on_change`. The [one-line installer](docs/en/installation.md#one-line-installation) automates enrollment and service setup, but requires platform binaries in `<data_dir>/binaries/` and a server certificate the operating system already trusts (see [Production TLS](docs/en/installation.md#production-tls)).

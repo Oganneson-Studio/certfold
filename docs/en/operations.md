@@ -34,6 +34,20 @@ On Linux, `certfolds` and `certfoldc` management commands need root because the 
 
 `client remove` and `token revoke` report an error (exit code 1) when the name or ID does not exist, instead of silently claiming success. After removing a client, `client remove` lists the certificates it subscribed to and suggests `certfolds cert renew` for each. The old certificates and private keys the client holds remain valid until they expire; renewing issues new ones but does not revoke the old.
 
+### Running as a service
+
+To install `certfolds` as a systemd service on Linux:
+
+```bash
+sudo install -m 0755 certfolds-linux-amd64 /usr/local/bin/certfolds
+sudo install -d -m 0700 /etc/certfold
+sudo install -m 0600 server.yaml /etc/certfold/server.yaml
+sudo certfolds --config /etc/certfold/server.yaml service install
+sudo certfolds service start
+```
+
+Release files carry a `-<os>-<arch>` suffix; `install -m 0755` renames the file and makes it executable in one step. If `server.yaml` references `${VAR}`, write the [service environment file](#linux-service-environment-variables) before starting the service. On a host that cannot use the [one-line installer](installation.md#one-line-installation), install `certfoldc` the same way, enroll it, and then run `sudo certfoldc --config /etc/certfold/client.yaml service install` and `sudo certfoldc service start`.
+
 On Windows, run the daemons as services (LocalSystem) or from an elevated prompt. For how the IPC endpoint is secured, see [Trust model](security.md#trust-model).
 
 To register `certfolds` as a Windows service:
@@ -192,13 +206,29 @@ The database schema only migrates forward. A `certfolds` that encounters a newer
 
 On Windows, `service install` registers the daemon and writes a recovery action (restart after 10 seconds, reset the failure count after 24 hours). Events go to the Application event log. `service uninstall` removes the event log source.
 
-Under systemd, `service install` writes a unit with `Restart=on-failure`, `RestartSec=5`, and `KillMode=mixed`. `KillMode=mixed` sends SIGTERM to the daemon alone on stop; processes it started (exec DNS programs) keep running until the daemon exits, then receive SIGKILL. A daemon that keeps failing restarts every 5 seconds indefinitely. To update an existing unit, run `service uninstall` then `service install`; kardianos reports an error when the service already exists. Environment variables for the service (DNS credentials, `LEGO_CA_CERTIFICATES`, etc.) go in `/etc/sysconfig/<name>`. Create the directory first on distributions that do not ship it.
+Under systemd, `service install` writes a unit with `Restart=on-failure`, `RestartSec=5`, and `KillMode=mixed`. `KillMode=mixed` sends SIGTERM to the daemon alone on stop; processes it started (exec DNS programs) keep running until the daemon exits, then receive SIGKILL. A daemon that keeps failing restarts every 5 seconds indefinitely. To update an existing unit, run `service uninstall` then `service install`; kardianos reports an error when the service already exists. Environment variables for the service go in a file under `/etc/sysconfig`; see [Linux service environment variables](#linux-service-environment-variables).
 
 `service install` resolves the configuration path to an absolute path. The search order is `--config`, then `CERTFOLDS_CONFIG` / `CERTFOLDC_CONFIG`, then the platform default.
 
 When running as a service, the directories the daemon checks must be owned by the service account. On Linux, `certfolds` runs as root, so its data directory must be owned by root (uid 0); `certfoldc` does not check directories on Unix. On Windows, the configuration directory and the data directory of either daemon must be owned by SYSTEM or Administrators. If the owner does not match, the daemon refuses to start and the error prints the fix command (see [Directory requirements](security.md#directory-requirements)). systemd restarts the daemon every 5 seconds until the owner is corrected; on Windows the recovery action restarts it every 10 seconds, and `sc query <name>` reports exit code 1067. A directory created by hand (for example with `mkdir`) in an elevated Git Bash session is owned by the user's own SID rather than Administrators, and is rejected; directories that `certfolds` and `certfoldc` create themselves are owned by Administrators.
 
 For how to interpret `service status` output, see [Service status](troubleshooting.md#service-status).
+
+### Linux service environment variables
+
+Under systemd, DNS credentials, `LEGO_CA_CERTIFICATES`, and other environment variables for a service go in `/etc/sysconfig/<name>`, that is `/etc/sysconfig/certfolds` or `/etc/sysconfig/certfoldc`. The file holds one `KEY=value` per line and should be owned by root with mode `0600`. On distributions without `/etc/sysconfig`, create it first with `sudo install -d -m 0755 /etc/sysconfig`. Changes take effect only after a service restart.
+
+To keep a credential off the command line and out of shell history, let a root shell create the file and paste the lines into it, ending with Ctrl-D (or pipe them in):
+
+```bash
+sudo sh -c 'umask 077; cat > /etc/sysconfig/certfolds'
+```
+
+`certfolds config validate` also expands `${VAR}` references, so run it with the file loaded; otherwise it fails with `environment variable "X" is not set`:
+
+```bash
+sudo sh -c 'set -a; . /etc/sysconfig/certfolds; certfolds --config /etc/certfold/server.yaml config validate'
+```
 
 ### Windows service environment variables
 

@@ -34,6 +34,20 @@ certfolds --config /etc/certfold/server.yaml reload
 
 `client remove` 和 `token revoke` 在名称或 ID 不存在时会报告错误（退出码 1），而不是静默地声称成功。删除客户端后，`client remove` 会列出该客户端订阅的证书，并建议对每张证书执行 `certfolds cert renew`。客户端持有的旧证书和私钥在过期前仍然有效；续期会签发新证书，但不会吊销旧证书。
 
+### 作为服务运行
+
+在 Linux 上将 `certfolds` 安装为 systemd 服务：
+
+```bash
+sudo install -m 0755 certfolds-linux-amd64 /usr/local/bin/certfolds
+sudo install -d -m 0700 /etc/certfold
+sudo install -m 0600 server.yaml /etc/certfold/server.yaml
+sudo certfolds --config /etc/certfold/server.yaml service install
+sudo certfolds service start
+```
+
+发布的文件名带有 `-<os>-<arch>` 后缀；`install -m 0755` 一步完成重命名和添加可执行权限。如果 `server.yaml` 引用了 `${VAR}`，请在启动服务之前写好[服务环境变量文件](#linux-服务环境变量)。在无法使用[一键安装](installation.md#一键安装)的主机上，按同样方式安装 `certfoldc` 并完成注册，然后运行 `sudo certfoldc --config /etc/certfold/client.yaml service install` 和 `sudo certfoldc service start`。
+
 在 Windows 上，以服务（LocalSystem）或提权命令行运行守护进程。关于 IPC 端点的安全保障，参阅[信任模型](security.md#信任模型)。
 
 要将 `certfolds` 注册为 Windows 服务：
@@ -192,13 +206,29 @@ certfoldc events --json    # JSON 数组
 
 在 Windows 上，`service install` 注册守护进程并写入恢复动作（10 秒后重启，24 小时后重置失败计数）。事件写入 Application 事件日志。`service uninstall` 会删除事件日志源。
 
-在 systemd 下，`service install` 写入一个包含 `Restart=on-failure`、`RestartSec=5` 和 `KillMode=mixed` 的单元。`KillMode=mixed` 在停止时仅向守护进程发送 SIGTERM；它启动的进程（exec DNS 程序）会继续运行直到守护进程退出，然后收到 SIGKILL。持续失败的守护进程每 5 秒重启一次，无限循环。要更新已有的单元，先运行 `service uninstall` 再运行 `service install`；kardianos 在服务已存在时会报错。服务的环境变量（DNS 凭据、`LEGO_CA_CERTIFICATES` 等）放在 `/etc/sysconfig/<name>` 中。在未自带该目录的发行版上需要先创建。
+在 systemd 下，`service install` 写入一个包含 `Restart=on-failure`、`RestartSec=5` 和 `KillMode=mixed` 的单元。`KillMode=mixed` 在停止时仅向守护进程发送 SIGTERM；它启动的进程（exec DNS 程序）会继续运行直到守护进程退出，然后收到 SIGKILL。持续失败的守护进程每 5 秒重启一次，无限循环。要更新已有的单元，先运行 `service uninstall` 再运行 `service install`；kardianos 在服务已存在时会报错。服务的环境变量放在 `/etc/sysconfig` 下的文件中；参阅 [Linux 服务环境变量](#linux-服务环境变量)。
 
 `service install` 会将配置路径解析为绝对路径。查找顺序依次为 `--config`、`CERTFOLDS_CONFIG` / `CERTFOLDC_CONFIG`、平台默认值。
 
 作为服务运行时，守护进程检查的目录必须属于服务账户。在 Linux 上，`certfolds` 以 root 运行，因此其数据目录必须属于 root（uid 0）；`certfoldc` 在 Unix 上不检查目录。在 Windows 上，两个守护进程的配置目录和数据目录必须属于 SYSTEM 或 Administrators。如果属主不匹配，守护进程拒绝启动，错误信息会打印修复命令（参阅[目录要求](security.md#目录要求)）。systemd 每 5 秒重启一次守护进程，直到属主被修正；Windows 上恢复动作每 10 秒重启一次，`sc query <name>` 报告退出码 1067。手动创建的目录（例如在提权 Git Bash 会话中使用 `mkdir`）属主为用户自己的 SID 而非 Administrators，会被拒绝；`certfolds` 和 `certfoldc` 自行创建的目录属主为 Administrators。
 
 关于如何解读 `service status` 的输出，参阅[服务状态](troubleshooting.md#服务状态)。
+
+### Linux 服务环境变量
+
+在 systemd 下，DNS 凭据、`LEGO_CA_CERTIFICATES` 以及服务的其他环境变量放在 `/etc/sysconfig/<name>` 中，即 `/etc/sysconfig/certfolds` 或 `/etc/sysconfig/certfoldc`。文件每行一个 `KEY=value`，属主应为 root，权限 `0600`。在没有 `/etc/sysconfig` 的发行版上，先用 `sudo install -d -m 0755 /etc/sysconfig` 创建该目录。变更仅在服务重启后生效。
+
+为了不让凭据出现在命令行和 shell 历史记录中，让 root shell 创建文件，再把各行粘贴进去并以 Ctrl-D 结束（也可以通过管道输入）：
+
+```bash
+sudo sh -c 'umask 077; cat > /etc/sysconfig/certfolds'
+```
+
+`certfolds config validate` 同样会展开 `${VAR}` 引用，因此运行时需要先加载该文件；否则会报 `environment variable "X" is not set`：
+
+```bash
+sudo sh -c 'set -a; . /etc/sysconfig/certfolds; certfolds --config /etc/certfold/server.yaml config validate'
+```
 
 ### Windows 服务环境变量
 

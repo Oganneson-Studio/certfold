@@ -6,7 +6,7 @@
 
 ## 一键安装
 
-将各平台的二进制文件放入 `<data_dir>/binaries/`，文件名形如 `certfoldc-linux-amd64`、`certfoldc-windows-amd64.exe`。创建注册令牌后，`certfolds token create` 会打印包含令牌的安装命令。
+从 [Releases 页面](https://github.com/Oganneson-Studio/certfold/releases)下载二进制文件，并用 `sha256sum -c SHA256SUMS` 校验；`gh attestation verify <file> --repo Oganneson-Studio/certfold` 还可以额外校验其构建来源证明。将 `certfoldc-*` 文件原样复制到服务端的 `<data_dir>/binaries/`：它们的文件名（如 `certfoldc-linux-amd64`、`certfoldc-windows-amd64.exe`）正是 `certfolds` 向安装脚本提供的文件名。该目录在 `certfolds` 首次启动后才存在；在此之前，请用 `sudo install -d -m 0755 /var/lib/certfolds/binaries` 创建。复制进去的文件立即可供下载，无需重启。要将 `certfolds` 本身安装为服务，参阅[作为服务运行](operations.md#作为服务运行)。创建注册令牌后，`certfolds token create` 会打印包含令牌的安装命令。
 
 **Linux / macOS**（以可以 sudo 的用户身份运行）：
 
@@ -14,7 +14,7 @@
 curl -fsSL --proto '=https' --proto-redir '=https' 'https://certfold.example.com:8443/install.sh' | sudo sh -s -- --token '<token>'
 ```
 
-不带 `--token` 时，脚本会在终端上提示输入令牌（不回显），令牌不会出现在命令行中。在多人共用的主机上推荐此方式。在 macOS 上，终端的单行输入限制（1024 字符）可能截断令牌（约 1050 字符）；此时请改用 `--token`：
+不带 `--token` 时，脚本会在终端上提示输入令牌（不回显），令牌不会出现在命令行中。在多人共用的主机上推荐此方式。在 macOS 上，终端的单行输入限制（1024 字符）可能截断令牌（约 1100 字符）；此时请改用 `--token`：
 
 ```bash
 curl -fsSL --proto '=https' --proto-redir '=https' 'https://certfold.example.com:8443/install.sh' | sudo sh
@@ -93,7 +93,7 @@ certfolds client remove <name>
 
 ## 生产环境 TLS
 
-一键安装在注册之前先下载 `certfoldc`，因此对外的 Certfold 端点必须提供操作系统已信任的证书。直接配置公网证书：
+一键安装在注册之前先下载 `certfoldc`，因此对外的 Certfold 端点必须提供操作系统已信任的证书。当端点的主机名属于 Certfold 能够签发的域名时，推荐由 Certfold 自己签发该证书；参阅[使用 Certfold 签发的证书](#使用-certfold-签发的证书)。否则，直接配置公网证书：
 
 ```yaml
 server:
@@ -111,3 +111,14 @@ server:
 `server.public_url` 必须是纯 ASCII 的 `https` URL。不能包含引号、反引号、`$`、`\`、空白或控制字符：`install.sh` 将其放在双引号中（`SERVER_URL="..."`），因此 `$`、反引号、`\` 和 `"` 会被插值；`install.ps1` 和注册令牌将其放在 PowerShell 的单引号中，其中弯引号（U+2018-U+201E）也充当引号字符。
 
 关于 `certfoldc` 如何验证服务端以及为何两种服务端证书都可用，参阅[信任模型](security.md#信任模型)。
+
+### 使用 Certfold 签发的证书
+
+服务端主机上的 `certfoldc` 可以把端点证书写入 `certfolds` 读取的文件：
+
+1. 不设置 `tls_cert_file` 和 `tls_key_file` 启动 `certfolds`，此时它使用 mini-CA 证书。在 `server.yaml` 中定义一张覆盖 `public_url` 主机名的证书（已有的通配符证书也可以），并让同一主机上的客户端订阅它。
+2. 在同一主机上，用 `certfolds token create --name <client>` 创建令牌，并在 `CERTFOLDC_TOKEN` 中提供令牌运行 `certfoldc enroll`。此时还不能使用一键安装，因为操作系统不信任 mini-CA 证书；注册则通过令牌信任服务端。
+3. 在 `client.yaml` 中，将该证书以 `pem-fullchain` 格式写到 `/etc/certfold/tls/fullchain.pem`，以 `pem-key` 格式写到 `/etc/certfold/tls/key.pem`，然后运行 `certfoldc service install` 和 `certfoldc service start`。`certfoldc` 会创建该目录，两个文件的属主均为 root，私钥权限为 `0600`，证书链为 `0644`；`certfolds` 以 root 运行，无需额外调整即可读取。
+4. 将 `server.tls_cert_file` 和 `server.tls_key_file` 设为这两个路径，然后重启 `certfolds`。`certfolds reload` 会拒绝对这两个字段的修改。
+
+续期无需任何操作：`certfoldc` 重写文件，`certfolds` 在下一次握手时提供新证书。切换之前注册的客户端继续正常工作。如果 `certfolds` 启动时文件不存在，它会退出并由服务管理器重启；即使服务端停止，`certfoldc` 也会从本地副本恢复这些文件，因此之后的某次重启会成功。两个服务之间不需要设置启动顺序。
