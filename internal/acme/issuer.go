@@ -12,6 +12,8 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -28,6 +30,9 @@ import (
 	"github.com/go-acme/lego/v4/providers/dns/route53"
 	"github.com/go-acme/lego/v4/providers/dns/tencentcloud"
 	"github.com/go-acme/lego/v4/registration"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
+	gdns "google.golang.org/api/dns/v1"
 
 	"github.com/Oganneson-Studio/certfold/internal/config"
 	"github.com/Oganneson-Studio/certfold/internal/store"
@@ -47,10 +52,7 @@ import (
 // (dns_exec.go).
 //
 // lego does not let Certfold bound everything:
-//   - lego builds the gcloud provider's configuration itself, so it keeps
-//     lego's defaults (180 s propagation, 5 s polling, read from
-//     GCE_PROPAGATION_TIMEOUT and GCE_POLLING_INTERVAL), and like route53
-//     (AWS SDK) it uses an HTTP client without an overall timeout;
+//   - route53 uses the AWS SDK's HTTP client, which has no overall timeout;
 //   - each DNS query of the DNS-01 lookups (CNAME following, zone and name
 //     server lookups, the propagation check) waits up to lego's fixed 10 s
 //     (20 s on Windows) per resolver, trying the resolvers in turn; the
@@ -59,7 +61,9 @@ import (
 //   - after a challenge is submitted, lego polls the authorization for up to
 //     100 times the CA's Retry-After (500 s when the CA sends none).
 const (
-	// dnsAPITimeout bounds each request to the DNS provider's API.
+	// dnsAPITimeout bounds each request to the DNS provider's API, and for
+	// gcloud each request for an access token too (except to the GCE metadata
+	// server, whose client is the metadata package's own).
 	dnsAPITimeout = 30 * time.Second
 	// dnsPropagationTimeout bounds the wait, per domain, for the challenge TXT
 	// record to reach the authoritative name servers. route53 also uses it to
@@ -368,9 +372,16 @@ func (u *legoUser) GetPrivateKey() crypto.PrivateKey        { return u.key }
 // ---------------------------------------------------------------------------
 
 // buildDNSProvider builds the provider p configures. The programs of an exec
-// provider are killed when ctx ends.
+// provider are killed when ctx ends, and the gcloud provider fetches its
+// access tokens with ctx.
 func buildDNSProvider(ctx context.Context, p config.DNSProvider) (challenge.Provider, error) {
 	cfg := p.Config
+	var (
+		provider challenge.ProviderTimeout
+		err      error
+		// secrets are the provider's credentials; see redactingProvider.
+		secrets []string
+	)
 	switch p.Type {
 	case "cloudflare":
 		c := cloudflare.NewDefaultConfig()
@@ -388,7 +399,8 @@ func buildDNSProvider(ctx context.Context, p config.DNSProvider) (challenge.Prov
 		if v, ok := cfg["auth_key"].(string); ok {
 			c.AuthKey = v
 		}
-		return cloudflare.NewDNSProviderConfig(c)
+		secrets = []string{c.AuthToken, c.ZoneToken, c.AuthKey}
+		provider, err = cloudflare.NewDNSProviderConfig(c)
 
 	case "aliyun":
 		c := alidns.NewDefaultConfig()
@@ -400,7 +412,8 @@ func buildDNSProvider(ctx context.Context, p config.DNSProvider) (challenge.Prov
 		if v, ok := cfg["access_secret"].(string); ok {
 			c.SecretKey = v
 		}
-		return alidns.NewDNSProviderConfig(c)
+		secrets = []string{c.APIKey, c.SecretKey}
+		provider, err = alidns.NewDNSProviderConfig(c)
 
 	case "tencentcloud":
 		c := tencentcloud.NewDefaultConfig()
@@ -412,7 +425,8 @@ func buildDNSProvider(ctx context.Context, p config.DNSProvider) (challenge.Prov
 		if v, ok := cfg["secret_key"].(string); ok {
 			c.SecretKey = v
 		}
-		return tencentcloud.NewDNSProviderConfig(c)
+		secrets = []string{c.SecretID, c.SecretKey}
+		provider, err = tencentcloud.NewDNSProviderConfig(c)
 
 	case "route53":
 		c := route53.NewDefaultConfig()
@@ -426,15 +440,37 @@ func buildDNSProvider(ctx context.Context, p config.DNSProvider) (challenge.Prov
 		if v, ok := cfg["region"].(string); ok {
 			c.Region = v
 		}
-		return route53.NewDNSProviderConfig(c)
+		secrets = []string{c.AccessKeyID, c.SecretAccessKey}
+		if c.AccessKeyID == "" {
+			// Without keys in the config, the AWS SDK may take them from
+			// the environment, where they can be swapped as well.
+			secrets = []string{os.Getenv("AWS_ACCESS_KEY_ID"), os.Getenv("AWS_SECRET_ACCESS_KEY"), os.Getenv("AWS_SESSION_TOKEN")}
+		}
+		provider, err = route53.NewDNSProviderConfig(c)
 
 	case "gcloud":
-		if v, ok := cfg["service_account_file"].(string); ok && v != "" {
-			return gcloud.NewDNSProviderServiceAccount(v)
+		c := gcloud.NewDefaultConfig()
+		c.PropagationTimeout, c.PollingInterval = dnsPropagationTimeout, dnsPollingInterval
+		if c.ImpersonateServiceAccount != "" {
+			// lego reads it from GCE_IMPERSONATE_SERVICE_ACCOUNT; ignoring it
+			// would issue as a broader identity than intended.
+			return nil, errors.New("gcloud: GCE_IMPERSONATE_SERVICE_ACCOUNT is not supported")
 		}
-		// Application default credentials for the configured project.
-		project, _ := cfg["project"].(string)
-		return gcloud.NewDNSProviderCredentials(project)
+		file, _ := cfg["service_account_file"].(string)
+		var fileProject string
+		if c.HTTPClient, fileProject, err = gcloudClient(ctx, file); err != nil {
+			return nil, fmt.Errorf("gcloud: %w", err)
+		}
+		// A configured project overrides the service account's, as
+		// GCE_PROJECT does in lego: the account may manage the zones of
+		// another project.
+		if c.Project, _ = cfg["project"].(string); c.Project == "" {
+			c.Project = fileProject
+		}
+		if c.Project == "" {
+			return nil, errors.New("gcloud: project missing: set project, or use a service account file with a project_id")
+		}
+		provider, err = gcloud.NewDNSProviderConfig(c)
 
 	case "exec":
 		return &execProvider{ctx: ctx, argv: p.Command}, nil
@@ -442,6 +478,90 @@ func buildDNSProvider(ctx context.Context, p config.DNSProvider) (challenge.Prov
 	default:
 		return nil, fmt.Errorf("unsupported provider type %q", p.Type)
 	}
+	if err != nil {
+		return nil, err
+	}
+	return newRedactingProvider(provider, secrets), nil
+}
+
+// gcloudClient returns the HTTP client of the gcloud provider, authorized for
+// Cloud DNS by the service account key in file or, when file is empty, by
+// application default credentials, and the project of the key file.
+//
+// lego's own constructors would build the client with no timeout and take
+// the project from the key file over the configured one.
+func gcloudClient(ctx context.Context, file string) (*http.Client, string, error) {
+	// oauth2 fetches tokens with the client in ctx, and gives the client it
+	// returns the same timeout.
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: dnsAPITimeout})
+	if file == "" {
+		ts, err := google.DefaultTokenSource(ctx, gdns.NdevClouddnsReadwriteScope)
+		if err != nil {
+			return nil, "", err
+		}
+		return oauth2.NewClient(ctx, ts), "", nil
+	}
+	key, err := os.ReadFile(file)
+	if err != nil {
+		return nil, "", err
+	}
+	jwt, err := google.JWTConfigFromJSON(key, gdns.NdevClouddnsReadwriteScope)
+	if err != nil {
+		return nil, "", err
+	}
+	var account struct {
+		ProjectID string `json:"project_id"`
+	}
+	if err := json.Unmarshal(key, &account); err != nil {
+		return nil, "", err
+	}
+	return oauth2.NewClient(ctx, jwt.TokenSource(ctx)), account.ProjectID, nil
+}
+
+// redactingProvider is a built-in provider whose Present and CleanUp errors
+// have its credentials replaced with REDACTED, before lego, the certificate's
+// last error, IPC or events see them. A provider's API may quote a credential
+// sent in the wrong field: AWS answers a secret key given as the access key ID
+// with an error that repeats it. Key IDs are replaced too, since they hold the
+// secret when the two are swapped. Only exact copies are replaced. Errors a
+// provider logs itself instead of returning them (lego's cloudflare provider
+// logs a failed record deletion in CleanUp) reach the events unredacted.
+//
+// It keeps the provider's Timeout, so lego still waits for Certfold's bounds.
+// lego's other optional provider interface, Sequential, is implemented by
+// none of the built-in providers.
+type redactingProvider struct {
+	challenge.ProviderTimeout
+	secrets *strings.Replacer
+}
+
+func newRedactingProvider(p challenge.ProviderTimeout, secrets []string) *redactingProvider {
+	// An empty value would match everywhere, and of two values where one
+	// starts the other, the longer must be tried first.
+	secrets = slices.DeleteFunc(slices.Clone(secrets), func(s string) bool { return s == "" })
+	slices.SortFunc(secrets, func(a, b string) int { return len(b) - len(a) })
+	var oldnew []string
+	for _, s := range secrets {
+		oldnew = append(oldnew, s, "REDACTED")
+	}
+	return &redactingProvider{ProviderTimeout: p, secrets: strings.NewReplacer(oldnew...)}
+}
+
+func (p *redactingProvider) Present(domain, token, keyAuth string) error {
+	return p.redact(p.ProviderTimeout.Present(domain, token, keyAuth))
+}
+
+func (p *redactingProvider) CleanUp(domain, token, keyAuth string) error {
+	return p.redact(p.ProviderTimeout.CleanUp(domain, token, keyAuth))
+}
+
+// redact returns a new error, not one wrapping err, so that unwrapping cannot
+// reach the credentials either.
+func (p *redactingProvider) redact(err error) error {
+	if err == nil {
+		return nil
+	}
+	return errors.New(p.secrets.Replace(err.Error()))
 }
 
 // ---------------------------------------------------------------------------

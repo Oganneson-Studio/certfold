@@ -144,6 +144,8 @@ Each built-in provider type accepts only these keys besides `type` and `skip_pro
 
 Values must be strings. A bare number like `12345` is parsed as an integer by YAML; quote it as `"12345"`. A `${VAR}` whose value is a bare number, `true`, or `null` must also be quoted in the YAML as `"${VAR}"`, otherwise the expanded value is re-typed. `${VAR:-}` expands to an empty string, which counts as unset for required keys.
 
+For `gcloud`, `project` overrides the project in the `service_account_file` key file, so a service account can manage Cloud DNS zones in another project; without `project`, the key file's project is used.
+
 Other DNS-01 settings:
 
 - `skip_propagation_check: true` on a provider skips lego's check that the TXT record is visible on the zone's authoritative nameservers. Use it only with DNS servers that cannot answer that check; lego then waits just one 4-second polling interval. With a provider whose nameservers can answer the check, such as Cloudflare, skipping it makes issuance fail intermittently: the CA may query before the record has reached all of the provider's nameservers, and the order fails with `No TXT record found`.

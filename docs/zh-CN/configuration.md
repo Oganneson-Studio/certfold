@@ -144,6 +144,8 @@ certificates:
 
 值必须是字符串。像 `12345` 这样的裸数字会被 YAML 解析为整数；请将其写成 `"12345"`。如果 `${VAR}` 的值是裸数字、`true` 或 `null`，在 YAML 中也必须加引号写成 `"${VAR}"`，否则展开后的值会被重新推断类型。`${VAR:-}` 展开为空字符串，对于必填字段视为未设置。
 
+对于 `gcloud`，`project` 会覆盖 `service_account_file` 密钥文件中的项目，因此服务账户可以管理另一个项目中的 Cloud DNS 区域；未设置 `project` 时，使用密钥文件中的项目。
+
 其他 DNS-01 设置：
 
 - 在提供商上设置 `skip_propagation_check: true` 会跳过 lego 对 TXT 记录是否在区域的权威 DNS 服务器上可见的检查。仅适用于无法响应该检查的 DNS 服务器；跳过后 lego 只等待一个 4 秒的轮询间隔。如果提供商的权威 DNS 服务器能够响应该检查（例如 Cloudflare），跳过检查会导致签发间歇性失败：CA 可能在记录尚未到达该提供商全部权威 DNS 服务器时就发起查询，订单因 `No TXT record found` 而失败。

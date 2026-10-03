@@ -12,8 +12,9 @@ issuance, exec DNS provider, ARI-driven renewal (RFC 9773), HTTPS certificate
 hot reload, server and client TUI, slog logging with a 500-entry event ring,
 and `events` commands for both binaries. E2E tests (WSLC and Linux Docker)
 cover real Pebble issuance including ARI. An opt-in suite (`e2e_cloud`) issues
-real certificates from Let's Encrypt staging through the Cloudflare provider;
-the other cloud DNS providers have no E2E.
+real certificates from Let's Encrypt staging through the Cloudflare, Aliyun,
+and Tencent Cloud providers; gcloud and route53 were verified once by hand
+(2026-10-03) and have no standing E2E.
 
 Pre-deploy audit completed 2026-10-01. Renamed from Sigil to Certfold on
 2026-10-01 because all Sigil-related domain names were taken. For the full
@@ -64,8 +65,8 @@ export CERTFOLD_E2E_CLOUDFLARE_TOKEN="$(tr -d '\r\n' < <token-file>)"   # bash
 go test -v -tags e2e_cloud -count=1 -timeout 15m ./test/e2e
 ```
 
-- Issues real certificates from Let's Encrypt staging through the `cloudflare` provider for random names under `certfold.com` and `certfold.org`, with the default propagation check and default resolvers (the `e2e` suite skips the check and pins the resolvers). Details: [PLT-13](docs/agents/platforms.md).
-- The token needs DNS:Edit and Zone:Read on both zones. Without it the run fails; it never skips. Keep the token out of the repository and out of command lines that get logged.
+- Issues real certificates from Let's Encrypt staging for random names under `certfold.com` and `certfold.org` through `cloudflare`, and under the delegated subzones `ali.certfold.org` (`aliyun`) and `tc.certfold.org` (`tencentcloud`), with the default propagation check and default resolvers (the `e2e` suite skips the check and pins the resolvers). Details: [PLT-13](docs/agents/platforms.md).
+- The Cloudflare token (DNS:Edit and Zone:Read on both zones) is required: without it the run fails. `aliyun` needs `CERTFOLD_E2E_ALIYUN_ACCESS_KEY` and `CERTFOLD_E2E_ALIYUN_ACCESS_SECRET`, `tencentcloud` needs `CERTFOLD_E2E_TENCENTCLOUD_SECRET_ID` and `CERTFOLD_E2E_TENCENTCLOUD_SECRET_KEY`; a provider with none of its variables set is skipped, one with only some set fails the run. Keep credentials out of the repository and out of command lines that get logged.
 - Not run in CI (CI only vets the tag). On Linux, set `CERTFOLD_CONTAINER_CLI=docker` as for `e2e`. Timings: WSLC warm ~45--55 s; Linux Docker ~85 s with a fresh image build (both verified 2026-10-03).
 
 ### Race detection
@@ -205,7 +206,7 @@ retired but keep their numbers so existing references stay valid.
 - Output is written to the service log (last 4 KiB) only on failure; never to events.
 - The programs ctx comes from `acme.NewIssuer` (derived via `context.WithoutCancel` in `server.Run`), cancelled only when `server.Run` returns. It is neither the daemon's ctx nor `Issue`'s ctx.
 
-**S14** Error text from the ACME CA and DNS provider must be sanitized before being written to `issuance_status.last_error` or returned via IPC: `logging.OneLine` (replace control characters and invalid UTF-8), then `logging.RedactURLQueries` (replace URL query strings with `?REDACTED`), then truncate to 1 KiB. The event rendering path (Ring and Windows event log Message and Attrs) also redacts URL queries; the stderr service-log sink (journald under systemd, `/var/log/<name>.err.log` under launchd) keeps the original text. ARI query errors undergo the same sanitization pipeline before entering events or `last_error`.
+**S14** Errors from a built-in DNS provider's `Present` and `CleanUp` never carry its credentials: `buildDNSProvider` wraps each provider in `redactingProvider`, which replaces every credential value (key IDs included, since swapped keys put the secret there; for route53 without keys in the config, the `AWS_*` key variables) with `REDACTED` before lego sees the error, so every sink below gets the redacted text, the service log included. The new error does not unwrap to the original. Not caught: credentials echoed in an altered form (encoded, truncated), credentials from the AWS shared credentials file, and errors a provider logs itself instead of returning (lego's cloudflare provider logs a failed record deletion). Real case: route53 with `access_key` and `secret_key` swapped makes AWS quote the secret. Error text from the ACME CA and DNS provider must be sanitized before being written to `issuance_status.last_error` or returned via IPC: `logging.OneLine` (replace control characters and invalid UTF-8), then `logging.RedactURLQueries` (replace URL query strings with `?REDACTED`), then truncate to 1 KiB. The event rendering path (Ring and Windows event log Message and Attrs) also redacts URL queries; the stderr service-log sink (journald under systemd, `/var/log/<name>.err.log` under launchd) keeps the original text. ARI query errors undergo the same sanitization pipeline before entering events or `last_error`.
 
 **S15** `on_change` is configurable only in `client.yaml`, as an argv (argv[0] must be an absolute path), never through a shell. Server-supplied content (including certificate names) must not influence what is executed or where files are written.
 - Runs as the `certfoldc` service account with its full environment. stdin is empty. Timeout: 2 min. On timeout or daemon stop, the process tree is killed (Unix process group, Windows Job Object). If the hook exits normally, processes it left behind keep running, on both platforms. IPC caller disconnect does not affect it.

@@ -145,11 +145,12 @@ func TestSpecKeyType(t *testing.T) {
 // (credentials may be empty — we only verify no panic / type mismatch)
 // ---------------------------------------------------------------------------
 
-func TestBuildDNSProvider_SupportedTypes(t *testing.T) {
-	// gcloud with only a project uses application default credentials. Point
-	// them at a service account file for an unregistered account with a real
-	// RSA key: building the provider reads the file but makes no network
-	// request.
+// writeServiceAccount writes a service account file of project "my-proj" for
+// an unregistered account with a real RSA key, whose tokens come from
+// tokenURI, and returns its path. Building a gcloud provider reads the file
+// but makes no network request.
+func writeServiceAccount(t *testing.T, tokenURI string) string {
+	t.Helper()
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -165,15 +166,22 @@ func TestBuildDNSProvider_SupportedTypes(t *testing.T) {
 		"private_key":    string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})),
 		"client_email":   "certfold@my-proj.iam.gserviceaccount.com",
 		"client_id":      "0",
-		"token_uri":      "https://oauth2.googleapis.com/token",
+		"token_uri":      tokenURI,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	credentials := filepath.Join(t.TempDir(), "service-account.json")
-	if err := os.WriteFile(credentials, serviceAccount, 0o600); err != nil {
+	file := filepath.Join(t.TempDir(), "service-account.json")
+	if err := os.WriteFile(file, serviceAccount, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	return file
+}
+
+func TestBuildDNSProvider_SupportedTypes(t *testing.T) {
+	// gcloud with only a project uses application default credentials. Point
+	// them at a service account file.
+	credentials := writeServiceAccount(t, "https://oauth2.googleapis.com/token")
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credentials)
 
 	tests := []struct {
@@ -207,6 +215,13 @@ func TestBuildDNSProvider_SupportedTypes(t *testing.T) {
 			provider: config.DNSProvider{
 				Type:   "gcloud",
 				Config: map[string]any{"project": "my-proj"},
+			},
+		},
+		{
+			name: "gcloud with service_account_file",
+			provider: config.DNSProvider{
+				Type:   "gcloud",
+				Config: map[string]any{"service_account_file": credentials},
 			},
 		},
 		{
@@ -252,15 +267,17 @@ func TestBuildDNSProvider_SupportedTypes(t *testing.T) {
 func TestBuildDNSProviderBoundsPropagationWait(t *testing.T) {
 	// lego reads these defaults from the environment without an upper limit.
 	// Certfold's explicit bounds must win.
-	for _, prefix := range []string{"CLOUDFLARE_", "ALICLOUD_", "TENCENTCLOUD_", "AWS_"} {
+	for _, prefix := range []string{"CLOUDFLARE_", "ALICLOUD_", "TENCENTCLOUD_", "AWS_", "GCE_"} {
 		t.Setenv(prefix+"PROPAGATION_TIMEOUT", "999999")
 		t.Setenv(prefix+"POLLING_INTERVAL", "999999")
 	}
+	serviceAccount := writeServiceAccount(t, "https://oauth2.googleapis.com/token")
 	for _, p := range []config.DNSProvider{
 		{Type: "cloudflare", Config: map[string]any{"api_token": "tok"}},
 		{Type: "aliyun", Config: map[string]any{"access_key": "k", "access_secret": "s"}},
 		{Type: "tencentcloud", Config: map[string]any{"secret_id": "id", "secret_key": "k"}},
 		{Type: "route53", Config: map[string]any{"access_key": "ak", "secret_key": "sk", "region": "us-east-1"}},
+		{Type: "gcloud", Config: map[string]any{"service_account_file": serviceAccount}},
 		{Type: "exec", Command: []string{"/usr/local/bin/dns-hook"}},
 	} {
 		provider, err := buildDNSProvider(context.Background(), p)
@@ -276,6 +293,120 @@ func TestBuildDNSProviderBoundsPropagationWait(t *testing.T) {
 			t.Errorf("%s: Timeout() = (%v, %v), want (%v, %v)",
 				p.Type, timeout, interval, dnsPropagationTimeout, dnsPollingInterval)
 		}
+	}
+}
+
+// TestBuildDNSProviderGcloudProject checks which project the gcloud provider
+// manages: the configured one, else the service account file's. A token
+// endpoint that always fails stops each request before it leaves the test, and
+// lego's error names the request's URL.
+func TestBuildDNSProviderGcloudProject(t *testing.T) {
+	tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "no token", http.StatusInternalServerError)
+	}))
+	defer tokens.Close()
+	serviceAccount := writeServiceAccount(t, tokens.URL)
+	// A zone ID makes lego ask the API for the zone instead of looking it
+	// up in DNS first.
+	t.Setenv("GCE_ZONE_ID", "zone")
+
+	for _, tt := range []struct {
+		project, want string
+	}{
+		{"", "my-proj"},
+		{"other-proj", "other-proj"},
+	} {
+		p, err := buildDNSProvider(context.Background(), config.DNSProvider{
+			Type:   "gcloud",
+			Config: map[string]any{"service_account_file": serviceAccount, "project": tt.project},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = p.Present("www.certfold.test", "token", "keyAuth")
+		if err == nil || !strings.Contains(err.Error(), "/projects/"+tt.want+"/managedZones/zone") {
+			t.Errorf("project %q: Present error = %v, want a request for project %s", tt.project, err, tt.want)
+		}
+	}
+}
+
+// failingProvider fails Present and CleanUp with err.
+type failingProvider struct{ err error }
+
+func (p failingProvider) Present(_, _, _ string) error { return p.err }
+func (p failingProvider) CleanUp(_, _, _ string) error { return p.err }
+func (p failingProvider) Timeout() (timeout, interval time.Duration) {
+	return dnsPropagationTimeout, dnsPollingInterval
+}
+
+func TestBuildDNSProviderRedactsCredentialsFromErrors(t *testing.T) {
+	for _, p := range []config.DNSProvider{
+		// An empty value must not be replaced, and one value starting
+		// another must not leave the other's tail.
+		{Type: "cloudflare", Config: map[string]any{"api_token": "cf-token", "zone_api_token": "", "auth_key": "cf-token-key"}},
+		{Type: "aliyun", Config: map[string]any{"access_key": "ali-id", "access_secret": "ali-secret"}},
+		{Type: "tencentcloud", Config: map[string]any{"secret_id": "tc-id", "secret_key": "tc-secret"}},
+		// Swapped: AWS quotes the "access key ID", here the secret.
+		{Type: "route53", Config: map[string]any{"access_key": "aws-secret", "secret_key": "AKIAEXAMPLE", "region": "us-east-1"}},
+	} {
+		provider, err := buildDNSProvider(context.Background(), p)
+		if err != nil {
+			t.Fatalf("%s: %v", p.Type, err)
+		}
+		redacting, ok := provider.(*redactingProvider)
+		if !ok {
+			t.Fatalf("%s: provider is a %T, want *redactingProvider", p.Type, provider)
+		}
+		var values []string
+		for _, v := range p.Config {
+			if v != "" {
+				values = append(values, v.(string))
+			}
+		}
+		slices.Sort(values)
+		cause := errors.New("api: " + strings.Join(values, ", "))
+		redacting.ProviderTimeout = failingProvider{err: cause}
+
+		want := "api: " + strings.Join(slices.Repeat([]string{"REDACTED"}, len(values)), ", ")
+		if p.Type == "route53" {
+			// The region, sorted last, is no credential.
+			want = "api: REDACTED, REDACTED, us-east-1"
+		}
+		for action, err := range map[string]error{
+			"Present": redacting.Present("www.certfold.test", "token", "keyAuth"),
+			"CleanUp": redacting.CleanUp("www.certfold.test", "token", "keyAuth"),
+		} {
+			if err == nil || err.Error() != want {
+				t.Errorf("%s %s: error = %v, want %q", p.Type, action, err, want)
+			}
+			if errors.Unwrap(err) != nil {
+				t.Errorf("%s %s: the error wraps the original", p.Type, action)
+			}
+		}
+	}
+}
+
+func TestBuildDNSProviderRedactsRoute53CredentialsFromTheEnvironment(t *testing.T) {
+	// Without keys in the config, the AWS SDK takes them from here; swapped.
+	t.Setenv("AWS_ACCESS_KEY_ID", "aws-secret")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "AKIAEXAMPLE")
+	t.Setenv("AWS_SESSION_TOKEN", "")
+	provider, err := buildDNSProvider(context.Background(), config.DNSProvider{Type: "route53", Config: map[string]any{"region": "us-east-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	redacting := provider.(*redactingProvider)
+	redacting.ProviderTimeout = failingProvider{err: errors.New("api: aws-secret, AKIAEXAMPLE, us-east-1")}
+	if err := redacting.Present("www.certfold.test", "token", "keyAuth"); err == nil || err.Error() != "api: REDACTED, REDACTED, us-east-1" {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestBuildDNSProviderRejectsGcloudImpersonation(t *testing.T) {
+	t.Setenv("GCE_IMPERSONATE_SERVICE_ACCOUNT", "dns@other-proj.iam.gserviceaccount.com")
+	_, err := buildDNSProvider(context.Background(), config.DNSProvider{Type: "gcloud", Config: map[string]any{"project": "my-proj"}})
+	if err == nil || !strings.Contains(err.Error(), "GCE_IMPERSONATE_SERVICE_ACCOUNT") {
+		t.Fatalf("err = %v, want the unsupported variable named", err)
 	}
 }
 
