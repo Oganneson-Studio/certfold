@@ -7,11 +7,18 @@ import (
 	"testing"
 )
 
-// pointerError is an error whose Error method reads its receiver, as the
-// errors of many packages do: its Error panics for a nil *pointerError.
+// pointerError is an error whose Error method panics for a nil receiver, as
+// the errors of many packages do. It panics itself instead of reading through
+// nil: on windows/amd64, recovering from a hardware nil read can corrupt the
+// heap (golang/go#81238), which crashed CI.
 type pointerError struct{ text string }
 
-func (e *pointerError) Error() string { return e.text }
+func (e *pointerError) Error() string {
+	if e == nil {
+		panic("nil *pointerError")
+	}
+	return e.text
+}
 
 // TestTypedNilErrorRendersAsNil logs a nil *pointerError held in an error, as
 // a function that returns a typed nil leaves it. The service log, events and
