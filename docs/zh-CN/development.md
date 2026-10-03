@@ -35,4 +35,4 @@ $env:CERTFOLD_E2E_CLOUDFLARE_TOKEN = (Get-Content -Raw <token-file>).Trim()
 go test -v -tags e2e_cloud -count=1 -timeout 15m ./test/e2e
 ```
 
-它通过 `cloudflare` 提供商，为项目自有区域 `certfold.com` 和 `certfold.org` 下的随机名称从 Let's Encrypt staging 环境真实签发证书，因此需要一个对这两个区域具有 DNS:Edit 和 Zone:Read 权限的 Cloudflare API 令牌；实际上只有维护者能运行。未提供令牌时，测试会失败而不是跳过。容器运行时的设置与 `e2e` 测试相同：Windows 上使用 WSLC，Linux 上设置 `CERTFOLD_CONTAINER_CLI=docker`。
+它为项目自有区域下的随机名称从 Let's Encrypt staging 环境真实签发证书：通过 `cloudflare` 提供商使用 `certfold.com` 和 `certfold.org`，还可以选择通过 `aliyun` 使用 `ali.certfold.org`、通过 `tencentcloud` 使用 `tc.certfold.org`。Cloudflare API 令牌是必需的，并且需要对这两个区域具有 DNS:Edit 和 Zone:Read 权限，因此实际上只有维护者能运行；未提供令牌时，测试会失败而不是跳过。阿里云用例读取 `CERTFOLD_E2E_ALIYUN_ACCESS_KEY` 和 `CERTFOLD_E2E_ALIYUN_ACCESS_SECRET`，腾讯云用例读取 `CERTFOLD_E2E_TENCENTCLOUD_SECRET_ID` 和 `CERTFOLD_E2E_TENCENTCLOUD_SECRET_KEY`；某个提供商的变量一个都没有设置时，跳过它的用例，只设置了一部分时，整次运行失败。容器运行时的设置与 `e2e` 测试相同：Windows 上使用 WSLC，Linux 上设置 `CERTFOLD_CONTAINER_CLI=docker`。

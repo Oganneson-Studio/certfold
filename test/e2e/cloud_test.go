@@ -6,21 +6,36 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
+	"github.com/alibabacloud-go/tea/dara"
+	alidns "github.com/go-acme/alidns-20150109/v4/client"
+	dnspod "github.com/go-acme/tencentclouddnspod/v20210323"
+	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common"
+	sdkerrors "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common/errors"
+	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common/profile"
 )
 
-// cloudflareTokenEnv names the environment variable that holds the Cloudflare
-// API token. The server container takes the variable from the environment of
-// the test, and server.yaml refers to it, so the token is in no file and on
-// no command line.
-const cloudflareTokenEnv = "CERTFOLD_E2E_CLOUDFLARE_TOKEN"
+// The environment variables that hold the keys of the DNS providers. The
+// server container takes them from the environment of the test, and
+// server.yaml refers to them, so no key is in a file or on a command line.
+const (
+	cloudflareTokenEnv       = "CERTFOLD_E2E_CLOUDFLARE_TOKEN"
+	aliyunAccessKeyEnv       = "CERTFOLD_E2E_ALIYUN_ACCESS_KEY"
+	aliyunAccessSecretEnv    = "CERTFOLD_E2E_ALIYUN_ACCESS_SECRET"
+	tencentcloudSecretIDEnv  = "CERTFOLD_E2E_TENCENTCLOUD_SECRET_ID"
+	tencentcloudSecretKeyEnv = "CERTFOLD_E2E_TENCENTCLOUD_SECRET_KEY"
+)
 
 // cloudIssuanceTimeout bounds the wait for every certificate, from the start
 // of the server. Let's Encrypt staging issues each in tens of seconds, and the
@@ -28,12 +43,58 @@ const cloudflareTokenEnv = "CERTFOLD_E2E_CLOUDFLARE_TOKEN"
 // waits.
 const cloudIssuanceTimeout = 3 * time.Minute
 
-// cloudZones are the Cloudflare zones the certificates have names in.
-var cloudZones = []string{"certfold.com", "certfold.org"}
+// cloudProvider is a DNS provider the server can issue through.
+type cloudProvider struct {
+	// name is both the name and the type of the provider in server.yaml.
+	name string
+	// keys pairs each key of the provider in server.yaml with the
+	// environment variable that holds it.
+	keys [][2]string
+	// zones are the zones the provider's certificates have names in.
+	zones []string
+	// txtRecords returns the name of every TXT record in zone whose name
+	// contains label.
+	txtRecords func(zone, label string) ([]string, error)
+}
+
+// The aliyun and tencentcloud zones are subdomains of certfold.org, which
+// delegates them to Alibaba Cloud DNS and DNSPod.
+var (
+	cloudflare = &cloudProvider{
+		name:       "cloudflare",
+		keys:       [][2]string{{"api_token", cloudflareTokenEnv}},
+		zones:      []string{"certfold.com", "certfold.org"},
+		txtRecords: cloudflareTXTRecords,
+	}
+	aliyun = &cloudProvider{
+		name:       "aliyun",
+		keys:       [][2]string{{"access_key", aliyunAccessKeyEnv}, {"access_secret", aliyunAccessSecretEnv}},
+		zones:      []string{"ali.certfold.org"},
+		txtRecords: aliyunTXTRecords,
+	}
+	tencentcloud = &cloudProvider{
+		name:       "tencentcloud",
+		keys:       [][2]string{{"secret_id", tencentcloudSecretIDEnv}, {"secret_key", tencentcloudSecretKeyEnv}},
+		zones:      []string{"tc.certfold.org"},
+		txtRecords: tencentcloudTXTRecords,
+	}
+	cloudProviders = []*cloudProvider{cloudflare, aliyun, tencentcloud}
+)
+
+// unset returns the environment variables of p's keys that are not set.
+func (p *cloudProvider) unset() []string {
+	var names []string
+	for _, key := range p.keys {
+		if os.Getenv(key[1]) == "" {
+			names = append(names, key[1])
+		}
+	}
+	return names
+}
 
 // cloudServer is a certfolds server that issues its certificates from Let's
-// Encrypt staging through the cloudflare DNS provider. Its only file,
-// server.yaml, is in runDir, in the bind mount.
+// Encrypt staging through the DNS providers whose keys are set. Its only
+// file, server.yaml, is in runDir, in the bind mount.
 type cloudServer struct {
 	runtime   containerRuntime
 	rootDir   string
@@ -43,7 +104,10 @@ type cloudServer struct {
 	container string
 	// label starts every domain of the run. Runs share no challenge record,
 	// and the records a run leaves behind are found by it.
-	label   string
+	label     string
+	providers []*cloudProvider
+	// skipped are the providers none of whose keys is set.
+	skipped []*cloudProvider
 	certs   []cloudCert
 	started time.Time
 }
@@ -51,8 +115,9 @@ type cloudServer struct {
 // cloudCert is a certificate in the server's configuration. No two share a
 // domain: they issue at once, and the challenges of one domain would collide.
 type cloudCert struct {
-	name    string
-	domains []string
+	name     string
+	provider *cloudProvider
+	domains  []string
 }
 
 var cloud *cloudServer
@@ -61,12 +126,20 @@ var cloud *cloudServer
 // certificates for names in the project's zones. Unlike the e2e tests, they
 // leave acme.dns_resolvers unset and keep the propagation check. They need
 // outbound internet access from the container, and fail without a Cloudflare
-// API token with DNS:Edit and Zone:Read on both zones.
+// API token with DNS:Edit and Zone:Read on both zones. The keys of the other
+// providers are optional: a provider without them issues nothing, and one
+// with only some of them set is a mistake that fails the run.
 func TestMain(m *testing.M) {
 	if os.Getenv(cloudflareTokenEnv) == "" {
 		fmt.Fprintf(os.Stderr, "%s is not set: the e2e_cloud tests need a Cloudflare API token with DNS:Edit and Zone:Read on %s\n",
-			cloudflareTokenEnv, strings.Join(cloudZones, " and "))
+			cloudflareTokenEnv, strings.Join(cloudflare.zones, " and "))
 		os.Exit(1)
+	}
+	for _, p := range cloudProviders {
+		if unset := p.unset(); len(unset) > 0 && len(unset) < len(p.keys) {
+			fmt.Fprintf(os.Stderr, "%s is not set, but other keys of %s are\n", strings.Join(unset, " and "), p.name)
+			os.Exit(1)
+		}
 	}
 	rt, err := detectContainerRuntime()
 	if err != nil {
@@ -90,10 +163,15 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// TestCloudflareIssuance waits for the server to issue its certificates and
-// checks each on its own, so that one failing hides none of the others. Then
-// it checks that lego removed every challenge record of the run.
-func TestCloudflareIssuance(t *testing.T) {
+// TestCloudIssuance waits for the server to issue its certificates and checks
+// each on its own, so that one failing hides none of the others. Then it
+// checks that lego removed every challenge record of the run.
+func TestCloudIssuance(t *testing.T) {
+	for _, p := range cloud.skipped {
+		t.Run(p.name, func(t *testing.T) {
+			t.Skipf("%s not set", strings.Join(p.unset(), " and "))
+		})
+	}
 	states, settled := cloud.waitForIssuance(t)
 	for _, c := range cloud.certs {
 		t.Run(c.name, func(t *testing.T) {
@@ -115,17 +193,19 @@ func TestCloudflareIssuance(t *testing.T) {
 		})
 	}
 	t.Run("no challenge records left", func(t *testing.T) {
-		for _, zone := range cloudZones {
-			names, err := cloudflareTXTRecords(zone, cloud.label)
-			if err != nil {
-				t.Errorf("%s: %v", zone, err)
-				continue
-			}
-			if len(names) > 0 {
-				// Nothing removes them: delete them by hand. A certificate
-				// still issuing at the deadline leaves its records too, since
-				// cleanup stops the server before lego removes them.
-				t.Errorf("%s has TXT records of the run left, delete them by hand: %s", zone, strings.Join(names, ", "))
+		for _, p := range cloud.providers {
+			for _, zone := range p.zones {
+				names, err := p.txtRecords(zone, cloud.label)
+				if err != nil {
+					t.Errorf("%s: %v", zone, err)
+					continue
+				}
+				if len(names) > 0 {
+					// Nothing removes them: delete them by hand. A certificate
+					// still issuing at the deadline leaves its records too,
+					// since cleanup stops the server before lego removes them.
+					t.Errorf("%s has TXT records of the run left, delete them by hand: %s", zone, strings.Join(names, ", "))
+				}
 			}
 		}
 	})
@@ -154,13 +234,27 @@ func newCloudServer(rt containerRuntime) (*cloudServer, error) {
 		image:     "certfold-e2e-cloud-certfolds:" + suffix,
 		container: "certfold-e2e-cloud-" + suffix,
 		label:     label,
-		certs: []cloudCert{
-			// The provider looks up the zone of each name.
-			{name: "cross-zone", domains: []string{label + "-a.certfold.com", label + "-a.certfold.org"}},
-			// Both names have their challenge at one record name, which
-			// holds both values at once.
-			{name: "wildcard", domains: []string{label + "-b.certfold.org", "*." + label + "-b.certfold.org"}},
-		},
+	}
+	for _, p := range cloudProviders {
+		if len(p.unset()) == 0 {
+			s.providers = append(s.providers, p)
+		} else {
+			s.skipped = append(s.skipped, p)
+		}
+	}
+	certs := []cloudCert{
+		// The provider looks up the zone of each name.
+		{name: "cross-zone", provider: cloudflare, domains: []string{label + "-a.certfold.com", label + "-a.certfold.org"}},
+		// Both names have their challenge at one record name, which holds
+		// both values at once.
+		{name: "wildcard", provider: cloudflare, domains: []string{label + "-b.certfold.org", "*." + label + "-b.certfold.org"}},
+		{name: "aliyun", provider: aliyun, domains: []string{label + ".ali.certfold.org", "*." + label + ".ali.certfold.org"}},
+		{name: "tencentcloud", provider: tencentcloud, domains: []string{label + ".tc.certfold.org", "*." + label + ".tc.certfold.org"}},
+	}
+	for _, cert := range certs {
+		if slices.Contains(s.providers, cert.provider) {
+			s.certs = append(s.certs, cert)
+		}
 	}
 	if err := s.writeConfig(); err != nil {
 		_ = os.RemoveAll(runDir)
@@ -170,14 +264,21 @@ func newCloudServer(rt containerRuntime) (*cloudServer, error) {
 }
 
 func (s *cloudServer) writeConfig() error {
+	var providers strings.Builder
+	for _, p := range s.providers {
+		fmt.Fprintf(&providers, "  %s:\n    type: %s\n", p.name, p.name)
+		for _, key := range p.keys {
+			fmt.Fprintf(&providers, "    %s: \"${%s}\"\n", key[0], key[1])
+		}
+	}
 	var certs strings.Builder
 	for _, cert := range s.certs {
 		domains := make([]string, len(cert.domains))
 		for i, domain := range cert.domains {
 			domains[i] = fmt.Sprintf("%q", domain)
 		}
-		fmt.Fprintf(&certs, "  - name: %s\n    domains: [%s]\n    ca: letsencrypt-staging\n    dns_provider: cloudflare\n",
-			cert.name, strings.Join(domains, ", "))
+		fmt.Fprintf(&certs, "  - name: %s\n    domains: [%s]\n    ca: letsencrypt-staging\n    dns_provider: %s\n",
+			cert.name, strings.Join(domains, ", "), cert.provider.name)
 	}
 	// Let's Encrypt refuses contacts at example.com.
 	config := fmt.Sprintf(`server:
@@ -191,12 +292,9 @@ acme:
       directory: "https://acme-staging-v02.api.letsencrypt.org/directory"
 
 dns_providers:
-  cloudflare:
-    type: cloudflare
-    api_token: "${%s}"
-
+%s
 certificates:
-%s`, serverDataDir, cloudflareTokenEnv, certs.String())
+%s`, serverDataDir, providers.String(), certs.String())
 	return os.WriteFile(filepath.Join(s.runDir, "server.yaml"), []byte(config), 0o600)
 }
 
@@ -212,10 +310,13 @@ func (s *cloudServer) start() error {
 		"run", "-d",
 		"--name", s.container,
 		"-e", "CERTFOLDS_CONFIG=" + strings.Join([]string{"/e2e", filepath.Base(s.runDir), "server.yaml"}, "/"),
-		"-e", cloudflareTokenEnv,
-		"-v", bindMount(s.mountDir, "/e2e", false),
-		s.image,
 	}
+	for _, p := range s.providers {
+		for _, key := range p.keys {
+			args = append(args, "-e", key[1])
+		}
+	}
+	args = append(args, "-v", bindMount(s.mountDir, "/e2e", false), s.image)
 	if out, err := s.runtime.run(s.rootDir, args...); err != nil {
 		return fmt.Errorf("start certfolds: %w\n%s", err, out)
 	}
@@ -308,6 +409,62 @@ func cloudflareGet(path string, result any) error {
 		return fmt.Errorf("GET %s: status %d: %s", path, resp.StatusCode, body.Errors)
 	}
 	return json.Unmarshal(body.Result, result)
+}
+
+// aliyunTXTRecords returns the name of every TXT record in zone whose name
+// contains label. It builds its client as lego's alidns provider does.
+func aliyunTXTRecords(zone, label string) ([]string, error) {
+	client, err := alidns.NewClient(new(openapi.Config).
+		SetRegionId("cn-hangzhou").
+		SetAccessKeyId(os.Getenv(aliyunAccessKeyEnv)).
+		SetAccessKeySecret(os.Getenv(aliyunAccessSecretEnv)))
+	if err != nil {
+		return nil, err
+	}
+	resp, err := alidns.DescribeDomainRecords(client, &alidns.DescribeDomainRecordsRequest{
+		DomainName:  dara.String(zone),
+		TypeKeyWord: dara.String("TXT"),
+		RRKeyWord:   dara.String(label),
+		PageSize:    dara.Int64(100),
+	})
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, record := range resp.Body.DomainRecords.Record {
+		names = append(names, dara.StringValue(record.RR)+"."+zone)
+	}
+	return names, nil
+}
+
+// tencentcloudTXTRecords returns the name of every TXT record in zone at the
+// challenge name of label, the only name the run uses there. It builds its
+// client and asks for the record name as lego's tencentcloud provider does.
+func tencentcloudTXTRecords(zone, label string) ([]string, error) {
+	cpf := profile.NewClientProfile()
+	cpf.HttpProfile.Endpoint = "dnspod.tencentcloudapi.com"
+	client, err := dnspod.NewClient(common.NewCredential(os.Getenv(tencentcloudSecretIDEnv), os.Getenv(tencentcloudSecretKeyEnv)), "", cpf)
+	if err != nil {
+		return nil, err
+	}
+	req := dnspod.NewDescribeRecordListRequest()
+	req.Domain = common.StringPtr(zone)
+	req.RecordType = common.StringPtr("TXT")
+	req.Subdomain = common.StringPtr("_acme-challenge." + label)
+	resp, err := dnspod.DescribeRecordList(client, req)
+	var sdkErr *sdkerrors.TencentCloudSDKError
+	if errors.As(err, &sdkErr) && sdkErr.Code == dnspod.RESOURCENOTFOUND_NODATAOFRECORD {
+		// DNSPod answers an empty list with this error.
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, record := range resp.Response.RecordList {
+		names = append(names, dara.StringValue(record.Name)+"."+zone)
+	}
+	return names, nil
 }
 
 func (s *cloudServer) logs() string {
