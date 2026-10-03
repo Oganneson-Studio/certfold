@@ -1,0 +1,80 @@
+name: Release
+
+# A version tag builds the binaries and drafts a release with them. A manual
+# run only builds them, as a workflow artifact, to inspect before tagging.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The names are the ones certfolds serves from <data_dir>/binaries/.
+      - name: Build
+        env:
+          CGO_ENABLED: '0'
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.0.0-dev' }}
+        run: |
+          pkg=github.com/Oganneson-Studio/certfold/internal/version
+          mkdir dist
+          for os in linux darwin windows; do
+            ext=; [ "$os" = windows ] && ext=.exe
+            for arch in amd64 arm64; do
+              for bin in certfolds certfoldc; do
+                GOOS=$os GOARCH=$arch go build -trimpath \
+                  -ldflags "-s -w -X $pkg.Version=$VERSION -X $pkg.Commit=$GITHUB_SHA" \
+                  -o "dist/$bin-$os-$arch$ext" "./cmd/$bin"
+              done
+            done
+          done
+          cd dist && sha256sum certfold* > SHA256SUMS
+
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/certfold*
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release
+          path: dist
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" --draft --verify-tag --title "$TAG" --notes "Release notes to follow." dist/*
