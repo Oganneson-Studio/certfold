@@ -102,7 +102,11 @@ func runTestHook(mode string) int {
 			if _, err := os.Stat(filepath.Join(dir, "stop")); err == nil {
 				break
 			}
-			_ = os.WriteFile(filepath.Join(dir, "heartbeat"), []byte(strconv.FormatInt(time.Now().UnixNano(), 10)), 0o600)
+			// Through a rename: killed between truncating and writing, a
+			// plain write would leave the file empty, as if it never ran.
+			tmp := filepath.Join(dir, "heartbeat.tmp")
+			_ = os.WriteFile(tmp, []byte(strconv.FormatInt(time.Now().UnixNano(), 10)), 0o600)
+			_ = os.Rename(tmp, filepath.Join(dir, "heartbeat"))
 		}
 		return 0
 	case "orphan":

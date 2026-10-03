@@ -26,7 +26,9 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          # Release binaries are built from scratch, never from a cache
+          # another workflow could have written.
+          cache: false
 
       # The names are the ones certfolds serves from <data_dir>/binaries/.
       - name: Build
