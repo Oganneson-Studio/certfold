@@ -63,6 +63,24 @@ func TestRunningStatusProbesTheDaemon(t *testing.T) {
 	}
 }
 
+// TestSystemdStatusOfRestartingUnit covers `service status` while systemd
+// waits to start again a daemon that failed: the unit is activating, which
+// kardianos reports as running, in the sub-state auto-restart. The status
+// says it restarts, not that it runs; in other sub-states the daemon is
+// probed.
+func TestSystemdStatusOfRestartingUnit(t *testing.T) {
+	socket := testSocket(t)
+	want := "Restarting (the daemon failed and systemd starts it again; see " + serviceLog("certfolds") + ")"
+	if got := systemdStatus(RoleServer, "auto-restart", socket); got != want {
+		t.Errorf("status in auto-restart = %q, want %q", got, want)
+	}
+	for _, subState := range []string{"running", "start", ""} {
+		if got := systemdStatus(RoleServer, subState, socket); !strings.HasPrefix(got, "Running (not answering on "+socket+": ") {
+			t.Errorf("status in sub-state %q without a daemon = %q, want not answering", subState, got)
+		}
+	}
+}
+
 // A pipe that stays busy, as one whose daemon has stopped accepting, does
 // not answer. Dial gives up after two seconds.
 func TestRunningStatusOfBusyPipe(t *testing.T) {

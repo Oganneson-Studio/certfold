@@ -6,8 +6,10 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 
 	ksvc "github.com/kardianos/service"
@@ -220,7 +222,8 @@ func Restart(d Daemon, cfg Config) error {
 // manager reports a daemon that it keeps restarting as running: kardianos
 // maps systemd's activating to running, and the SCM's start pending as well.
 // So a running service is running only if its daemon answers on socket, its
-// IPC endpoint.
+// IPC endpoint. Under systemd, activating is mostly the wait before the next
+// start of a daemon that failed, which systemd tells apart.
 func StatusText(d Daemon, cfg Config, socket string) (string, error) {
 	svc, err := New(d, cfg)
 	if err != nil {
@@ -235,7 +238,33 @@ func StatusText(d Daemon, cfg Config, socket string) (string, error) {
 	if st != ksvc.StatusRunning {
 		return "Stopped", nil
 	}
+	if svc.Platform() == "linux-systemd" {
+		name, _, _, _ := roleAttrs(cfg.Role)
+		return systemdStatus(cfg.Role, systemdSubState(name), socket), nil
+	}
 	return runningStatus(cfg.Role, socket), nil
+}
+
+// systemdSubState returns the sub-state of the systemd unit of the service
+// name, or "" when systemctl does not tell.
+func systemdSubState(name string) string {
+	out, err := exec.Command("systemctl", "show", "--property=SubState", "--value", name+".service").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// systemdStatus reports a unit that kardianos reports as running, given its
+// sub-state: auto-restart is the wait after the daemon failed, before systemd
+// starts it again, as while it fails at every start; in any other sub-state
+// the daemon is probed on socket.
+func systemdStatus(role Role, subState, socket string) string {
+	if subState == "auto-restart" {
+		name, _, _, _ := roleAttrs(role)
+		return fmt.Sprintf("Restarting (the daemon failed and systemd starts it again; see %s)", serviceLog(name))
+	}
+	return runningStatus(role, socket)
 }
 
 // runningStatus reports a service the manager reports as running: "Running"

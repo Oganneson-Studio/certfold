@@ -30,6 +30,7 @@ For security invariants S1--S20 see [AGENTS.md](../../AGENTS.md).
 - To replace an existing unit: `service uninstall` first, then `service install` (kardianos errors on an existing service).
 - Environment variables go in `/etc/sysconfig/<name>` (Ubuntu does not have this directory; create it before storing credentials).
 - stderr goes to journald under systemd.
+- `service status`: kardianos maps systemd's `activating` to running (and `deactivating` to not installed), so a unit waiting in `auto-restart` after a failed start looked running. `StatusText` reads the unit's `SubState` and reports `auto-restart` as `Restarting (...)`; other sub-states still go through the IPC probe. Windows (SCM waits 10 s, no restarting state) and launchd show such a service mostly as `Stopped`.
 
 ## Linux one-click install paths (INS-4)
 
